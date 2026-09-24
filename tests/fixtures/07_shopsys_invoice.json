@@ -1,0 +1,95 @@
+{
+  "file_name": "07_shopsys_invoice.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-10-01T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Shopsys Software Inc.",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "47-3829105",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "ABA 121000248 ACCT 4839201756",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "US",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail Inc.",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "84-2716453",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "SS-100482",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-01",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-10-31",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "USD",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 9600.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 9600.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500131"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Shopsys Commerce Cloud — annual subscription (Oct 2026 – Sep 2027)",
+          "quantity": 1,
+          "unit_price": 9600.0,
+          "amount": 9600.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

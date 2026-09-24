@@ -1,0 +1,95 @@
+{
+  "file_name": "08_metro_media_invoice.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-10-01T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Metro Media GmbH",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "DE318273645",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "DE42100700240912345678",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "MM-2026-212",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-09-30",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-10-30",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 7500.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 7500.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500126"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Berlin out-of-home campaign September 2026 — 40 billboard sites",
+          "quantity": 1,
+          "unit_price": 7500.0,
+          "amount": 7500.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

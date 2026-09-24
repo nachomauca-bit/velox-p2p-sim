@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }} · {{ app_title }}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2/dist/htmx.min.js" defer></script>
+</head>
+<body class="scenario-{{ scenario }}">
+  <header class="topbar">
+    <a class="brand" href="/inbox">{{ app_title }}</a>
+
+    <div class="scenario-switch">
+      {% for s in scenarios %}
+      <form method="post" action="/scenario/{{ s }}">
+        <button type="submit" class="switch-{{ s }}{% if s == scenario %} active{% endif %}"
+                aria-pressed="{{ 'true' if s == scenario else 'false' }}">{{ scenario_labels[s] }}</button>
+      </form>
+      {% endfor %}
+    </div>
+
+    <div class="actions">
+      <form method="post" action="/documents/load">
+        <button type="submit">Load sample documents</button>
+      </form>
+      <span class="tip" title="Phase 2"><button type="button" disabled>Run scenario</button></span>
+      <form method="post" action="/reset"
+            onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded and the inbox of this scenario is emptied.');">
+        <button type="submit" class="secondary outline">Reset</button>
+      </form>
+    </div>
+  </header>
+
+  <div class="scenario-banner" role="note">
+    <span class="scenario-pill">Scenario {{ scenario_label }}</span>
+    <span>{{ scenario_summary }}</span>
+  </div>
+
+  <div class="shell">
+    <aside class="sidenav">
+      {% for title, items in nav_groups %}
+      <section class="navgroup navgroup-{{ loop.index }}">
+        <h2>{{ title }}</h2>
+        <ul>
+          {% for path, label in items %}
+          <li>
+            <a href="{{ path }}"{% if nav_active == path %} aria-current="page"{% endif %}>
+              {{ label }}{% if path in phase2_paths %} <small class="later">phase 2</small>{% endif %}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endfor %}
+    </aside>
+
+    <main class="content">
+      {% if flash %}
+      <div class="flash flash-{{ flash.kind }}" role="status">{{ flash.text }}</div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <footer class="site-footer">{{ footer_text }}</footer>
+</body>
+</html>

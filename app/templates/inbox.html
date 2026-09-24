@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › Intake</p>
+  <h1>Inbox</h1>
+  <p class="lead">
+    {% if scenario == "tobe" %}
+      Every document is registered on arrival: it gets a document ID and the ageing clock starts.
+    {% else %}
+      Documents wait in the mailboxes until AP opens ap@ or the store forwards its mail to AP.
+      Nothing is registered until then; each card shows the expected registration date and why.
+    {% endif %}
+  </p>
+</div>
+
+{% if total == 0 %}
+<article class="empty-state">
+  <h2>No documents in the mailboxes of {{ scenario_label }}</h2>
+  <p>Load the 12 sample supplier documents into ap@ and the Berlin store mailbox to start.</p>
+  <form method="post" action="/documents/load">
+    <button type="submit">Load sample documents</button>
+  </form>
+</article>
+{% else %}
+<div class="mailboxes">
+  {% for box in mailboxes %}
+  <section class="mailbox" id="mailbox-{{ box.channel }}" data-count="{{ box.docs|length }}">
+    <header class="mailbox-head">
+      <h2>{{ box.address }}</h2>
+      <span class="muted">{{ box.label }}</span>
+      <span class="count">{{ box.docs|length }} document{{ '' if box.docs|length == 1 else 's' }}</span>
+    </header>
+    {% if not box.docs %}
+      <p class="muted">No documents in this mailbox.</p>
+    {% endif %}
+    {% for doc, reg in box.docs %}
+    <article class="doc-card" id="doc-{{ doc.doc_id }}">
+      <div class="doc-card-top">
+        <a class="doc-id" href="/invoice/{{ doc.doc_id }}">{{ doc.doc_id }}</a>
+        <span class="doc-subject"><a href="/invoice/{{ doc.doc_id }}">{{ doc.subject }}</a></span>
+      </div>
+      <dl class="doc-meta">
+        <dt>From</dt><dd>{{ doc.sender_email }}</dd>
+        <dt>Received</dt><dd>{{ doc.received_on|dt }}</dd>
+        {% if reg.registered %}
+          <dt>Registered</dt><dd>{{ reg.date|dt }} <span class="muted">({{ reg.reason }})</span></dd>
+        {% else %}
+          <dt>Registered</dt>
+          <dd><strong class="not-registered">Not registered yet</strong>
+            — expected {{ reg.date|d }} <span class="muted">({{ reg.reason }})</span></dd>
+        {% endif %}
+      </dl>
+      <div class="chips">
+        {% if reg.registered %}
+          <span class="chip chip-ok">Registered</span>
+        {% else %}
+          <span class="chip chip-warn">Not registered yet</span>
+        {% endif %}
+        {% if doc.extraction %}
+          <span class="chip chip-ok">Extracted</span>
+        {% else %}
+          <span class="chip chip-bad">Extraction pending</span>
+        {% endif %}
+        <span class="chip chip-{{ 'info' if doc.doc_type == 'credit_note' else 'neutral' }}">{{ doc_type_labels.get(doc.doc_type, doc.doc_type) }}</span>
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

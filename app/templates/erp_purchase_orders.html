@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head erp-head">
+  <p class="crumb">Velox ERP › Procurement › Purchase orders &amp; receipts <span class="chip chip-neutral">read-only</span></p>
+  <h1>Purchase orders &amp; receipts <span class="muted h1-sub">{{ pos|length }} purchase orders</span></h1>
+</div>
+
+{% if scenario == "asis" %}
+<p class="flash flash-warn">
+  Rule D6 — weak PO discipline: only the POs keyed and approved in the ERP exist ({{ pos|length }} of {{ total_pos }}).
+  For the others the requester gave the supplier a PO number, but the PO was never created in the ERP,
+  so invoices quoting it find no commitment.
+</p>
+{% endif %}
+
+{% if not pos %}
+<article class="empty-state"><p>No purchase orders in this scenario.</p></article>
+{% endif %}
+
+{% for item in pos %}
+{% set po = item.po %}
+<article class="po-card" id="po-{{ po.po_number }}">
+  <header class="po-head">
+    <h2><code>{{ po.po_number }}</code> {{ po.description }}</h2>
+    <span class="po-total">{{ po.total|money }} {{ po.currency }}</span>
+  </header>
+  <dl class="po-grid">
+    <div><dt>Legal entity</dt><dd>{{ po.legal_entity_code }}</dd></div>
+    <div><dt>Vendor account</dt><dd><code>{{ po.vendor_account_id }}</code>
+      {{ item.account.display_name if item.account else '(account not in this scenario)' }}</dd></div>
+    <div><dt>Requester</dt><dd>{{ po.requester_name }} <small class="muted">{{ po.requester_email }}</small></dd></div>
+    <div><dt>Cost centre</dt><dd>{{ po.cost_centre or '—' }}</dd></div>
+    <div><dt>Buyer</dt><dd>{{ po.buyer_name }} <small class="muted">{{ po.buyer_email }}</small></dd></div>
+    <div><dt>Category</dt><dd>{{ po.category }}</dd></div>
+    <div><dt>Status</dt><dd><span class="chip chip-ok">{{ po.status }}</span></dd></div>
+    <div><dt>Order date</dt><dd>{{ po.order_date|d }}</dd></div>
+  </dl>
+  <div class="overflow-auto">
+  <table class="erp-table">
+    <thead>
+      <tr><th class="num">Line</th><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th>
+          <th class="num">Amount</th><th class="num">Qty received</th><th>Receipt status</th><th>Receipt / confirmation</th></tr>
+    </thead>
+    <tbody>
+    {% for l in item.lines %}
+      <tr>
+        <td class="num">{{ l.line.line_no }}</td>
+        <td>{{ l.line.description }}</td>
+        <td class="num">{{ l.line.qty|qty }}</td>
+        <td class="num">{{ l.line.unit_price|money }}</td>
+        <td class="num">{{ l.line.amount|money }}</td>
+        <td class="num">{{ l.received|qty }}</td>
+        <td><span class="chip chip-{{ l.tone }}">{{ l.status }}</span></td>
+        <td>
+          {% for r in l.receipts %}
+            <div><code>{{ r.receipt_id }}</code> {{ r.received_on|d }} · {{ r.received_by }}
+              {% if r.kind == 'service_confirmation' %}<small class="muted">(service confirmation)</small>{% else %}<small class="muted">({{ r.qty_received|qty }} received)</small>{% endif %}</div>
+          {% else %}<span class="muted">none</span>{% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

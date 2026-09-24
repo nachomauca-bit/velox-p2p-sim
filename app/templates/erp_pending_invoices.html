@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head erp-head">
+  <p class="crumb">Velox ERP › Accounts payable › Pending vendor invoices <span class="chip chip-neutral">read-only</span></p>
+  <h1>Pending vendor invoices <span class="muted h1-sub">{{ rows|length }} posted</span></h1>
+</div>
+
+{% if not rows %}
+<article class="empty-state">
+  <h2>No invoices posted yet — the control gate posts here in phase 2.</h2>
+</article>
+{% else %}
+<div class="overflow-auto">
+<table class="erp-table striped">
+  <thead>
+    <tr><th>Invoice ID</th><th>Document</th><th>Entity</th><th>Vendor account</th><th>Invoice number</th>
+        <th>Invoice date</th><th>Due date</th><th class="num">Total</th><th class="num">Terms</th><th>Terms source</th>
+        <th>PO</th><th>Posted on</th><th>Status</th><th>Flags</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><code>{{ r.invoice_id }}</code></td>
+      <td>{% if r.doc_id %}<a href="/invoice/{{ r.doc_id }}">{{ r.doc_id }}</a>{% else %}—{% endif %}</td>
+      <td>{{ r.legal_entity_code }}</td>
+      <td><code>{{ r.vendor_account_id }}</code></td>
+      <td>{{ r.invoice_number }}</td>
+      <td class="nowrap">{{ r.invoice_date|d }}</td>
+      <td class="nowrap">{{ r.due_date|d }}</td>
+      <td class="num nowrap">{{ r.total|money }} {{ r.currency }}</td>
+      <td class="num">{{ r.terms_days if r.terms_days is not none else '—' }}</td>
+      <td>{{ r.terms_source }}</td>
+      <td>{{ r.po_number or '—' }}</td>
+      <td class="nowrap">{{ r.posted_on|dt }}</td>
+      <td>{{ r.status }}</td>
+      <td>{% for k, v in (r.flags or {}).items() %}<span class="chip chip-neutral" title="{{ v }}">{{ k }}</span> {% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

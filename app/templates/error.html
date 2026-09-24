@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Error {{ status_code }}</p>
+  <h1>{{ status_code }} · {{ phrase }}</h1>
+</div>
+<article class="error-box">
+  {% if detail %}<p><strong>{{ detail.rstrip('.') }}.</strong></p>{% endif %}
+  {% if message %}<p>{{ message }}</p>{% endif %}
+  <p><a href="/inbox">Back to the inbox</a></p>
+</article>
+{% endblock %}

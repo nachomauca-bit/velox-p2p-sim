@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › Assumptions</p>
+</div>
+{% if html %}
+<article class="markdown">{{ html|safe }}</article>
+{% else %}
+<article class="empty-state">
+  <h1>Assumptions</h1>
+  <p><code>docs/ASSUMPTIONS.md</code> does not exist yet. Every simulated number and dirty-world rule
+     will be listed there with its reason.</p>
+</article>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,102 @@
+{# Extraction panel: rendered inside invoice.html and returned alone to HTMX after (re-)extraction. #}
+<article class="panel" id="extraction-panel">
+  <header class="panel-head">
+    <h2>Extraction</h2>
+    <form method="post" action="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
+          hx-post="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
+          hx-target="#extraction-panel" hx-swap="outerHTML" hx-disabled-elt="find button">
+      <button type="submit" class="{{ 'secondary outline' if ex else '' }}">{{ 'Force re-extract' if ex else 'Extract now' }}</button>
+    </form>
+  </header>
+
+  {% if panel_message %}
+  <p class="flash flash-{{ panel_message[0] }}" role="status">{{ panel_message[1] }}</p>
+  {% endif %}
+
+  {% if not ex %}
+  <p class="placeholder-box"><strong>No extraction yet.</strong> {{ no_extraction_reason }}</p>
+  {% else %}
+  <div class="source-line">
+    {% if is_fixture %}
+      <span class="badge badge-fixture">FIXTURE — not a Gemini output</span>
+    {% elif ex.from_cache %}
+      <span class="badge badge-cache">From cache</span>
+    {% else %}
+      <span class="badge badge-api">Gemini API</span>
+    {% endif %}
+    <span class="chip chip-{{ 'info' if doc.doc_type == 'credit_note' else 'neutral' }}">{{ doc_type_labels.get(doc.doc_type, doc.doc_type) }}</span>
+  </div>
+  <dl class="kv kv-compact">
+    <dt>Model</dt><dd><code>{{ ex.model }}</code></dd>
+    <dt>Latency</dt><dd>{{ '%d ms'|format(ex.latency_ms) if ex.latency_ms is not none else '—' }}</dd>
+    <dt>Tokens</dt><dd>{% if ex.input_tokens is not none or ex.output_tokens is not none %}{{ ex.input_tokens if ex.input_tokens is not none else '—' }} in / {{ ex.output_tokens if ex.output_tokens is not none else '—' }} out{% else %}—{% endif %}</dd>
+    <dt>Created on</dt><dd>{{ ex.created_on|dt }}</dd>
+  </dl>
+
+  <p class="legend muted">
+    Confidence below {{ threshold_pct }}% is flagged.
+    <span class="crit">critical</span> = field the gate needs;
+    <span class="crit crit-id">identity</span> = supplier identity (any one of VAT ID, IBAN or name is enough).
+  </p>
+  <div class="overflow-auto">
+  <table class="fields">
+    <thead><tr><th>Field</th><th>Value</th><th class="conf-col">Confidence</th></tr></thead>
+    <tbody>
+    {% for f in fields %}
+      <tr class="{{ 'row-low' if f.low else '' }}">
+        <th scope="row">{{ f.label }}
+          {% if f.identity %}<span class="crit crit-id" title="Supplier identity: any one of VAT ID, IBAN or name is enough">identity</span>
+          {% elif f.critical %}<span class="crit" title="Critical field for the confidence gate">critical</span>{% endif %}
+        </th>
+        <td>
+          {% if f.value is none %}
+            <span class="muted">not on the document</span>
+          {% elif f.name == "lines" %}
+            {{ f.value|length }} line{{ '' if f.value|length == 1 else 's' }} (below)
+          {% elif f.name == "po_numbers" %}
+            {% for po in f.value %}<code class="po">{{ po }}</code> {% else %}<span class="muted">none</span>{% endfor %}
+          {% elif f.name in ("net_total", "tax_total", "gross_total") %}
+            {{ f.value|money }}
+          {% else %}
+            {{ f.value }}
+          {% endif %}
+        </td>
+        <td class="conf-col">
+          {% if f.value is none %}
+            <span class="muted">—</span>
+            {% if f.critical and not f.identity %}<span class="chip chip-bad">critical field missing</span>{% endif %}
+          {% else %}
+            <div class="conf{{ ' conf-low' if f.low else '' }}">
+              <div class="bar" aria-hidden="true"><span style="width: {{ f.pct }}%"></span></div>
+              <span class="pct">{{ f.pct }}%</span>
+            </div>
+            {% if f.low %}<span class="chip chip-bad">below {{ threshold_pct }}%</span>{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% if f.name == "lines" and f.value %}
+      <tr class="lines-row">
+        <td colspan="3">
+          <table class="subtable">
+            <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
+            <tbody>
+            {% for ln in f.value %}
+              <tr><td>{{ ln.description or '—' }}</td><td class="num">{{ ln.quantity|qty }}</td>
+                  <td class="num">{{ ln.unit_price|money }}</td><td class="num">{{ ln.amount|money }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <details class="raw-json">
+    <summary>Raw extraction JSON</summary>
+    <pre><code>{{ raw_json }}</code></pre>
+  </details>
+  {% endif %}
+</article>

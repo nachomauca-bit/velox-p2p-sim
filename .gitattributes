@@ -1,0 +1,6 @@
+# Text files are stored and checked out with LF on every OS.
+* text=auto eol=lf
+# Generated PDFs must stay byte-identical: their SHA-256 is the extraction cache key.
+*.pdf binary
+*.png binary
+*.jpg binary

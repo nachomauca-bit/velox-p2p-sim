@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › <a href="/inbox">Inbox</a> › {{ doc.doc_id }}</p>
+  <h1>{{ doc.doc_id }} <span class="muted h1-sub">{{ doc.subject }}</span></h1>
+  {% if doc.scenario != scenario %}
+  <p class="flash flash-warn">This document belongs to scenario {{ doc_scenario_label }}, not the active scenario.</p>
+  {% endif %}
+</div>
+
+<div class="invoice-layout">
+  <section class="pdf-pane">
+    <iframe src="/files/{{ doc.doc_id }}.pdf#navpanes=0&amp;view=FitH" title="PDF of {{ doc.doc_id }}"></iframe>
+    <p class="muted"><a href="/files/{{ doc.doc_id }}.pdf" target="_blank" rel="noopener">Open the PDF in a new tab</a></p>
+  </section>
+
+  <section class="detail-pane">
+    <article class="panel">
+      <h2>Document</h2>
+      <dl class="kv">
+        <dt>Mailbox</dt><dd>{{ doc.mailbox }} <span class="muted">({{ channel_label }})</span></dd>
+        <dt>Sender</dt><dd>{{ doc.sender_email }}</dd>
+        <dt>Subject</dt><dd>{{ doc.subject }}</dd>
+        <dt>Received</dt><dd>{{ doc.received_on|dt }}</dd>
+        {% if registration.registered %}
+          <dt>Registered</dt><dd>{{ registration.date|dt }} <span class="muted">({{ registration.reason }})</span></dd>
+        {% else %}
+          <dt>Registered</dt>
+          <dd><strong class="not-registered">Not registered yet</strong> — expected {{ registration.date|d }}
+            <span class="muted">({{ registration.reason }})</span></dd>
+        {% endif %}
+        <dt>Scenario</dt><dd>{{ doc_scenario_label }}</dd>
+        <dt>File</dt><dd><code>{{ doc.file_path }}</code> <span class="muted">sha256 {{ doc.file_hash[:12] }}…</span></dd>
+      </dl>
+    </article>
+
+    {% include "_extraction_panel.html" %}
+
+    <article class="panel gate-placeholder">
+      <h2>Gate trace and outcome</h2>
+      <p class="placeholder-box">The control gate runs in phase 2.</p>
+      <span class="tip" title="Phase 2"><button type="button" disabled>Re-run gate</button></span>
+    </article>
+  </section>
+</div>
+{% endblock %}
