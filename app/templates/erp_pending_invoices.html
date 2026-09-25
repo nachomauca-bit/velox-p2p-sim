@@ -10,7 +10,7 @@
 <article class="empty-state">
   <h2>No invoices posted yet in {{ scenario_label }}.</h2>
   <p>The control gate posts here when the scenario runs.</p>
-  {{ m.run_button() }}
+  {{ m.run_button(scenario=scenario) }}
 </article>
 {% else %}
 <div class="tiles pvi-totals">

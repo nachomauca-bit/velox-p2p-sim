@@ -314,6 +314,7 @@ table.line-checks td { font-size: 0.82rem; }
 .bucket-blocked .bucket-head .count { background: var(--neutral); }
 .bucket-loop .bucket-head .count { background: #c2410c; }
 .bucket-loop .gate-table { border-left: 5px dashed #c2410c; }
+.bucket-loop tr.loop-closed td { color: #6b7280; }  /* posted by the snapshot: out of the loop that evening */
 
 /* ---------------------------------------------------------------- KPIs and compare */
 .kpi-group { margin-bottom: 1.25rem; }

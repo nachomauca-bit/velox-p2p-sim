@@ -14,8 +14,10 @@
 {% if next_name %}<div class="next-owner">then <strong>{{ next_name }}</strong>{% if next_role %} <small class="muted">{{ next_role }}</small>{% endif %}</div>{% endif %}
 {%- endmacro %}
 
-{% macro run_button(label="Run scenario", action="/run") -%}
+{# `scenario`: the scenario the page shows, sent as a hidden field (the POST handler prefers it to the cookie). #}
+{% macro run_button(label="Run scenario", action="/run", scenario=None) -%}
 <form method="post" action="{{ action }}" class="inline-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
+  {% if scenario %}<input type="hidden" name="scenario" value="{{ scenario }}">{% endif %}
   <button type="submit">{{ label }}</button>
 </form>
 {%- endmacro %}

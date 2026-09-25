@@ -18,14 +18,14 @@ setup:           ## create the virtualenv and install dependencies (Python 3.11+
 	$(VENV_PY) -m pip install --upgrade pip
 	$(VENV_PY) -m pip install -r requirements.txt
 
-seed:            ## generate the 12 PDFs, (re)create the DB, seed both scenarios, load the mailboxes
+seed:            ## generate the 14 PDFs, (re)create the DB, seed both scenarios, load the mailboxes
 	$(VENV_PY) -m app.invoices_gen
 	$(VENV_PY) -m app.seed
 
-pdfs:            ## regenerate the 12 sample PDFs only
+pdfs:            ## regenerate the 14 sample PDFs only
 	$(VENV_PY) -m app.invoices_gen
 
-extract:         ## Gemini extraction of the 12 PDFs (cached; FORCE=1 re-calls the API)
+extract:         ## Gemini extraction of the 14 PDFs (cached; FORCE=1 re-calls the API)
 	$(VENV_PY) -m app.extract $(if $(filter 1 yes true,$(FORCE)),--force-extract,)
 
 run:             ## serve the app on http://127.0.0.1:$(PORT)

@@ -13,16 +13,17 @@ every currency (all amounts involved in the sample are EUR).
 """
 from __future__ import annotations
 
-import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import gate, normalize, sim, taxonomy, world
-from app.models import Contract, Extraction, GateDecision, Party, PurchaseOrder, Run, VendorAccount
+from app.models import (Contract, Extraction, GateDecision, InboundDocument, Party, PurchaseOrder, Run,
+                        VendorAccount)
 
 NA = "—"
 EXCEPTION_OUTCOMES = ("exception", "human_review")
@@ -62,7 +63,7 @@ KPI_DEFS: dict[str, tuple[str, str, str]] = {
 # Plain-English names of the sim.cycle_breakdown activities (reference path formula).
 ACTIVITY_LABELS = {
     "store_forwarding": "store forwarding",
-    "ap_open_and_key": "AP opening and keying",
+    "ap_open_and_key": "AP opening ap@ (the quick-fix tool keys it)",
     "email_loop": "email loop",
     "email_approval": "email approval",
     "posting": "posting",
@@ -209,9 +210,9 @@ def cash_leakage(decisions: Sequence[GateDecision]) -> dict[str, float]:
 
 
 def po_key(value: Any) -> str:
-    """'PO 4500117', 'po-4500117' and '4500117' -> '4500117'."""
-    s = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
-    return s[2:] if s.startswith("PO") else s
+    """The PO number as the gate compares it (normalize.normalise_po_number), so coverage counts exactly the POs
+    the gate finds: 'PO 4500117', 'po-4500117' and '4500117' -> '4500117'."""
+    return normalize.normalise_po_number(value)
 
 
 def has_commitment(po_numbers: Iterable[str], party_id: Optional[str], entity: Optional[str], *,
@@ -356,9 +357,23 @@ def _kpi(key: str, value: Any, display: str, formula: str) -> dict[str, Any]:
             "group": group, "unit": unit}
 
 
-def _decisions(session: Session, scenario: str) -> list[GateDecision]:
-    return list(session.scalars(select(GateDecision).where(GateDecision.scenario == scenario)
+def is_sample(decision: GateDecision) -> bool:
+    """One of the sample documents (sample_no > 0); webhook documents have sample_no 0."""
+    return int(detail(decision, "sample_no", 0) or 0) > 0
+
+
+def _decisions(session: Session, scenario: str, sample_only: bool = False) -> list[GateDecision]:
+    rows = list(session.scalars(select(GateDecision).where(GateDecision.scenario == scenario)
                                 .order_by(GateDecision.id)))
+    return [d for d in rows if is_sample(d)] if sample_only else rows
+
+
+def _documents_total(session: Session, scenario: str, sample_only: bool = False) -> int:
+    """Inbound documents of the scenario (processed or not); only the sample documents with sample_only."""
+    query = select(func.count()).select_from(InboundDocument).where(InboundDocument.scenario == scenario)
+    if sample_only:
+        query = query.where(InboundDocument.sample_no > 0)
+    return int(session.scalar(query) or 0)
 
 
 def _printed_po_numbers(session: Session, decisions: Sequence[GateDecision]) -> dict[str, list[str]]:
@@ -394,14 +409,21 @@ def _lag_breakdown(lags: Sequence[int]) -> str:
     return f"({' + '.join(f'{n} × {lag}' for lag, n in sorted(counts.items()))}) ÷ {len(lags)}"
 
 
-def compute(session: Session, scenario: str) -> dict[str, Any]:
-    """All KPIs of one scenario, plus the counts behind the charts. See the module docstring."""
-    decisions = _decisions(session, scenario)
+def compute(session: Session, scenario: str, *, sample_only: bool = False) -> dict[str, Any]:
+    """All KPIs of one scenario, plus the counts behind the charts. See the module docstring.
+
+    "documents" is the number of decisions (the KPI denominators), "documents_total" the number of inbound
+    documents of the scenario: fewer decisions than documents means the scenario was only partly processed.
+    sample_only=True keeps the sample documents only (sample_no > 0), for decisions and denominators alike, so
+    two scenarios are compared on the same documents even when one of them also received webhook uploads.
+    """
+    decisions = _decisions(session, scenario, sample_only)
     available = bool(decisions)
     run = session.scalars(select(Run).where(Run.scenario == scenario)
                           .order_by(Run.started_on.desc(), Run.id.desc())).first()
     vm = vendor_master_quality(session, scenario)
     n = len(decisions)
+    routing = bool(scenario_config(scenario)["exception_routing"])
     use_contracts = bool(scenario_config(scenario)["contract_matching"])
     kpis: dict[str, dict[str, Any]] = {}
 
@@ -444,8 +466,12 @@ def compute(session: Session, scenario: str) -> dict[str, Any]:
 
     touchless = count(lambda d: detail(d, "touchless", False))
     exceptions = count(is_exception)
+    touchless_note = "" if routing else (
+        " Without a gate, \"touchless\" means no exception follow-up after intake; intake itself is delayed "
+        "(the store forwards its mail, AP opens ap@) before the quick-fix tool keys and posts the document.")
     add("touchless", touchless, fmt_number(touchless),
-        "Documents fully handled with no human step: posted, blocked as a duplicate or credit applied automatically.")
+        "Documents fully handled with no human step: posted, blocked as a duplicate or credit applied "
+        f"automatically.{touchless_note}")
     rate = pct(touchless, n) if available else None
     add("touchless_rate", rate, fmt_pct(rate), "Touchless documents ÷ documents × 100.",
         f"Here: {touchless} ÷ {n}.")
@@ -514,7 +540,9 @@ def compute(session: Session, scenario: str) -> dict[str, Any]:
         "scenario": scenario,
         "available": available,
         "run": {"run_id": run.run_id, "finished_on": run.finished_on} if run else None,
+        "sample_only": sample_only,
         "documents": n,
+        "documents_total": _documents_total(session, scenario, sample_only),
         "kpis": kpis,
         "exceptions_by_type": exceptions_by_type(decisions),
         "info_flags_by_type": info_flags_by_type(decisions),
@@ -532,12 +560,42 @@ def outcome_label(decision: GateDecision) -> str:
     return OUTCOME_LABELS.get(decision.outcome, decision.outcome)
 
 
+def as_date(value: Any) -> Optional[date]:
+    """An ISO date / datetime string (decision details) or a date as a date; None when missing or unreadable."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            return None
+    return None
+
+
+def scheduled_payment(decision: GateDecision) -> Optional[date]:
+    """Payment date of a posting on the invoice terms: the due date on those terms, or the posting day when the
+    invoice was posted after it (it cannot be paid before it is posted). None when a date is missing."""
+    invoice_date, posted = as_date(detail(decision, "invoice_date")), as_date(detail(decision, "posted_on"))
+    terms = detail(decision, "invoice_terms_days", detail(decision, "terms_days"))
+    if invoice_date is None or posted is None or terms is None:
+        return None
+    return max(posted, invoice_date + timedelta(days=int(terms)))
+
+
 def terms_badge(decision: GateDecision) -> str:
-    """'terms paid early' (invoice terms shorter than agreed), 'terms paid late', or 'terms variance'."""
-    invoice, agreed = detail(decision, "invoice_terms_days"), detail(decision, "agreed_terms_days")
-    if invoice is None or agreed is None or invoice == agreed:
+    """'terms paid early' / 'terms paid late': the scheduled payment date (max of the posting day and the due date
+    on the invoice terms) against the agreed due date (invoice date + agreed terms). The neutral 'terms variance'
+    when a date is missing or the two fall on the same day (e.g. a late posting on shorter terms)."""
+    scheduled = scheduled_payment(decision)
+    invoice_date, agreed = as_date(detail(decision, "invoice_date")), detail(decision, "agreed_terms_days")
+    if scheduled is None or invoice_date is None or agreed is None:
         return "terms variance"
-    return "terms paid early" if invoice < agreed else "terms paid late"
+    agreed_due = invoice_date + timedelta(days=int(agreed))
+    if scheduled == agreed_due:
+        return "terms variance"
+    return "terms paid early" if scheduled < agreed_due else "terms paid late"
 
 
 FLAG_BADGES = {"terms_variance": "terms variance flagged", "duplicate_vendor_account": "duplicate account flagged"}
@@ -602,8 +660,9 @@ def _decision_by_sample(session: Session, scenario: str) -> dict[int, GateDecisi
 
 
 def compare(session: Session) -> dict[str, Any]:
-    """Scenario A vs B for the same sample documents: both KPI sets and one row per document."""
-    asis, tobe = compute(session, "asis"), compute(session, "tobe")
+    """Scenario A vs B for the same sample documents: both KPI sets (sample documents only, so webhook uploads
+    never change a denominator on one side) and one row per document."""
+    asis, tobe = compute(session, "asis", sample_only=True), compute(session, "tobe", sample_only=True)
     by_sample = {s: _decision_by_sample(session, s) for s in ("asis", "tobe")}
     rows = []
     for spec in sorted(world.DOCUMENTS, key=lambda s: s.no):

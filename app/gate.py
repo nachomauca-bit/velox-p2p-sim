@@ -42,8 +42,10 @@ from app.normalize import (
     NAME_SIMILARITY_THRESHOLD,
     name_similarity,
     names_match,
+    normalise_currency,
     normalise_iban,
     normalise_invoice_number,
+    normalise_po_number,
     normalise_vat,
 )
 from app.seed import SCENARIO_LETTER
@@ -82,8 +84,11 @@ DETAIL_KEYS = (
     "contract_id", "contract_period", "doa_auto_approved", "requester_name", "next_owner_name", "next_owner_role",
     "credit_status", "applied_to", "flags", "terms_days", "terms_source", "invoice_terms_days", "agreed_terms_days",
     "terms_variance_paid", "touchless", "path", "cycle_breakdown", "registration_lag_days", "email_loop_days",
-    "line_checks",
+    "line_checks", "lookup_party_id", "invoice_date", "posted_on",
 )
+# lookup_party_id: the party found from the extraction's identifiers (to-be only), also for a document that stops
+# before resolve_vendor, so later duplicate, credit-note and contract checks still see it. invoice_date: ISO date;
+# posted_on: ISO datetime of the simulated posting.
 _FALSE_KEYS = {"posted", "wrong_entity_posting", "duplicate_posting", "doa_auto_approved", "terms_variance_paid",
                "touchless"}
 _LIST_KEYS = {"flags", "line_checks"}
@@ -133,7 +138,9 @@ def entity_key(name: Optional[str]) -> str:
 
 def map_bill_to(name: Optional[str], vat: Optional[str], entities: list[tuple[str, str, str]]) -> Optional[str]:
     """Legal entity code billed, from (code, name, vat_id) rows: VAT ID exact, else name exact (suffixes kept),
-    else the best fuzz.ratio >= BILL_TO_FUZZY_THRESHOLD; None when the bill-to is not a Velox entity."""
+    else the best fuzz.ratio >= BILL_TO_FUZZY_THRESHOLD, else the entity whose full name starts the bill-to name as
+    whole words ('Velox Retail GmbH Store Berlin 01'; longest match, only when unique); None when the bill-to is not
+    a Velox entity."""
     vat_n = normalise_vat(vat)
     if vat_n:
         hit = next((code for code, _, entity_vat in entities if normalise_vat(entity_vat) == vat_n), None)
@@ -146,7 +153,12 @@ def map_bill_to(name: Optional[str], vat: Optional[str], entities: list[tuple[st
     if hit:
         return hit
     score, code = max(((fuzz.ratio(key, entity_key(n)), c) for c, n, _ in entities), default=(0.0, None))
-    return code if score >= BILL_TO_FUZZY_THRESHOLD else None
+    if score >= BILL_TO_FUZZY_THRESHOLD:
+        return code
+    prefixes = [(len(ek), c) for c, n, _ in entities if (ek := entity_key(n)) and key.startswith(ek + " ")]
+    longest = max((length for length, _ in prefixes), default=0)
+    best = [c for length, c in prefixes if length == longest]
+    return best[0] if len(best) == 1 else None
 
 
 def amounts_close(a: Optional[float], b: Optional[float], tolerance: float = DUPLICATE_AMOUNT_TOLERANCE) -> bool:
@@ -172,21 +184,50 @@ def within_tolerance(invoiced: float, expected: float) -> bool:
 
 
 def map_lines(invoice_descriptions: list[Optional[str]], po_descriptions: list[str]) -> list[Optional[int]]:
-    """Index of the PO line for each invoice line: by position when the counts are equal, else the best
-    token_set_ratio on the description (>= LINE_MATCH_THRESHOLD; ties -> lowest line), else None."""
+    """Index of the PO line for each invoice line, by description (token_set_ratio >= LINE_MATCH_THRESHOLD).
+
+    1. One-to-one, best score first (ties -> the PO line at the same position, then the lowest line).
+    2. A line left over (a split or repeated line) maps to its best PO line, which then carries several lines.
+    3. A line whose description matches no PO line maps by position when the counts are equal and that PO line
+       is still free (e.g. no descriptions were read); else None (not on the PO).
+    """
+    scores = [[float(fuzz.token_set_ratio(desc.lower(), p.lower())) if desc else 0.0 for p in po_descriptions]
+              for desc in invoice_descriptions]
+    mapping: list[Optional[int]] = [None] * len(invoice_descriptions)
+    used: set[int] = set()
+    pairs = sorted((-s, abs(i - j), i, j) for i, row in enumerate(scores) for j, s in enumerate(row)
+                   if s >= LINE_MATCH_THRESHOLD)
+    for _, _, i, j in pairs:
+        if mapping[i] is None and j not in used:
+            mapping[i] = j
+            used.add(j)
+    for i, row in enumerate(scores):
+        if mapping[i] is None and row and max(row) >= LINE_MATCH_THRESHOLD:
+            mapping[i] = min(range(len(row)), key=lambda j: (-row[j], abs(i - j), j))
+            used.add(mapping[i])
     if len(invoice_descriptions) == len(po_descriptions):
-        return list(range(len(po_descriptions)))
-    mapping: list[Optional[int]] = []
-    for desc in invoice_descriptions:
-        scored = [(fuzz.token_set_ratio((desc or "").lower(), p.lower()), -i) for i, p in enumerate(po_descriptions)]
-        score, neg_index = max(scored, default=(0.0, 0))
-        mapping.append(-neg_index if score >= LINE_MATCH_THRESHOLD else None)
+        for i in range(len(mapping)):
+            if mapping[i] is None and i not in used:
+                mapping[i] = i
+                used.add(i)
     return mapping
 
 
+_DAY_FIRST_DATE = re.compile(r"(\d{1,2})([./])(\d{1,2})\2(\d{4})")
+
+
 def parse_date(text: Any) -> Optional[date]:
+    """ISO date (YYYY-MM-DD), else the day-first numeric forms DD.MM.YYYY and DD/MM/YYYY; None if unreadable."""
+    s = str(text).strip() if text else ""
+    if not s:
+        return None
     try:
-        return date.fromisoformat(str(text)) if text else None
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+    m = _DAY_FIRST_DATE.fullmatch(s)
+    try:
+        return date(int(m[4]), int(m[3]), int(m[1])) if m else None
     except ValueError:
         return None
 
@@ -294,66 +335,191 @@ def naive_account(name: Optional[str], accounts: list[Any]) -> tuple[Optional[An
 # --------------------------------------------------------------------------------------------
 
 
+def to_float(x: Any) -> Optional[float]:
+    """A float, or None when the value is missing or not a number. Every number the gate stores is a float, so a
+    record never depends on whether a seed row came from memory (int) or from the database (float)."""
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def line_amount(line: dict[str, Any]) -> Optional[float]:
+    """The amount of an extracted invoice line: as read, else quantity x unit price; None if neither."""
+    amount, q, unit = to_float(line.get("amount")), to_float(line.get("quantity")), to_float(line.get("unit_price"))
+    if amount is None and q is not None and unit is not None:
+        amount = round(q * unit, 2)
+    return amount
+
+
+def lines_total_mismatch(lines: list[dict[str, Any]], net_total: Optional[float],
+                         currency: Optional[str]) -> Optional[str]:
+    """Why the extracted lines do not add up to the net total (PO_TOLERANCE rule on the net total); None when they
+    do, or when a line amount or the net total is unknown (the line checks report a missing amount)."""
+    amounts = [line_amount(line) for line in lines]
+    if net_total is None or not amounts or any(a is None for a in amounts):
+        return None
+    total, tolerance = round(sum(amounts), 2), price_tolerance(net_total)
+    if abs(round(total - net_total, 2)) <= tolerance:
+        return None
+    return (f"the invoice lines do not add up to the net total: {len(lines)} line{'s' if len(lines) != 1 else ''} "
+            f"for {money(total, currency)} vs a net total of {money(net_total, currency)} "
+            f"(tolerance {tolerance:,.2f})")
+
+
+def _currency_issues(currency: Optional[str], po: PurchaseOrder) -> list[dict[str, Any]]:
+    if currency and currency != po.currency:
+        return [{"kind": "price", "receiver": None,
+                 "text": f"The invoice is in {currency} but PO {po.po_number} is in {po.currency}"}]
+    return []
+
+
+def _po_kind(po: PurchaseOrder) -> str:
+    return "service" if po.category == "service" else "goods"
+
+
+def _received(pl: Any, receipts: list[ProductReceipt]) -> tuple[list[ProductReceipt], float]:
+    rows = [r for r in receipts if r.line_no == pl.line_no]
+    return rows, float(sum(float(r.qty_received) for r in rows))
+
+
+def _receipt_issues(label: str, invoiced: float, pl: Any, po: PurchaseOrder,
+                    receipts: list[ProductReceipt]) -> list[dict[str, Any]]:
+    """Receipt check of one PO line for an invoiced quantity: a service confirmation (services), else goods
+    received for the whole invoiced quantity (a shortfall goes to the receiver)."""
+    if not pl.receipt_required:
+        return []
+    rows, received = _received(pl, receipts)
+    if po.category == "service":
+        if any(r.kind == "service_confirmation" for r in rows):
+            return []
+        return [{"kind": "no_receipt", "receiver": None,
+                 "text": f"no service confirmation is recorded for line {pl.line_no}"}]
+    if received <= 0:
+        return [{"kind": "no_receipt", "receiver": None, "text": f"no goods receipt is recorded for line {pl.line_no}"}]
+    if received < invoiced:
+        return [{"kind": "quantity", "receiver": rows[-1].received_by,
+                 "text": f"{label}: {qty(invoiced)} invoiced but only {qty(received)} received on PO {po.po_number}"}]
+    return []
+
+
+def fully_received(po: PurchaseOrder, receipts: list[ProductReceipt]) -> bool:
+    """Every receipt-required goods line of the PO is received for its full ordered quantity."""
+    return all(_received(pl, receipts)[1] >= float(pl.qty) for pl in po.lines if pl.receipt_required)
+
+
+def _lines_label(nos: list[int], pl: Any) -> str:
+    if len(nos) == 1:
+        return f"Line {nos[0]}"
+    return f"Lines {', '.join(str(n) for n in nos[:-1])} and {nos[-1]} (PO line {pl.line_no})"
+
+
 def check_po_lines(invoice_lines: list[dict[str, Any]], po: PurchaseOrder, receipts: list[ProductReceipt],
                    currency: Optional[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Check invoice lines against PO lines and receipts. Returns (line_checks, issues); an issue is
-    {"kind": "no_receipt" | "quantity" | "price", "text", "receiver"}."""
-    issues: list[dict[str, Any]] = []
-    if currency and currency != po.currency:
-        issues.append({"kind": "price", "receiver": None,
-                       "text": f"The invoice is in {currency} but PO {po.po_number} is in {po.currency}"})
+    {"kind": "no_receipt" | "quantity" | "price", "text", "receiver"}.
+
+    Invoice lines are mapped to PO lines (map_lines); the lines of one PO line (split or repeated) are checked
+    together: summed quantity against the ordered and received quantity, summed amount against the PO unit price
+    x summed quantity. line_checks keeps one row per invoice line, with the verdict of its PO line."""
+    issues = _currency_issues(currency, po)
     po_lines = list(po.lines)
     mapping = map_lines([ln.get("description") for ln in invoice_lines], [pl.description for pl in po_lines])
-    checks = []
+    groups: dict[int, list[int]] = {}
+    for no, index in enumerate(mapping, start=1):
+        if index is not None:
+            groups.setdefault(index, []).append(no)
+    checks: list[dict[str, Any]] = []
     for no, (line, index) in enumerate(zip(invoice_lines, mapping), start=1):
-        check, line_issues = _check_line(no, line, po_lines[index] if index is not None else None, po, receipts)
-        checks.append(check)
-        issues.extend(line_issues)
+        desc = line.get("description")
+        if index is None:
+            checks.append({"line": no, "description": desc, "po_line": None, "kind": _po_kind(po),
+                           "issues": ["price"], "result": "issue"})
+            issues.append({"kind": "price", "receiver": None,
+                           "text": f"Line {no} ('{desc or 'no description'}') is not on PO {po.po_number}"})
+        elif groups[index][0] == no:
+            nos = groups[index]
+            rows, found = _check_po_line(nos, [invoice_lines[n - 1] for n in nos], po_lines[index], po, receipts)
+            checks.extend(rows)
+            issues.extend(found)
+    checks.sort(key=lambda c: c["line"])
     return checks, issues
 
 
-def _check_line(no: int, line: dict[str, Any], pl: Any, po: PurchaseOrder,
-                receipts: list[ProductReceipt]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    desc = line.get("description")
-    check: dict[str, Any] = {"line": no, "description": desc, "po_line": pl.line_no if pl else None,
-                             "kind": "service" if po.category == "service" else "goods"}
-    if pl is None:
-        check.update(issues=["price"], result="issue")
-        return check, [{"kind": "price", "receiver": None, "text": f"Line {no} ('{desc}') is not on PO {po.po_number}"}]
-    q = float(line["quantity"]) if line.get("quantity") is not None else pl.qty
-    unit = line.get("unit_price")
-    amount = line.get("amount") if line.get("amount") is not None else (q * unit if unit is not None else None)
-    expected = round(pl.unit_price * q, 2)
+def _check_po_line(nos: list[int], lines: list[dict[str, Any]], pl: Any, po: PurchaseOrder,
+                   receipts: list[ProductReceipt]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """One PO line and the invoice lines mapped to it. Returns (a row per invoice line, issues)."""
+    ordered, po_unit = float(pl.qty), float(pl.unit_price)
+    values = []  # (quantity, unit price, amount) per invoice line; a missing quantity is the ordered quantity
+    for line in lines:
+        q = to_float(line.get("quantity"))
+        q = ordered if q is None else q
+        unit, amount = to_float(line.get("unit_price")), to_float(line.get("amount"))
+        values.append((q, unit, amount if amount is not None else (round(q * unit, 2) if unit is not None else None)))
+    q_total = sum(v[0] for v in values)
+    amounts = [v[2] for v in values]
+    amount = round(sum(amounts), 2) if all(a is not None for a in amounts) else None
+    expected = round(po_unit * q_total, 2)
     tolerance = price_tolerance(expected)
     variance = round(amount - expected, 2) if amount is not None else None
-    rows = [r for r in receipts if r.line_no == pl.line_no]
-    received = sum(r.qty_received for r in rows)
-    check.update(invoiced_qty=q, ordered_qty=pl.qty, unit_price=unit, po_unit_price=pl.unit_price, amount=amount,
-                 expected=expected, variance=variance, tolerance=tolerance, received_qty=received)
+    label = _lines_label(nos, pl)
     found: list[dict[str, Any]] = []
     if variance is None or abs(variance) > tolerance:
-        shown_unit = unit if unit is not None else (amount / q if amount is not None and q else None)
+        shown_unit = values[0][1] if len(values) == 1 and values[0][1] is not None else (
+            amount / q_total if amount is not None and q_total else None)
         found.append({"kind": "price", "receiver": None, "text": (
-            f"Line {no}: {qty(q)} x {money(shown_unit)} vs PO {po.po_number} at {pl.unit_price:,.2f} "
+            f"{label}: {qty(q_total)} x {money(shown_unit)} vs PO {po.po_number} at {po_unit:,.2f} "
             f"({variance:+,.2f}, tolerance {tolerance:,.2f})" if variance is not None
-            else f"Line {no}: no amount could be read to compare with PO {po.po_number}")})
-    if q > pl.qty:
+            else f"{label}: no amount could be read to compare with PO {po.po_number}")})
+    if q_total > ordered:
         found.append({"kind": "quantity", "receiver": None,
-                      "text": f"Line {no}: {qty(q)} invoiced but only {qty(pl.qty)} ordered on PO {po.po_number}"})
-    if pl.receipt_required and po.category == "service":
-        if not any(r.kind == "service_confirmation" for r in rows):
-            found.append({"kind": "no_receipt", "receiver": None,
-                          "text": f"no service confirmation is recorded for line {pl.line_no}"})
-    elif pl.receipt_required:
-        receiver = rows[-1].received_by if rows else None
-        if received <= 0:
-            found.append({"kind": "no_receipt", "receiver": None,
-                          "text": f"no goods receipt is recorded for line {pl.line_no}"})
-        elif received < q:
-            found.append({"kind": "quantity", "receiver": receiver, "text": (
-                f"Line {no}: {qty(q)} invoiced but only {qty(received)} received on PO {po.po_number}")})
-    check.update(issues=[i["kind"] for i in found], result="issue" if found else "ok")
-    return check, found
+                      "text": f"{label}: {qty(q_total)} invoiced but only {qty(ordered)} ordered on PO {po.po_number}"})
+    found.extend(_receipt_issues(label, q_total, pl, po, receipts))
+    received = _received(pl, receipts)[1]
+    kinds = [i["kind"] for i in found]
+    rows = []
+    for no, line, (q, unit, line_amt) in zip(nos, lines, values):
+        line_expected = round(po_unit * q, 2)
+        rows.append({"line": no, "description": line.get("description"), "po_line": pl.line_no, "kind": _po_kind(po),
+                     "invoiced_qty": q, "ordered_qty": ordered, "unit_price": unit, "po_unit_price": po_unit,
+                     "amount": line_amt, "expected": line_expected,
+                     "variance": round(line_amt - line_expected, 2) if line_amt is not None else None,
+                     "tolerance": price_tolerance(line_expected), "received_qty": received,
+                     "issues": kinds, "result": "issue" if found else "ok"})
+    return rows, found
+
+
+def check_po_header(net_total: Optional[float], po: PurchaseOrder, receipts: list[ProductReceipt],
+                    currency: Optional[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Optional[str]]:
+    """No invoice lines were read: the net total must match the whole PO (unit price x quantity of every line),
+    then every receipt-required line must be received in full (goods) or confirmed (services).
+    Returns (line_checks, issues, why it cannot be decided without the lines, or None)."""
+    issues = _currency_issues(currency, po)
+    if net_total is None:
+        return [], issues, "neither the invoice lines nor the net total could be read"
+    po_total = round(sum(float(pl.unit_price) * float(pl.qty) for pl in po.lines), 2)
+    tolerance = price_tolerance(po_total)
+    variance = round(net_total - po_total, 2)
+    header: dict[str, Any] = {"line": None, "description": "No invoice lines read: net total vs PO total",
+                              "po_line": None, "kind": _po_kind(po), "amount": net_total, "expected": po_total,
+                              "variance": variance, "tolerance": tolerance}
+    if abs(variance) > tolerance:
+        header.update(issues=["price"], result="issue")
+        return [header], issues, (f"the invoice lines could not be read and the net total "
+                                  f"{money(net_total, currency)} does not match the PO total "
+                                  f"{money(po_total, po.currency)} (tolerance {tolerance:,.2f})")
+    header.update(issues=[], result="ok")
+    checks = [header]
+    for pl in po.lines:
+        found = _receipt_issues(f"PO line {pl.line_no} (whole PO invoiced)", float(pl.qty), pl, po, receipts)
+        checks.append({"line": None, "description": pl.description, "po_line": pl.line_no, "kind": _po_kind(po),
+                       "invoiced_qty": float(pl.qty), "ordered_qty": float(pl.qty),
+                       "po_unit_price": float(pl.unit_price), "received_qty": _received(pl, receipts)[1],
+                       "issues": [i["kind"] for i in found], "result": "issue" if found else "ok"})
+        issues.extend(found)
+    return checks, issues, None
 
 
 # --------------------------------------------------------------------------------------------
@@ -394,6 +560,8 @@ class _Gate:
     posted_note: str = ""  # what the commitment step adds to the posting reason
     previous_invoice_id: Optional[str] = None  # kept on a re-run so credit applications stay valid
     decided_on: Optional[datetime] = None
+    po_numbers: list[str] = field(default_factory=list)  # extracted PO numbers, normalised, in printed order
+    invoice_date: Optional[date] = None
 
     def __post_init__(self) -> None:
         self.cfg = SCENARIOS[self.doc.scenario]
@@ -446,6 +614,13 @@ class _Gate:
     def stop(self, step: str) -> None:
         self.stopped_at = self.stopped_at or step
 
+    def same_party(self, earlier: GateDecision) -> bool:
+        """The earlier document is from this document's party: resolved to it, or (when it stopped before vendor
+        resolution, e.g. in human review) found for it from its identifiers."""
+        party = self.details["party_id"]
+        other = earlier.details.get("party_id") or earlier.details.get("lookup_party_id")
+        return bool(party) and other == party
+
 
 # --------------------------------------------------------------------------------------------
 # Steps 1-9
@@ -461,7 +636,7 @@ def _register(g: _Gate) -> None:
         g.step("register", "ok", f"Registered on arrival as {g.doc.doc_id} ({reg:%a %d %b %Y %H:%M}); the ageing "
                                  "clock starts.", lag_days=0)
         return
-    why = "the store forwarded it to AP" if g.doc.channel == "store_mailbox" else "AP opened and keyed it"
+    why = "the store forwarded it to AP" if g.doc.channel == "store_mailbox" else "AP opened ap@ and the quick-fix tool keyed it"
     g.step("register", "info", f"Registered {lag} business day(s) after receipt, on {reg:%a %d %b %Y}, when {why}.",
            lag_days=lag)
 
@@ -487,6 +662,15 @@ def _extract(g: _Gate) -> None:
                reason=f"Extraction not reliable enough on {', '.join(low)} (missing or confidence below "
                       f"{threshold:.2f}): routed to the AP specialist {world.AP_SPECIALIST.name} to verify the "
                       "fields against the document.", cause="Low extraction confidence")
+        return
+    negative = [x for x in (g.details["gross_total"], g.details["net_total"]) if x is not None and x < 0]
+    if g.doc.doc_type == "invoice" and negative:
+        ap = world.AP_SPECIALIST
+        g.fail("extract", "human_review", role=ap.role, owner=ap.name,
+               reason=f"The document is read as an invoice but its total is negative "
+                      f"({money(negative[0], g.details['currency'])}): negative total, probable credit note. Routed "
+                      f"to the AP specialist {ap.name} to confirm the document type.",
+               cause="Negative total: probable credit note")
         return
     lowest = min(confidence(g.data, f) for f in extract.CRITICAL_FIELDS if _present(g.v(f)))
     g.step("extract", "ok", f"Fields read by {model}; every critical field at or above {threshold:.2f} "
@@ -610,7 +794,7 @@ def _legal_entity(g: _Gate) -> None:
 def _duplicate_check(g: _Gate) -> None:
     number, gross = g.details["invoice_number"], g.details["gross_total"]
     if g.cfg["duplicate_check"] == "party_normalised":
-        hit = next((d.doc_id for d in g.earlier if d.details.get("party_id") == g.details["party_id"]
+        hit = next((d.doc_id for d in g.earlier if g.same_party(d)
                     and same_invoice(number, gross, d.details.get("invoice_number"), d.details.get("gross_total"))),
                    None)
         scope = f"from {g.party.canonical_name if g.party else 'this supplier'} on any account"
@@ -645,7 +829,7 @@ def _credit_note(g: _Gate) -> None:
     ref = g.v("referenced_invoice_number")
     if g.cfg["credit_matching"] == "party":
         ref_norm = normalise_invoice_number(ref)
-        target = next((d for d in g.earlier if ref_norm and d.details.get("party_id") == g.details["party_id"]
+        target = next((d for d in g.earlier if ref_norm and g.same_party(d)
                        and d.details.get("doc_type") != "credit_note"
                        and d.details.get("invoice_number_norm") == ref_norm), None)
         applied_to = (target.details.get("invoice_id") or target.doc_id) if target else None
@@ -677,11 +861,12 @@ def _credit_note(g: _Gate) -> None:
 
 
 def _purchase_order(g: _Gate) -> Optional[PurchaseOrder]:
-    number = g.details["po_number"]
-    if not number:
+    """The first extracted PO number that exists in the scenario's ERP (both sides normalised), or None."""
+    if not g.po_numbers:
         return None
-    return g.session.scalar(select(PurchaseOrder).where(PurchaseOrder.scenario == g.doc.scenario,
-                                                        PurchaseOrder.po_number == number))
+    pos = {normalise_po_number(po.po_number): po for po in g.session.scalars(select(PurchaseOrder).where(
+        PurchaseOrder.scenario == g.doc.scenario).order_by(PurchaseOrder.po_number))}
+    return next((pos[n] for n in g.po_numbers if n in pos), None)
 
 
 def _commitment_match(g: _Gate) -> None:
@@ -694,16 +879,29 @@ def _commitment_match(g: _Gate) -> None:
         _match_without_po(g)
 
 
+def _po_not_found(g: _Gate) -> None:
+    """None of the quoted PO numbers is in the ERP: there is no PO, so no requester can be derived; the AP
+    specialist gets the correct PO from the supplier (a PO of another supplier goes to its requester instead)."""
+    ap, numbers = world.AP_SPECIALIST, g.po_numbers
+    if len(numbers) == 1:
+        missing, cause = (f"PO {numbers[0]} quoted on the invoice is not in the ERP",
+                          f"PO {numbers[0]} quoted on the invoice was never keyed in the ERP")
+    else:
+        missing = f"None of the PO numbers quoted on the invoice ({', '.join(numbers)}) is in the ERP"
+        cause = f"None of the PO numbers quoted on the invoice ({', '.join(numbers)}) was keyed in the ERP"
+    g.fail("commitment_match", "po_not_found", role=ap.role, owner=ap.name, po=numbers[0],
+           reason=f"{missing}, so no requester can be derived: AP gets the correct PO from the supplier (routed to "
+                  f"the AP specialist {ap.name}).", cause=cause)
+
+
 def _match_po(g: _Gate) -> None:
-    number, ap = g.details["po_number"], world.AP_SPECIALIST
+    ap = world.AP_SPECIALIST
     g.details["commitment"] = "none"
     po = _purchase_order(g)
     if po is None:
-        g.fail("commitment_match", "po_not_found", role=ap.role, owner=ap.name, po=number,
-               reason=f"PO {number} quoted on the invoice is not in the ERP: routed to the AP specialist {ap.name} "
-                      "to get the correct PO from the supplier.",
-               cause=f"PO {number} quoted on the invoice was never keyed in the ERP")
+        _po_not_found(g)
         return
+    number = g.details["po_number"] = po.po_number
     po_account = g.session.scalar(select(VendorAccount).where(VendorAccount.scenario == g.doc.scenario,
                                                               VendorAccount.account_id == po.vendor_account_id))
     same_vendor = po.vendor_account_id == g.account.account_id or bool(
@@ -723,15 +921,26 @@ def _match_po(g: _Gate) -> None:
     g.details["commitment"] = "po"
     receipts = list(g.session.scalars(select(ProductReceipt).where(
         ProductReceipt.scenario == g.doc.scenario, ProductReceipt.po_number == number).order_by(ProductReceipt.id)))
-    lines = g.v("lines") or [{"description": None, "quantity": None, "unit_price": None,
-                              "amount": g.details["net_total"]}]
-    checks, issues = check_po_lines(lines, po, receipts, g.details["currency"])
+    lines = [ln for ln in (g.v("lines") or []) if isinstance(ln, dict)]
+    net, currency = g.details["net_total"], g.details["currency"]
+    if lines:
+        checks, issues = check_po_lines(lines, po, receipts, currency)
+        unreadable = lines_total_mismatch(lines, net, currency)
+        lines_ok = f"{len(lines)} line{'s' if len(lines) != 1 else ''} within tolerance"
+    else:
+        checks, issues, unreadable = check_po_header(net, po, receipts, currency)
+        lines_ok = "no invoice lines read, net total within tolerance of the PO total"
     g.details["line_checks"] = checks
+    if unreadable:
+        g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name, po=number,
+               reason=f"PO {number}: {unreadable}. Routed to the AP specialist {ap.name} to check the invoice lines "
+                      "against the document.", cause=f"PO {number}: {unreadable}")
+        return
     if issues:
         _route_po_issues(g, po, issues)
         return
-    lines_ok = f"{len(checks)} line{'s' if len(checks) != 1 else ''} within tolerance"
-    what = (f"3-way match on PO {number}: {lines_ok} and received in full" if po.category == "goods"
+    received = "received in full" if fully_received(po, receipts) else "the invoiced quantities received"
+    what = (f"3-way match on PO {number}: {lines_ok} and {received}" if po.category == "goods"
             else f"PO {number} + service confirmation: {lines_ok}")
     g.posted_note = what
     g.step("commitment_match", "ok", f"{what}.", commitment="po", po=number)
@@ -761,27 +970,45 @@ def _route_po_issues(g: _Gate, po: PurchaseOrder, issues: list[dict[str, Any]]) 
            reason=f"{issue['text']}: {kind}, routed to the buyer {po.buyer_name}.", cause=issue["text"], **common)
 
 
-def _find_contract(g: _Gate) -> tuple[Optional[Contract], str]:
+def _period_claimed(g: _Gate, contract: Contract, period: str) -> Optional[str]:
+    """The earlier document that already claims the contract for the period: one matched to it, or one of the same
+    party and billed entity, without a PO, that stopped before the commitment match (e.g. in human review)."""
+    for d in g.earlier:
+        det = d.details
+        if det.get("contract_period") != period:
+            continue
+        if det.get("contract_id") == contract.contract_id:
+            return d.doc_id
+        if (det.get("commitment") is None and det.get("doc_type") != "credit_note" and not det.get("po_number")
+                and det.get("bill_to_entity") == contract.legal_entity_code and g.same_party(d)):
+            return d.doc_id
+    return None
+
+
+def _find_contract(g: _Gate) -> tuple[Optional[Contract], str, Optional[str]]:
     """A recurring contract of the party in the billed entity whose monthly range covers the net amount and
-    whose period is not invoiced yet. Returns (contract, why no contract matched)."""
+    whose period is not invoiced yet. Returns (contract, why no contract matched, what could not be read when the
+    match needs a human check: the net amount, or the invoice date of a contract whose range fits)."""
     contracts = list(g.session.scalars(select(Contract).where(
         Contract.scenario == g.doc.scenario, Contract.party_id == g.details["party_id"],
         Contract.legal_entity_code == g.details["bill_to_entity"], Contract.recurring.is_(True))))
     if not contracts:
-        return None, "no recurring contract"
-    amount = g.details["net_total"] if g.details["net_total"] is not None else g.details["gross_total"]
-    period = g.details["contract_period"]
+        return None, "no recurring contract", None
+    amount, period = g.details["net_total"], g.details["contract_period"]
+    if amount is None:
+        return None, "", "the net amount could not be read"
     why = ""
     for c in contracts:
-        if amount is None or not c.expected_monthly_min <= amount <= c.expected_monthly_max:
+        if not c.expected_monthly_min <= amount <= c.expected_monthly_max:
             why = (f"{money(amount, g.details['currency'])} is outside the {c.expected_monthly_min:,.2f}–"
                    f"{c.expected_monthly_max:,.2f} monthly range of contract {c.contract_id}")
-        elif any(d.details.get("contract_id") == c.contract_id and d.details.get("contract_period") == period
-                 for d in g.earlier):
-            why = f"contract {c.contract_id} is already invoiced for {period}"
+        elif period is None:  # an unknown period never matches, nor collides with, another one
+            return None, "", "the invoice date could not be read"
+        elif claimed := _period_claimed(g, c, period):
+            why = f"contract {c.contract_id} is already invoiced for {period} ({claimed})"
         else:
-            return c, ""
-    return None, why
+            return c, "", None
+    return None, why, None
 
 
 def _match_without_po(g: _Gate) -> None:
@@ -789,10 +1016,17 @@ def _match_without_po(g: _Gate) -> None:
     gross, currency, entity = g.details["gross_total"], g.details["currency"], g.details["bill_to_entity"]
     why = "no contract check in the as-is process"
     if g.cfg["contract_matching"]:
-        contract, why = _find_contract(g)
+        contract, why, unreadable = _find_contract(g)
+        if unreadable:
+            ap = world.AP_SPECIALIST
+            supplier = g.party.canonical_name if g.party else "the supplier"
+            g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name,
+                   reason=f"No PO, and {unreadable}, so the invoice cannot be checked against the recurring contract "
+                          f"of {supplier}: routed to the AP specialist {ap.name} to read it from the document.",
+                   cause=f"No PO and {unreadable}")
+            return
         if contract is not None:
-            amount = g.details["net_total"] if g.details["net_total"] is not None else gross
-            period = parse_date(g.v("invoice_date"))
+            amount, period = g.details["net_total"], g.invoice_date
             g.details.update(commitment="contract", contract_id=contract.contract_id)
             g.posted_note = (f"No PO needed: recurring contract {contract.contract_id} covers "
                              f"{f'{period:%B %Y}' if period else 'the period'} (net {money(amount, currency)} inside the "
@@ -804,7 +1038,7 @@ def _match_without_po(g: _Gate) -> None:
     requester = world.PEOPLE[requester_key] if requester_key else None
     limit = g.cfg["doa_auto_approve_limit"]
     known = g.details["resolution_method"] not in (None, "created")
-    if limit is not None and gross is not None and gross < limit and known:
+    if limit is not None and gross is not None and 0 < gross < limit and known:
         g.details.update(doa_auto_approved=True, requester_name=requester.name if requester else None)
         informed = f"requester {requester.name} informed" if requester else "no requester on file"
         g.posted_note = (f"Non-PO invoice of {money(gross, currency)} from a known supplier, under the "
@@ -902,15 +1136,17 @@ def _post(g: _Gate) -> None:
                       and e.details.get("true_party_id") == d["true_party_id"]
                       and same_invoice(d["invoice_number"], d["gross_total"], e.details.get("invoice_number"),
                                        e.details.get("gross_total"))), None)
-    invoice_date = parse_date(g.v("invoice_date"))
+    invoice_date = g.invoice_date
     terms = d["terms_days"]
     due = invoice_date + timedelta(days=terms) if invoice_date and terms is not None else None
     gross = d["gross_total"] or 0.0
     total = -abs(gross) if g.is_credit_note else gross
     status = {"applied": "credit_applied", "unapplied": "unapplied_credit"}.get(d["credit_status"], "pending_payment")
     d.update(posted=True, invoice_id=_next_invoice_id(g), posted_entity=acc.legal_entity_code,
-             wrong_entity_posting=acc.legal_entity_code != d["bill_to_entity"], duplicate_posting=duplicate is not None,
-             duplicate_of=d["duplicate_of"] or duplicate,
+             posted_on=posted_on.isoformat(),
+             # An unmapped bill-to is unknown, not a wrong entity.
+             wrong_entity_posting=d["bill_to_entity"] is not None and acc.legal_entity_code != d["bill_to_entity"],
+             duplicate_posting=duplicate is not None, duplicate_of=d["duplicate_of"] or duplicate,
              terms_variance_paid=bool(d["terms_source"] == "invoice" and d["agreed_terms_days"] is not None
                                       and terms != d["agreed_terms_days"]))
     variance = d["invoice_terms_days"] is not None and d["agreed_terms_days"] is not None and (
@@ -919,7 +1155,7 @@ def _post(g: _Gate) -> None:
         scenario=g.doc.scenario, invoice_id=d["invoice_id"], doc_id=g.doc.doc_id, legal_entity_code=acc.legal_entity_code,
         vendor_account_id=acc.account_id, invoice_number=(d["invoice_number"] or "")[:40], invoice_date=invoice_date,
         due_date=due, total=total, currency=(d["currency"] or g.entities[acc.legal_entity_code].currency)[:3],
-        terms_days=terms, terms_source=d["terms_source"] or g.cfg["terms_source"],
+        terms_days=terms, terms_source=d["terms_source"] or "",  # no terms (credit note): no source (NOT NULL)
         po_number=d["po_number"] if d["commitment"] == "po" else None, posted_on=posted_on, status=status,
         flags={"wrong_entity": d["wrong_entity_posting"], "duplicate_of": d["duplicate_of"],
                "terms_variance": variance, "doa_auto_approved": d["doa_auto_approved"]}))
@@ -997,26 +1233,44 @@ def _delete_results(session: Session, doc: InboundDocument) -> Optional[str]:
     return previous
 
 
+def net_amount(data: dict[str, Any]) -> Optional[float]:
+    """The net total as read, else gross - tax (both read), else the sum of the line amounts; None if unknown."""
+    net = to_float(value(data, "net_total"))
+    if net is not None:
+        return net
+    gross, tax = to_float(value(data, "gross_total")), to_float(value(data, "tax_total"))
+    if gross is not None and tax is not None:
+        return round(gross - tax, 2)
+    amounts = [line_amount(ln) if isinstance(ln, dict) else None for ln in (value(data, "lines") or [])]
+    return round(sum(amounts), 2) if amounts and all(a is not None for a in amounts) else None
+
+
 def _prepare(g: _Gate) -> None:
-    """Fill the details that come straight from the extraction and the seed (bill-to, true party, PO number)."""
+    """Fill the details that come straight from the extraction and the seed (bill-to, true party, lookup party,
+    PO numbers, invoice date, net amount)."""
     scenario, d = g.doc.scenario, g.details
     g.entities = {e.code: e for e in g.session.scalars(select(LegalEntity).where(LegalEntity.scenario == scenario))}
     if not g.data:
         return
-    po_numbers = [str(p).strip() for p in (g.v("po_numbers") or []) if p and str(p).strip()]
-    gross, net = g.v("gross_total"), g.v("net_total")
+    g.po_numbers = list(dict.fromkeys(n for n in map(normalise_po_number, g.v("po_numbers") or []) if n))
+    g.invoice_date = parse_date(g.v("invoice_date"))
     d.update(supplier_name=g.v("supplier_name"), invoice_number=g.v("invoice_number"),
              invoice_number_norm=normalise_invoice_number(g.v("invoice_number")) or None,
-             gross_total=float(gross) if gross is not None else None,
-             net_total=float(net) if net is not None else None, currency=g.v("currency"),
-             po_number=po_numbers[0] if po_numbers else None,
-             contract_period=contract_period(parse_date(g.v("invoice_date"))) if not g.is_credit_note else None,
+             gross_total=to_float(g.v("gross_total")), net_total=net_amount(g.data),
+             currency=normalise_currency(g.v("currency")),
+             po_number=g.po_numbers[0] if g.po_numbers else None,
+             invoice_date=g.invoice_date.isoformat() if g.invoice_date else None,
+             contract_period=contract_period(g.invoice_date) if not g.is_credit_note else None,
              bill_to_entity=map_bill_to(g.v("bill_to_name"), g.v("bill_to_vat_id"),
                                         [(e.code, e.name, e.vat_id) for e in g.entities.values()]))
     parties = list(g.session.scalars(select(Party).where(Party.scenario == scenario)))
     linked = list(g.session.scalars(select(VendorAccount).where(VendorAccount.scenario == scenario,
                                                                 VendorAccount.party_id.is_not(None))))
     d["true_party_id"] = true_party(g.data, parties, linked)
+    if g.cfg["vendor_resolution"] == "party_identifiers":  # without side effects, whatever step it stops at
+        active = list(g.session.scalars(select(VendorAccount).where(
+            VendorAccount.scenario == scenario, VendorAccount.status == "active").order_by(VendorAccount.account_id)))
+        d["lookup_party_id"] = find_party(g.data, active, parties)[0]
 
 
 def _touchless(g: _Gate) -> bool:
@@ -1115,8 +1369,19 @@ def run_scenario(session: Session, scenario: str, *, allow_api: bool = False, lo
 
 def rerun_document(session: Session, doc: InboundDocument, *, allow_api: bool = False,
                    log: Optional[Log] = None) -> GateDecision:
-    """Delete the document's decision, posting and credit application and process it again
-    (extracting it first if it has no extraction yet)."""
-    if doc.extraction is None:
-        extract.extract_documents(session, [doc], allow_api=allow_api)
-    return process(session, doc, log=log or print)
+    """Process the document again: its decision, posting and credit application are replaced. Every earlier
+    document of the scenario (processing order) that has no decision yet is processed first, in order, so the
+    duplicate, credit-note and contract checks see them. Documents without an extraction are extracted first.
+    Returns the document's decision."""
+    emit = log or print
+    decided = set(session.scalars(select(GateDecision.doc_id).where(GateDecision.scenario == doc.scenario)))
+    key = order_key(doc)
+    pending = sorted((d for d in session.scalars(select(InboundDocument).where(
+        InboundDocument.scenario == doc.scenario, InboundDocument.doc_id != doc.doc_id))
+        if d.doc_id not in decided and order_key(d) < key), key=order_key)
+    missing = [d for d in [*pending, doc] if d.extraction is None]
+    if missing:
+        extract.extract_documents(session, missing, allow_api=allow_api)
+    for earlier in pending:
+        process(session, earlier, log=emit)
+    return process(session, doc, log=emit)

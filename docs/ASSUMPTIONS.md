@@ -184,7 +184,7 @@ The requester gave the supplier a PO number, but for most POs the order was neve
 ## 5. Intake and registration
 
 - Two simulated mailboxes (`world.AP_MAILBOX`, `world.STORE_MAILBOX`): **ap@velox.com** (channel `ap_mailbox`, documents 1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14) and **store.berlin01@velox.com** (channel `store_mailbox`, documents 2, 8, 10). Real email intake is out of scope; `POST /intake/webhook` is the hook for it.
-- **To-be**: every document is registered on arrival (`registered_on = received_on`, delay 0), because there is one intake channel and the gate registers documents itself.
+- **To-be**: every document is registered on arrival (`registered_on = received_on`, delay 0): both mailboxes feed one intake step and the gate registers documents itself, including those sent to the store.
 - **As-is**: ap@ documents are registered when AP opens and keys them, **+1 business day**; store-mailbox documents after the store forwards them, **+7 business days** (`sim.registration_delay_days`, values from `sim.DURATIONS`). In the app, as-is documents show "Not registered yet" with the expected date from `sim.registration_date`.
 
 | No | Mailbox | Received | Registered as-is | Business days |
@@ -213,7 +213,7 @@ Lookup table `sim.DURATIONS` (business days). The as-is values are calibrated so
 | Scenario | Activity | Business days | Key in `sim.DURATIONS` | Reasoning |
 |---|---|---|---|---|
 | As-is | Store mailbox forwarding to AP | 7 | `store_forwarding` | Store staff forward supplier invoices to AP when they get to them, not on a schedule |
-| As-is | AP opens ap@ and keys the invoice | 1 | `ap_open_and_key` | Manual keying the next business day |
+| As-is | AP opens ap@ and the quick-fix tool keys the invoice | 1 | `ap_open_and_key` | AP picks up the mailbox the next business day |
 | As-is | Email loop (untracked follow-up) | 8–16, mean 12 | `email_loop_min`, `email_loop_max` | About 45% of invoices in the case need email back-and-forth to find a PO, a receipt or an approver, with no owner and no SLA |
 | As-is | Email approval | 4 | `email_approval` | Approval by email to the cost-centre owner |
 | As-is | Posting | 1 | `posting` | Keyed into the ERP the next business day |
@@ -227,7 +227,7 @@ Lookup table `sim.DURATIONS` (business days). The as-is values are calibrated so
 - **Email loop**: `sim.email_loop_days(key)` draws a whole number of days uniformly from 8 to 16 with `random.Random("2026:<key>")`, seed `sim.EMAIL_LOOP_SEED = 2026`. The same document always gets the same length; over 500 keys the mean is about 12 (checked in `tests/test_sim.py`).
 - **To-be**: touchless documents take 0 days; exceptions take their SLA (1–2 days in the sample, assumed met), plus 1 day of workflow approval for a non-PO invoice above the delegation-of-authority limit.
 - **Cycle per document** (`sim.cycle_breakdown`, `sim.cycle_days`, stored in `gate_decision.simulated_days`): as-is "matched" = (store forwarding 7 if the store mailbox) + AP keying 1 + posting 1; as-is "email loop" = the same + the seeded loop + email approval 4; to-be "touchless" = 0; to-be "exception" = SLA (+ approval 1 where needed).
-- **Exception cockpit snapshot** (`sim.cockpit_as_of`): the queue is shown as it stands at the close (17:00) of the business day on which its last item was registered (to-be: Mon 5 Oct 2026, when document 12 arrives). Ages are counted to that moment, so B-05 is due that day and the other exceptions are within their SLA; the simulation itself assumes every SLA is met.
+- **Exception cockpit snapshot** (`sim.cockpit_as_of`): the queue is shown as it stands at the close (17:00) of the business day on which its last item was registered (to-be: Mon 5 Oct 2026, when document 12 arrives). Ages are counted to that moment, so B-05 and B-08 are due that day and B-06 and B-12 are still within their SLA; the simulation itself assumes every SLA is met. The as-is email-loop bucket lists all nine documents with their days in the loop and posting date.
 - **What the comparison shows** (decision of 24 Sep 2026): the durations are **not** tuned to make the sample average equal the case's 26 days. The KPIs show both, labelled: the **sample average** (as-is about 13 business days, because the 14 documents include several clean PO invoices that the quick-fix tool posted in 2 days; to-be 0.5) and the **reference path "non-PO invoice sent to a store"** (as-is 7 + 1 + 12 + 4 + 1 = 25, the case's 26; to-be 2 + 1 = 3, or 0 under the DoA limit). A finance audience can see why the sample differs from the population.
 
 ## 7. Extraction
@@ -249,7 +249,7 @@ Lookup table `sim.DURATIONS` (business days). The as-is values are calibrated so
 | Vendor resolution (as-is, naive) | First active account (lowest account ID) whose display name equals the printed supplier name (case-insensitive, trimmed, not normalised); else the first active account with name similarity ≥ 90; else a new account is created. VAT ID and IBAN are not used | brief section 8 ("pick the first name hit"); checked in `tests/test_seed.py` | Models the quick-fix tool's name lookup. It lands document 2 on V-000117, document 4 on V-000119 and document 11 on V-000104 (VDE) |
 | Name similarity | rapidfuzz `token_set_ratio` ≥ 90 on normalised names | `normalize.NAME_SIMILARITY_THRESHOLD` | All D1 spelling duplicates score 91 or more against their supplier; names of different suppliers in the seed score 44 or less |
 | Name normalisation | Lowercase, punctuation removed, legal suffixes stripped: AG, BV, GmbH, Inc, Limited, LLC, Ltd, OHG, SA, SARL, SAS, SL | `normalize.LEGAL_SUFFIXES` | The brief's list plus SAS, SA, LLC and Limited, which appear in the seed or are common |
-| Duplicate invoice | Same party + normalised invoice number + gross total within 1% | brief section 8; `normalize.normalise_invoice_number` | Normalisation removes spaces, punctuation, leading zeros and words such as COPY, REMINDER, DUPLICATE, KOPIE, DUPLICATA |
+| Duplicate invoice | Same party + normalised invoice number + gross total within 1%. The party of an earlier document counts even if that document stopped at human review (`lookup_party_id`) | brief section 8; `normalize.normalise_invoice_number` | Normalisation removes spaces, punctuation, leading zeros, a leading label ("Invoice no.", "Rechnung Nr.", "Facture n°") and words such as COPY, REMINDER, DUPLICATE, KOPIE, DUPLICATA, COPIE, COPIA |
 | Recurring contract match | No PO, recurring contract in the bill-to entity, net amount inside the monthly range, period not yet invoiced | brief section 8; `world.CONTRACTS` | Contract spend does not need a PO per month |
 | Delegation of authority | Non-PO invoice under 500 (gross, invoice currency) from a known vendor is auto-approved; the requester is informed | brief section 8; `gate.SCENARIOS` (`doa_auto_approve_limit`) | Low-value spend; document 10 is 180.00 gross (151.26 net). Gross, because it is the amount that will be paid |
 | Non-PO requester | Kaffee & Co (VDE) -> Paul Neumann, manager of store Berlin 01 and owner of its cost centre DE-STR-B01 | `world.NON_PO_REQUESTERS` | The brief gives no requester for non-PO spend; the store that orders the coffee owns it |
@@ -258,7 +258,24 @@ Lookup table `sim.DURATIONS` (business days). The as-is values are calibrated so
 | Payment terms | To-be takes terms from the master; different terms on the invoice raise the info flag `terms_variance` | brief section 8 | Documents 1, 2 and 6 print terms different from the agreed terms |
 | Confidence threshold | 0.80 on critical fields | `config.CONFIDENCE_THRESHOLD` | See section 7 |
 
-Exception types, owners and SLAs (brief section 9; single source of truth `app/taxonomy.py`). Routing of the sample documents: document 5 -> requester Jonas Weber (service not confirmed); document 6 -> buyer Sofia Brandt (price); document 12 -> receiver Tim Koch first (confirm whether the 20 missing panels arrived), then buyer Sofia Brandt (credit from the supplier) — both readings of the brief (decision of 24 Sep 2026); document 8 -> AP specialist Marco Ruiz; document 2 -> blocked, Marco Ruiz informed.
+### Robustness to real extractions
+
+The fixtures are perfect ground truth; a real Gemini extraction can differ. These rules keep a plausible reading error from flipping an outcome silently (`app/gate.py`, tested in `tests/test_gate.py`):
+
+| Situation | Rule |
+|---|---|
+| PO number printed as "PO 4500117", "P.O. #4500117" or with several numbers | `normalize.normalise_po_number` strips labels and separators; every quoted PO is tried and the first that exists in the ERP is used |
+| Invoice lines in another order, split or repeated | Lines are mapped to PO lines by description first (position only as a tie-break); quantities and amounts are summed per PO line before the tolerance, quantity and receipt checks |
+| Lines that do not add up to the net total (e.g. a line not read) | To-be: human review ("the invoice lines do not add up to the net total"); as-is: email loop. Never posted touchless |
+| No lines read | Header-level check: net total against the PO total within tolerance, and every PO line received or confirmed; otherwise human review with a readable reason |
+| Net total missing | Derived as gross − tax, else the sum of the lines; if still unknown, a contract match is not attempted (human review) |
+| Currency written as "eur", "€", "$" or "£" | Normalised to the ISO code before comparing with the PO and posting |
+| Dates printed day-first (30.09.2026, 30/09/2026) | Accepted; an unreadable invoice date never matches a contract period (human review) |
+| Bill-to name with the store appended ("Velox Retail GmbH Store Berlin 01") | Mapped by the longest whole-word prefix that names exactly one Velox entity; an unknown bill-to is never counted as a wrong-entity posting |
+| An invoice with a negative total | To-be: human review ("negative total, probable credit note"); the DoA auto-approval needs 0 < gross < 500 |
+| Values read back from the database or from memory | Every number stored in a decision is a float, so a re-run gives byte-identical results |
+
+Exception types, owners and SLAs (brief section 9; single source of truth `app/taxonomy.py`). Routing of the sample documents: document 5 -> requester Jonas Weber (service not confirmed); document 6 -> buyer Sofia Brandt (price); document 12 -> receiver Tim Koch first (confirm whether the 20 missing panels arrived), then buyer Sofia Brandt (credit from the supplier) — both readings of the brief (decision of 24 Sep 2026); document 8 -> AP specialist Marco Ruiz; document 2 -> blocked, the supplier gets an automatic status reply and Marco Ruiz is informed. When a printed PO number does not exist in the ERP (`po_not_found`), no requester can be derived, so the AP specialist gets the correct PO from the supplier; a PO of another supplier goes to its requester.
 
 | Type | Label | Owner | SLA (business days) |
 |---|---|---|---|
@@ -286,15 +303,15 @@ The same definitions as the case deck (brief section 12). Each KPI shows its for
 | Accounts with VAT ID and IBAN | Accounts with both identifiers ÷ accounts | Upstream |
 | Accounts with agreed terms | Accounts whose terms equal the recurring contract's (else the supplier's agreed terms) ÷ accounts | Upstream |
 | Registration lag | Mean business days from receipt to registration | Upstream |
-| Touchless rate | Documents fully handled with no human step (posted without exception, blocked duplicate with an automatic status reply, credit note applied) ÷ documents | Downstream |
+| Touchless rate | Documents fully handled with no human step (posted without exception, blocked duplicate with an automatic status reply, credit note applied) ÷ documents. As-is "touchless" means no exception follow-up after intake; the intake itself is delayed (section 5) | Downstream |
 | Exception rate | Documents with an exception or human review (as-is: the untracked email loop) ÷ documents; also by type | Downstream |
 | Duplicates blocked / duplicate postings | Blocked duplicates; postings of an invoice posted more than once (as-is: documents 1 and 2 are **2 postings of 1 invoice**) | Downstream |
 | Credit notes applied / unapplied | From the credit-note application of each credit note | Downstream |
 | Wrong-entity postings | Postings to a legal entity other than the one billed | Downstream |
 | Average cycle | Mean simulated business days per document; also the mean over documents with a human step, and the reference path "non-PO invoice sent to a store" (section 6) | Downstream |
-| Simulated cash leakage | Amount of the repeated postings of duplicated invoices + unapplied credit notes; plus the **count** of invoices paid on invoice terms that differ from the agreed terms (a count only, as the brief asks) | Downstream |
+| Simulated cash leakage | Amount of the repeated postings of duplicated invoices + unapplied credit notes; plus the **count** of postings on invoice terms that differ from the agreed terms (a count only, as the brief asks) | Downstream |
 
-Expected values for the 14 documents (checked against `tests/golden.yaml`): to-be touchless 10 of 14 (71.4%), 4 exceptions, 1 duplicate blocked, 1 credit note applied, cash leakage 0.00; as-is touchless 5 of 14 (35.7%), 9 documents in the email loop, 2 postings of 1 duplicated invoice, 1 unapplied credit note, 2 wrong-entity postings (documents 8 and 11), 3 invoices paid on non-agreed terms (documents 1, 2, 6), cash leakage 29,646.00 EUR (27,846.00 + 1,800.00).
+Expected values for the 14 documents (checked against `tests/golden.yaml`): to-be touchless 10 of 14 (71.4%), 4 exceptions, 1 duplicate blocked, 1 credit note applied, cash leakage 0.00; as-is touchless 5 of 14 (35.7%), 9 documents in the email loop, 2 postings of 1 duplicated invoice, 1 unapplied credit note, 2 wrong-entity postings (documents 8 and 11), 3 postings on non-agreed terms (documents 1, 2 and 6; 1 and 2 are the same invoice), cash leakage 29,646.00 EUR (27,846.00 + 1,800.00).
 
 ## 10. The 14 sample documents
 

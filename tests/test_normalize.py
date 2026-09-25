@@ -12,9 +12,11 @@ from app.normalize import (
     NAME_SIMILARITY_THRESHOLD,
     name_similarity,
     names_match,
+    normalise_currency,
     normalise_iban,
     normalise_invoice_number,
     normalise_name,
+    normalise_po_number,
     normalise_vat,
 )
 
@@ -155,19 +157,90 @@ def test_printed_bank_details_normalise_to_the_stored_value(party: world.PartySp
     ("nwl-2026-00913 copy", "NWL2026913"),
     ("DUPLICATE NWL-2026-00913", "NWL2026913"),
     ("KOPIE NWL-2026-00913", "NWL2026913"),
+    ("COPIE NWL-2026-00913", "NWL2026913"),  # French and Spanish / Italian copy wording
+    ("NWL-2026-00913 copia", "NWL2026913"),
     ("INV-2026-0457", "INV2026457"),
     ("2026/117", "2026117"),
     ("AD-2026/0788", "AD2026788"),
     ("0000", "0"),
     (None, ""),
     ("", ""),
+    # An explicit leading label is stripped; the label word itself is required.
+    ("Invoice no. NWL-2026-00913", "NWL2026913"),
+    ("INVOICE # NWL-2026-00913", "NWL2026913"),
+    ("Invoice number: SS-100482", "SS100482"),
+    ("Rechnung Nr. 2026/117", "2026117"),
+    ("Facture N° CSF-26-10355", "CSF2610355"),
+    ("Factura nº AD-2026/0788", "AD2026788"),
+    ("Copy of invoice NWL-2026-00913", "NWL2026913"),
+    ("Invoice NOVA-12", "NOVA12"),  # 'NO' is a label only as a whole word
+    ("INVOICES-2026-1", "INVOICES20261"),  # not the label word
 ])
 def test_normalise_invoice_number(raw, expected: str) -> None:
     assert normalise_invoice_number(raw) == expected
 
 
+def test_a_labelled_sample_invoice_number_normalises_like_the_bare_number() -> None:
+    for spec in world.DOCUMENTS:
+        number = spec.invoice_number
+        assert normalise_invoice_number(f"Invoice no. {number}") == normalise_invoice_number(number)
+        assert normalise_invoice_number(f"COPIE {number}") == normalise_invoice_number(number)
+    assert normalise_invoice_number("INV-2026-0457") != normalise_invoice_number("2026-0457")  # 'INV' is kept
+
+
+# --------------------------------------------------------------------------------------------
+# PO numbers and currencies (control gate, commitment match)
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("4500117", "4500117"),
+    ("PO 4500117", "4500117"),
+    ("po-4500117", "4500117"),
+    (" 4500 117 ", "4500117"),
+    ("PO4500117", "4500117"),
+    ("P.O. 4500117", "4500117"),
+    ("P.O. #4500117", "4500117"),
+    ("PO#4500117", "4500117"),
+    ("PO No. 4500117", "4500117"),
+    ("Your PO: 4500117", "4500117"),
+    ("Purchase order no. 4500117", "4500117"),
+    ("Order #4500117", "4500117"),
+    ("#4500117", "4500117"),
+    ("N° 4500117", "4500117"),
+    ("0045001", "0045001"),  # purely numeric: the digits are kept as printed
+    ("POL-123", "POL123"),  # 'PO' is a label only as a whole word
+    (4500117, "4500117"),
+    (None, ""),
+    ("", ""),
+])
+def test_normalise_po_number(raw, expected: str) -> None:
+    assert normalise_po_number(raw) == expected
+
+
+def test_seed_po_numbers_are_already_normalised() -> None:
+    assert all(normalise_po_number(po.po_number) == po.po_number for po in world.PURCHASE_ORDERS)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("EUR", "EUR"),
+    ("eur", "EUR"),
+    (" Usd ", "USD"),
+    ("€", "EUR"),
+    ("$", "USD"),
+    ("US$", "USD"),
+    ("£", "GBP"),
+    ("euro", None),  # only 3-letter codes
+    ("EU", None),
+    ("", None),
+    (None, None),
+])
+def test_normalise_currency(raw, expected) -> None:
+    assert normalise_currency(raw) == expected
+
+
 def test_only_the_nordwind_resend_shares_an_invoice_number() -> None:
-    """Among the 12 sample documents, documents 1 and 2 are the only normalised duplicate."""
+    """Among the 14 sample documents, documents 1 and 2 are the only normalised duplicate."""
     counts = Counter(normalise_invoice_number(d.invoice_number) for d in world.DOCUMENTS)
     duplicates = {number for number, n in counts.items() if n > 1}
     assert duplicates == {normalise_invoice_number(world.DOCUMENT_BY_NO[1].invoice_number)}

@@ -30,6 +30,7 @@
   <h2>No documents in the mailboxes of {{ scenario_label }}</h2>
   <p>Load the sample supplier documents into ap@ and the Berlin store mailbox to start.</p>
   <form method="post" action="/documents/load">
+    <input type="hidden" name="scenario" value="{{ scenario }}">
     <button type="submit">Load sample documents</button>
   </form>
 </article>

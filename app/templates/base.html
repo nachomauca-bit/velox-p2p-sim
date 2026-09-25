@@ -22,15 +22,19 @@
       {% endfor %}
     </div>
 
+    {# Each action carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
     <div class="actions">
       <form method="post" action="/documents/load">
+        <input type="hidden" name="scenario" value="{{ scenario }}">
         <button type="submit">Load sample documents</button>
       </form>
       <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
+        <input type="hidden" name="scenario" value="{{ scenario }}">
         <button type="submit" class="run-button" title="Process every document of {{ scenario_label }} through the gate">Run scenario</button>
       </form>
       <form method="post" action="/reset"
             onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded, the gate results are cleared and the sample documents are reloaded, unprocessed.');">
+        <input type="hidden" name="scenario" value="{{ scenario }}">
         <button type="submit" class="secondary outline">Reset</button>
       </form>
     </div>

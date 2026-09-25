@@ -12,7 +12,15 @@ LEGAL_SUFFIXES = frozenset({"gmbh", "sarl", "ltd", "limited", "inc", "sl", "bv",
 
 NAME_SIMILARITY_THRESHOLD = 90  # rapidfuzz token_set_ratio on normalised names
 
-_COPY_WORDS = re.compile(r"\b(COPY|DUPLICATE|REMINDER|KOPIE|DUPLICATA)\b")
+_COPY_WORDS = re.compile(r"\b(COPY|DUPLICATE|REMINDER|KOPIE|DUPLICATA|COPIE|COPIA)\b")
+# An explicit leading label ('Invoice no.', 'Rechnung Nr.', 'Facture N°', 'Copy of invoice #'). The label word is
+# required, so numbers such as 'INV-2026-0457' are left alone.
+_INVOICE_LABEL = re.compile(r"^(?:OF\s+)?(?:INVOICE|RECHNUNG|FACTURE|FACTURA)\b\s*"
+                            r"(?:(?:NUMBER|NUM|NO|NR)(?![A-Z])|N°|Nº|#)?\W*")
+# A leading purchase-order label ('PO', 'P.O.', 'Your PO', 'Purchase order no.', 'Order #') and number words.
+_PO_LABEL = re.compile(r"^\W*(?:(?:YOUR|OUR)\s+)?(?:PURCHASE\s*ORDER|P\s*O|ORDER)(?![A-Z])\W*")
+_NUMBER_LABEL = re.compile(r"^(?:(?:NUMBER|NUM|NO|NR)(?![A-Z])|N°|Nº|#)\W*")
+CURRENCY_SYMBOLS = {"€": "EUR", "$": "USD", "US$": "USD", "£": "GBP"}
 
 
 def normalise_name(name: Optional[str]) -> str:
@@ -62,12 +70,37 @@ def normalise_iban(iban: Optional[str]) -> str:
 
 
 def normalise_invoice_number(number: Optional[str]) -> str:
-    """Strip spaces/punctuation, 'copy'/'reminder' words and leading zeros of digit runs.
+    """Strip 'copy'/'reminder' words, an explicit leading label, spaces/punctuation and leading zeros of digit runs.
 
-    'NWL-2026-00913' -> 'NWL2026913';  'NWL 2026 913 (COPY)' -> 'NWL2026913'.
+    'NWL-2026-00913' -> 'NWL2026913';  'NWL 2026 913 (COPY)' -> 'NWL2026913';  'Invoice no. NWL-2026-00913' ->
+    'NWL2026913'.
     """
     if not number:
         return ""
-    s = _COPY_WORDS.sub(" ", number.upper())
+    s = _COPY_WORDS.sub(" ", str(number).upper()).strip()
+    s = _INVOICE_LABEL.sub("", s, count=1)
     parts = re.findall(r"[A-Z]+|\d+", s)
     return "".join(p.lstrip("0") or "0" if p.isdigit() else p for p in parts)
+
+
+def normalise_po_number(number: object) -> str:
+    """Strip a leading PO label ('PO', 'P.O.', 'Your PO', 'Purchase order no.', '#') and every separator; the
+    digits of a purely numeric PO are kept as printed (no zero stripping).
+
+    'PO 4500117', 'P.O. #4500117', 'po-4500117', ' 4500 117 ' -> '4500117'.
+    """
+    if number is None:
+        return ""
+    s = unicodedata.normalize("NFKC", str(number)).upper().replace(".", " ").strip()
+    s = _NUMBER_LABEL.sub("", _PO_LABEL.sub("", s, count=1), count=1)
+    return re.sub(r"[^A-Z0-9]", "", s)
+
+
+def normalise_currency(currency: Optional[str]) -> Optional[str]:
+    """ISO 4217 code from an extracted currency: trimmed, uppercase, symbols mapped ('€' -> 'EUR', '$' -> 'USD',
+    '£' -> 'GBP'); None unless the result is a 3-letter code."""
+    if not currency:
+        return None
+    s = str(currency).strip().upper()
+    s = CURRENCY_SYMBOLS.get(s, s)
+    return s if re.fullmatch(r"[A-Z]{3}", s) else None

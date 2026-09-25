@@ -18,7 +18,7 @@
   {% if not gv %}
   <p class="placeholder-box"><strong>Not processed by the gate yet.</strong>
     Press <strong>Run scenario</strong> in the header to process every document of the scenario,
-    or run the gate on this document only.</p>
+    or run the gate on this document: earlier documents not processed yet go first, in processing order.</p>
   {% else %}
 
   <section class="outcome-card outcome-{{ gv.chip_tone }}" id="outcome">

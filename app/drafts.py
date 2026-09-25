@@ -87,6 +87,8 @@ def _why_not_draftable(decision: Optional[GateDecision]) -> Optional[str]:
         return "This document has no open exception to write about."
     if etype.key == "email_loop":
         return "The untracked email loop has no owner to write to."
+    if etype.key == "duplicate_invoice":  # touchless: no human step, so no message to draft
+        return "Handled automatically: the supplier gets a status reply."
     if not etype.blocking:
         return f"'{etype.label}' is an information flag, not an exception with an owner."
     if not decision.owner_name:
@@ -95,7 +97,8 @@ def _why_not_draftable(decision: Optional[GateDecision]) -> Optional[str]:
 
 
 def is_draftable(decision: Optional[GateDecision]) -> bool:
-    """To-be decisions with a blocking exception type that has an owner (not email_loop, not info flags)."""
+    """To-be decisions with a blocking exception type that has an owner (not email_loop, not info flags, not a
+    blocked duplicate: the supplier gets an automatic status reply)."""
     return _why_not_draftable(decision) is None
 
 

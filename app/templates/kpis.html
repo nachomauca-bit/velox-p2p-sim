@@ -20,6 +20,11 @@
   stands; the KPIs computed from gate decisions need a run.</p>
 {% endif %}
 
+{% if partial_warning %}
+<div class="flash flash-warn partial-run" role="status">{{ partial_warning }}: the KPIs below cover the processed
+  documents only. {{ m.run_button(scenario=scenario) }}</div>
+{% endif %}
+
 {% for g in groups %}
 <section class="kpi-group kpi-{{ g.key }}">
   <h2>{{ g.title }}</h2>
@@ -32,7 +37,7 @@
     {% endfor %}
   </div>
   {% if g.key == 'downstream' and not available and data %}
-  <div class="kpi-run">{{ m.run_button() }}</div>
+  <div class="kpi-run">{{ m.run_button(scenario=scenario) }}</div>
   {% endif %}
 </section>
 {% endfor %}
@@ -77,7 +82,8 @@
     });
     new Chart(document.getElementById("chart-exceptions"), {
       type: "bar",
-      data: { labels: data.exceptions.labels, datasets: [{ label: "Documents", data: data.exceptions.values,
+      /* long type names are split into lines (an array per label), so the axis never cuts them off */
+      data: { labels: data.exceptions.lines, datasets: [{ label: "Documents", data: data.exceptions.values,
               backgroundColor: data.exceptions.colours, borderRadius: 4, maxBarThickness: 34 }] },
       options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false } },
                  scales: { x: { beginAtZero: true, ticks: { precision: 0 }, grid: grid }, y: { grid: { display: false } } } }

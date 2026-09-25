@@ -7,12 +7,16 @@
   <p class="lead">
     {% if routing %}
       Every exception is routed to a named owner with an SLA (business days from registration).
-      {% if as_of %}Snapshot at the close of {{ as_of|d }}, the day the last open exception arrived:
-      age is counted to it (the simulation assumes every SLA is met).{% endif %}
+      {% if as_of %}The blocking queue is a snapshot at the close of {{ as_of|d }}, the day the last open exception
+      arrived: age is counted to it (the simulation assumes every SLA is met). Info tasks and blocked duplicates
+      are listed from the whole run.{% endif %}
     {% else %}
       Without a gate nothing is tracked by type: every document that does not match a PO goes into the same
-      email loop, with no owner and no SLA.
-      {% if as_of %}Snapshot at the close of {{ as_of|d }}, when the last of these documents was registered.{% endif %}
+      email loop, with no owner and no SLA. All {{ loop|length }} documents of the run that went through it are
+      listed.
+      {% if as_of %}Snapshot at the close of {{ as_of|d }}, when the last of them was registered: {{ loop_open }}
+      still in the loop that evening, {{ loop|length - loop_open }} already posted. Age is counted to the snapshot,
+      or to the posting day for a document posted by then.{% endif %}
     {% endif %}
   </p>
 </div>
@@ -21,7 +25,7 @@
 <article class="empty-state">
   <h2>{{ scenario_label }} has not been run yet</h2>
   <p>Run the scenario to fill the cockpit.</p>
-  {{ m.run_button() }}
+  {{ m.run_button(scenario=scenario) }}
 </article>
 
 {% elif not routing %}
@@ -34,16 +38,19 @@
   <div class="overflow-auto">
   <table class="gate-table striped">
     <thead><tr><th>Document</th><th>Supplier</th><th class="num">Amount</th><th>Owner</th><th>SLA</th>
-      <th class="num">Days in loop</th><th class="num">Age</th><th>Reason</th></tr></thead>
+      <th class="num">Days in loop</th><th>Posted on</th><th class="num">Age</th><th>Reason</th></tr></thead>
     <tbody>
     {% for v in loop %}
-      <tr>
+      <tr id="loop-{{ v.doc_id }}"{% if v.posted_by_snapshot %} class="loop-closed"{% endif %}>
         <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
         <td>{{ v.supplier }}</td>
         <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
         <td class="muted">—</td>
         <td class="muted">—</td>
         <td class="num"><strong>{{ v.email_loop_days if v.email_loop_days is not none else '—' }}</strong></td>
+        <td class="nowrap">{% if v.posted_by_snapshot %}<span class="chip chip-ok">posted {{ v.posted_on|d }}</span>
+          {%- elif v.posted_on %}{{ v.posted_on|d }} <small class="muted">after the snapshot</small>
+          {%- else %}<span class="muted">not posted</span>{% endif %}</td>
         <td class="num nowrap">{{ v.age_days if v.age_days is not none else '—' }} d</td>
         <td class="reason">{{ v.reason or '' }}{% if v.badges %}<div class="cell-badges">{{ m.badges(v.badges) }}</div>{% endif %}</td>
       </tr>
@@ -101,7 +108,7 @@
 <section class="bucket bucket-info" id="info-tasks">
   <header class="bucket-head">
     <h2>Info tasks (non-blocking) <span class="count">{{ info|length }}</span></h2>
-    <span class="muted">The document was posted; the owner follows up without holding the payment.</span>
+    <span class="muted">The document was posted; the owner follows up without holding the payment. Listed from the whole run.</span>
   </header>
   {% if info %}
   <div class="overflow-auto">
@@ -129,7 +136,8 @@
 <section class="bucket bucket-blocked" id="blocked-duplicates">
   <header class="bucket-head">
     <h2>Blocked duplicates <span class="count">{{ blocked|length }}</span></h2>
-    <span class="muted">Not posted. AP replies to the supplier with the status of the original invoice.</span>
+    <span class="muted">Not posted. The supplier gets an automatic reply with the status of the original invoice;
+      {{ ap_specialist }} is informed. Listed from the whole run.</span>
   </header>
   <div class="overflow-auto">
   <table class="gate-table striped">

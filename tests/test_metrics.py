@@ -6,7 +6,7 @@ checks the scenario KPIs of tests/golden.yaml.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +14,10 @@ import pytest
 import yaml
 from sqlalchemy.orm import Session
 
-from app import gate, metrics, seed, world
+from app import gate, metrics, normalize, seed, world
 from app.config import SCENARIOS
 from app.db import SessionLocal, init_db
-from app.models import GateDecision, Run
+from app.models import GateDecision, InboundDocument, Run
 
 GOLDEN = yaml.safe_load((Path(__file__).parent / "golden.yaml").read_text(encoding="utf-8"))
 
@@ -35,7 +35,8 @@ BASE_DETAILS: dict[str, Any] = dict(
     contract_id=None, contract_period=None, doa_auto_approved=False, requester_name=None, next_owner_name=None,
     next_owner_role=None, credit_status=None, applied_to=None, flags=[], terms_days=None, terms_source=None,
     invoice_terms_days=None, agreed_terms_days=None, terms_variance_paid=False, touchless=False, path=None,
-    cycle_breakdown={}, registration_lag_days=0, email_loop_days=None, line_checks=[],
+    cycle_breakdown={}, registration_lag_days=0, email_loop_days=None, line_checks=[], lookup_party_id=None,
+    invoice_date=None, posted_on=None,
 )
 
 
@@ -190,9 +191,11 @@ def test_cash_leakage_is_zero_without_duplicates_or_unapplied_credits() -> None:
 
 
 @pytest.mark.parametrize("printed, expected", [("4500117", "4500117"), ("PO 4500117", "4500117"),
-                                               ("po-4500117", "4500117"), (" 4500 117 ", "4500117")])
+                                               ("po-4500117", "4500117"), (" 4500 117 ", "4500117"),
+                                               ("P.O. #4500117", "4500117"), (None, "")])
 def test_po_key(printed: str, expected: str) -> None:
     assert metrics.po_key(printed) == expected
+    assert metrics.po_key(printed) == normalize.normalise_po_number(printed)  # the gate's normalisation
 
 
 def test_has_commitment_by_po_or_contract() -> None:
@@ -251,6 +254,7 @@ def test_reference_path_tobe_is_the_no_po_sla_plus_approval(configs) -> None:
 def test_compute_without_a_run(session: Session, configs) -> None:
     result = metrics.compute(session, "asis")
     assert result["available"] is False and result["run"] is None and result["documents"] == 0
+    assert result["documents_total"] == 0  # empty inbox
     assert list(result["kpis"]) == list(metrics.KPI_DEFS)
     no_run_needed = {"accounts_per_supplier", "pct_accounts_vat_iban", "pct_accounts_terms_ok",
                      "reference_nonpo_store_days"}
@@ -303,6 +307,33 @@ def test_compute_on_synthetic_decisions(session: Session, configs) -> None:
     assert result["cycle_by_doc"][1] == {"doc_id": "A-02", "sample_no": 2, "days": 28, "path": "email_loop"}
 
 
+def test_compute_counts_documents_and_can_keep_the_sample_documents_only(session: Session, configs) -> None:
+    template = seed.load_sample_documents(session, "asis")[0]  # 14 inbound sample documents
+    session.add(InboundDocument(  # a webhook upload (sample_no 0)
+        doc_id="A-W01", scenario="asis", sample_no=0, channel=template.channel, mailbox=template.mailbox,
+        received_on=template.received_on, file_path=template.file_path, file_hash=template.file_hash,
+        sender_email="billing@example.com", subject="Upload", registered=False, registered_on=None,
+        doc_type="unknown"))
+    store(session, mini_run("A") + [decision("A-W01", touchless=True, posted=True, registration_lag_days=1)])
+    everything = metrics.compute(session, "asis")
+    assert (everything["documents"], everything["documents_total"]) == (5, 15)  # 10 documents not processed
+    assert everything["kpis"]["touchless_rate"]["value"] == 60.0  # 3 of 5
+    sample = metrics.compute(session, "asis", sample_only=True)
+    assert (sample["documents"], sample["documents_total"], sample["sample_only"]) == (4, 14, True)
+    assert sample["kpis"]["touchless_rate"]["value"] == 50.0  # 2 of 4: the upload is left out
+    assert sample["kpis"]["touchless_rate"]["formula"].endswith("Here: 2 ÷ 4.")
+    assert [c["doc_id"] for c in sample["cycle_by_doc"]] == ["A-01", "A-02", "A-03", "A-04"]
+    compared = metrics.compare(session)["asis"]  # the comparison uses the sample documents only
+    assert (compared["documents"], compared["documents_total"], compared["sample_only"]) == (4, 14, True)
+
+
+def test_touchless_formula_says_what_touchless_means_without_a_gate(session: Session, configs) -> None:
+    asis = metrics.compute(session, "asis")["kpis"]["touchless"]["formula"]
+    tobe = metrics.compute(session, "tobe")["kpis"]["touchless"]["formula"]
+    assert 'Without a gate, "touchless" means no exception follow-up after intake; intake itself is delayed' in asis
+    assert "Without a gate" not in tobe
+
+
 def test_contracts_count_as_commitments_only_where_the_scenario_uses_them(session: Session, configs) -> None:
     store(session, mini_run("B"))
     # To-be: PO 4500117 exists and Nordwind has a recurring contract with VDE -> 3 of 3 invoices.
@@ -324,15 +355,29 @@ def test_compute_edge_cases_no_invoices_and_all_touchless(session: Session, conf
 # --------------------------------------------------------------------------------------------
 
 
+# Nordwind's invoice NWL-2026-00913: dated 30 Sep 2026, 14 days printed, 30 days agreed (due 30 Oct 2026).
+NORDWIND_TERMS = dict(terms_variance_paid=True, invoice_terms_days=14, agreed_terms_days=30, invoice_date="2026-09-30")
+
+
 @pytest.mark.parametrize("dec, expected", [
+    # the resend is posted on 13 Nov, after the agreed due date: paid late, not early
     (decision("A-02", "exception", exception_type="email_loop", duplicate_posting=True, posted=True,
-              terms_variance_paid=True, invoice_terms_days=14, agreed_terms_days=30),
-     ["duplicate posting", "terms paid early"]),
+              posted_on="2026-11-13T16:05:00", **NORDWIND_TERMS),
+     ["duplicate posting", "terms paid late"]),
+    # posted on 22 Oct, after its 14-day due date (14 Oct): paid on 22 Oct, before the agreed 30 Oct
+    (decision("A-01", "exception", exception_type="email_loop", posted=True, posted_on="2026-10-22T08:42:00",
+              **NORDWIND_TERMS), ["terms paid early"]),
     (decision("A-08", posted=True, commitment="po", wrong_entity_posting=True), ["wrong entity"]),
     (decision("A-04", posted=True, credit_status="unapplied"), ["unapplied credit"]),
     (decision("A-20", posted=True, resolution_method="created"), ["vendor account created"]),
-    (decision("A-21", posted=True, terms_variance_paid=True, invoice_terms_days=60, agreed_terms_days=30),
+    (decision("A-21", posted=True, terms_variance_paid=True, invoice_terms_days=60, agreed_terms_days=30,
+              invoice_date="2026-10-01", posted_on="2026-10-05T09:00:00"),
      ["terms paid late"]),
+    # posted exactly on the agreed due date after missing its own: neither early nor late
+    (decision("A-22", posted=True, posted_on="2026-10-30T10:00:00", **NORDWIND_TERMS), ["terms variance"]),
+    # no invoice date or posting date: neutral
+    (decision("A-23", posted=True, terms_variance_paid=True, invoice_terms_days=14, agreed_terms_days=30),
+     ["terms variance"]),
     (decision("B-02", "blocked_duplicate", exception_type="duplicate_invoice"), ["blocked duplicate"]),
     (decision("B-04", "applied_credit", credit_status="applied"), ["credit applied"]),
     (decision("B-10", posted=True, commitment="none", doa_auto_approved=True), ["DoA auto-approved"]),
@@ -344,6 +389,15 @@ def test_compute_edge_cases_no_invoices_and_all_touchless(session: Session, conf
 ])
 def test_badges(dec: GateDecision, expected: list[str]) -> None:
     assert metrics.badges(dec) == expected
+
+
+def test_scheduled_payment_is_the_later_of_posting_and_due_date() -> None:
+    before_due = decision("A-01", posted=True, posted_on="2026-10-05T09:00:00", **NORDWIND_TERMS)
+    assert metrics.scheduled_payment(before_due) == date(2026, 10, 14)  # 30 Sep + 14 days
+    after_due = decision("A-01", posted=True, posted_on="2026-10-22T08:42:00", **NORDWIND_TERMS)
+    assert metrics.scheduled_payment(after_due) == date(2026, 10, 22)
+    assert metrics.scheduled_payment(decision("A-01", posted=True, **NORDWIND_TERMS)) is None  # no posting date
+    assert metrics.as_date("2026-09-30") == date(2026, 9, 30) and metrics.as_date("not a date") is None
 
 
 def test_outcome_labels() -> None:
@@ -460,3 +514,8 @@ def test_golden_compare_rows(golden_run) -> None:
     assert "DoA auto-approved" in badges[(10, "tobe")]
     assert all("contract match" in badges[(no, "tobe")] for no in (1, 11, 14))
     assert "terms variance flagged" in badges[(1, "tobe")]
+    # same 14-day invoice terms (30 days agreed): the original (1) is posted before the agreed due date and paid
+    # early, the resend (2) is posted after it and paid late (the gate stores invoice_date and posted_on)
+    assert "terms paid early" in badges[(1, "asis")]
+    assert "terms paid late" in badges[(2, "asis")] and "terms paid early" not in badges[(2, "asis")]
+    assert result["asis"]["documents"] == result["asis"]["documents_total"] == len(world.DOCUMENTS)

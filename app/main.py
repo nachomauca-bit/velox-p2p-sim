@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import textwrap
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -164,6 +165,13 @@ def check_scenario(value: str) -> str:
     return value
 
 
+def form_scenario(request: Request, value: Optional[str]) -> str:
+    """Scenario of a header action (Load / Run / Reset): the hidden field of the form, i.e. the scenario the page
+    was rendered for, so a second tab that switched the cookie never runs or resets the wrong one. Without the
+    field (older page, API client) the cookie decides."""
+    return check_scenario(value) if value else active_scenario(request)
+
+
 def back_path(request: Request, default: str = "/inbox") -> str:
     """Path of the Referer when it is same-origin, else `default` (never an external redirect)."""
     referer = request.headers.get("referer")
@@ -293,29 +301,37 @@ def extraction_mode_note() -> str:
 
 
 @app.post("/documents/load")
-def load_documents(request: Request, session: Session = Depends(db.get_session)) -> RedirectResponse:
-    """Load the sample PDFs into both mailboxes of the active scenario and extract them.
+def load_documents(request: Request, scenario: Optional[str] = Form(None),
+                   session: Session = Depends(db.get_session)) -> RedirectResponse:
+    """Load the sample PDFs into both mailboxes of the scenario and extract them.
 
-    The previous gate results of the scenario are cleared first: they belong to the old documents.
+    The previous gate results of the scenario are cleared first: they belong to the old documents. The extraction
+    runs inside the gate lock too, so a Run clicked meanwhile waits instead of reading half-written rows.
     """
-    scenario = active_scenario(request)
+    scenario = form_scenario(request, scenario)
     with _gate_lock:
         gate.clear_results(session, scenario)
         docs = seed.load_sample_documents(session, scenario)
-    for doc in docs:
-        reg = registration_info(doc)
-        print(f"[doc {doc.doc_id}] step=intake result={'registered' if doc.registered else 'waiting'} "
-              f"mailbox={doc.mailbox} registration={reg['date'].date().isoformat()}")
-    try:
-        summary = extract.extract_documents(session, docs, allow_api=bool(config.GEMINI_API_KEY))
-    except Exception as exc:  # per-document failures are counted; anything else must not break the intake
-        session.rollback()
-        print(f"[intake] scenario={scenario} loaded={len(docs)} extraction error: {exc!r}")
-        return redirect("/inbox", ("error", f"{len(docs)} documents loaded, but extraction failed: {exc}"))
-    print(f"[intake] scenario={scenario} loaded={len(docs)} extracted={summary['extracted']} "
-          f"from_cache={summary['from_cache']} unavailable={summary['unavailable']} "
-          f"failed={summary.get('failed', 0)}")
-    return redirect("/inbox", load_message(len(docs), scenario, summary))
+        for doc in docs:
+            reg = registration_info(doc)
+            print(f"[doc {doc.doc_id}] step=intake result={'registered' if doc.registered else 'waiting'} "
+                  f"mailbox={doc.mailbox} registration={reg['date'].date().isoformat()}")
+        try:
+            summary = extract.extract_documents(session, docs, allow_api=bool(config.GEMINI_API_KEY))
+        except Exception as exc:  # per-document failures are counted; anything else must not break the intake
+            session.rollback()
+            print(f"[intake] scenario={scenario} loaded={len(docs)} extraction error: {exc!r}")
+            summary = None
+    if summary is None:
+        response = redirect("/inbox", ("error", f"{len(docs)} documents loaded, but the extraction failed; "
+                                                "see the server log."))
+    else:
+        print(f"[intake] scenario={scenario} loaded={len(docs)} extracted={summary['extracted']} "
+              f"from_cache={summary['from_cache']} unavailable={summary['unavailable']} "
+              f"failed={summary.get('failed', 0)}")
+        response = redirect("/inbox", load_message(len(docs), scenario, summary))
+    set_scenario_cookie(response, scenario)
+    return response
 
 
 def load_message(loaded: int, scenario: str, summary: dict[str, Any]) -> tuple[str, str]:
@@ -349,10 +365,11 @@ _gate_lock = threading.Lock()
 
 
 @app.post("/reset")
-def reset(request: Request, session: Session = Depends(db.get_session)) -> RedirectResponse:
+def reset(request: Request, scenario: Optional[str] = Form(None),
+          session: Session = Depends(db.get_session)) -> RedirectResponse:
     """Restore the scenario for the demo: ERP re-seeded, gate results cleared, sample documents reloaded
     (unprocessed) and extracted from the cache or fixtures only (never the API)."""
-    scenario = active_scenario(request)
+    scenario = form_scenario(request, scenario)
     with _gate_lock:
         gate.clear_results(session, scenario)
         seed.reset_scenario(session, scenario)
@@ -371,13 +388,15 @@ def reset(request: Request, session: Session = Depends(db.get_session)) -> Redir
             f"{len(docs)} sample documents reloaded and not processed yet; {summary['extracted']} extracted.")
     if summary["unavailable"]:
         text += f" Extraction pending for {plural(summary['unavailable'], 'document')} (no cache entry)."
-    return redirect(path, ("warn" if summary["unavailable"] else "info", text))
+    response = redirect(path, ("warn" if summary["unavailable"] else "info", text))
+    set_scenario_cookie(response, scenario)
+    return response
 
 
 def run_gate(session: Session, scenario: str) -> tuple[Optional[Run], str]:
     """Run the gate on every document of a scenario; an empty inbox is loaded first. Never raises.
 
-    Returns (run, message); run is None when the run failed (message = the error).
+    Returns (run, message); run is None when the run failed (message = a short text; the error is in the log).
     """
     with _gate_lock:
         try:
@@ -389,7 +408,7 @@ def run_gate(session: Session, scenario: str) -> tuple[Optional[Run], str]:
         except Exception as exc:  # a broken rule or data problem must not end in a 500
             session.rollback()
             print(f"[run] scenario={scenario} FAILED: {exc!r}")
-            return None, f"The gate run of {config.SCENARIO_LABELS[scenario]} failed: {exc}"
+            return None, f"The gate run of {config.SCENARIO_LABELS[scenario]} failed; see the server log."
     s = run.summary_json or {}
     return run, (f"{loaded}{config.SCENARIO_LABELS[scenario]}: {s.get('documents', 0)} documents processed, "
                  f"{s.get('touchless', 0)} touchless, {s.get('exceptions', 0)} exceptions.")
@@ -401,12 +420,14 @@ def count_documents(session: Session, scenario: str) -> int:
 
 
 @app.post("/run")
-def run_scenario(request: Request, session: Session = Depends(db.get_session)) -> RedirectResponse:
-    """Header "Run scenario": process every document of the active scenario, then show the step log."""
-    run, message = run_gate(session, active_scenario(request))
-    if run is None:
-        return redirect("/inbox", ("error", message))
-    return redirect("/run", ("info", message))
+def run_scenario(request: Request, scenario: Optional[str] = Form(None),
+                 session: Session = Depends(db.get_session)) -> RedirectResponse:
+    """Header "Run scenario": process every document of the page's scenario, then show the step log."""
+    scenario = form_scenario(request, scenario)
+    run, message = run_gate(session, scenario)
+    response = redirect("/inbox", ("error", message)) if run is None else redirect("/run", ("info", message))
+    set_scenario_cookie(response, scenario)
+    return response
 
 
 @app.post("/run-both")
@@ -443,7 +464,8 @@ STEP_LABELS = {"register": "Register", "extract": "Extract", "resolve_vendor": "
                "legal_entity": "Legal entity check", "duplicate_check": "Duplicate check",
                "credit_note": "Credit note", "commitment_match": "Commitment match", "terms": "Payment terms",
                "post": "Post"}
-CYCLE_LABELS = {"store_forwarding": "Store mailbox forwarding", "ap_open_and_key": "AP opens and keys",
+CYCLE_LABELS = {"store_forwarding": "Store mailbox forwarding",
+                "ap_open_and_key": "AP opens ap@ and the quick-fix tool keys it",
                 "email_loop": "Email loop (untracked)", "email_approval": "Approval by email",
                 "posting": "Posting", "registration": "Registration on arrival",
                 "extraction_and_gate": "Extraction and gate", "exception_sla": "Owner resolves within the SLA",
@@ -477,17 +499,46 @@ def sla_due(decision: GateDecision, doc: Optional[InboundDocument]) -> Optional[
 
 
 def age_days(doc: Optional[InboundDocument], as_of: Optional[datetime]) -> Optional[int]:
-    """Business days from registration to the cockpit snapshot date (sim.cockpit_as_of)."""
+    """Business days from registration to the cockpit snapshot date (sim.cockpit_as_of) or an earlier end."""
     start = doc and (doc.registered_on or doc.received_on)
     return None if start is None or as_of is None else sim.business_days_between(start, as_of)
 
 
+def parse_iso(value: Any) -> Optional[datetime]:
+    """An ISO date or datetime string of the decision details as a datetime; None when missing or unreadable."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def posted_on(decision: GateDecision) -> Optional[datetime]:
+    """Simulated posting datetime of a posted document (details 'posted_on', else the decision date, which is the
+    posting date for a posting); None when the document was not posted."""
+    det = decision.details or {}
+    if not det.get("posted"):
+        return None
+    return parse_iso(det.get("posted_on")) or decision.decided_on
+
+
 def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
               as_of: Optional[datetime] = None) -> dict[str, Any]:
-    """Everything a page shows about one decision: details (always present keys) + chips, owner, SLA, age."""
+    """Everything a page shows about one decision: details (always present keys) + chips, owner, SLA, age.
+
+    The age runs from registration to the snapshot `as_of`, or to the posting day when the document was already
+    posted by then (as-is: the email loop ends in a posting).
+    """
     det = dict(decision.details or {})
     label, tone = outcome_chip(decision.outcome, decision.exception_type)
     spec = world.DOCUMENT_BY_NO.get(det.get("sample_no") or (doc.sample_no if doc else 0))
+    posted = posted_on(decision)
+    posted_by_snapshot = bool(as_of and posted and posted <= as_of)
     return {
         **det,
         "doc_id": decision.doc_id,
@@ -502,7 +553,9 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
         "owner_role": decision.owner_role,
         "sla_days": decision.sla_days,
         "sla_due": sla_due(decision, doc),
-        "age_days": age_days(doc, as_of),
+        "age_days": age_days(doc, posted if posted_by_snapshot else as_of),
+        "posted_on": posted,
+        "posted_by_snapshot": posted_by_snapshot,
         "reason": decision.reason,
         "days": None if decision.simulated_days is None else int(decision.simulated_days),
         "badges": badge_chips(metrics.badges(decision)),
@@ -745,23 +798,37 @@ def invoice_page(doc_id: str, request: Request, session: Session = Depends(db.ge
     return render(request, "invoice.html", ctx)
 
 
-def rerun_message(decision: GateDecision) -> tuple[str, str]:
+def rerun_message(decision: GateDecision, processed_first: Sequence[str] = ()) -> tuple[str, str]:
     label, _ = outcome_chip(decision.outcome, decision.exception_type)
     owner = f", owner {decision.owner_name}" if decision.owner_name else ""
-    return ("info", f"Gate re-run: {label}{owner}.")
+    text = f"Gate re-run: {label}{owner}."
+    if processed_first:
+        text += (f" {plural(len(processed_first), 'earlier document')} not processed yet went first, in processing "
+                 f"order: {', '.join(processed_first)}.")
+    return ("info", text)
+
+
+def processed_doc_ids(session: Session, scenario: str) -> set[str]:
+    return set(session.scalars(select(GateDecision.doc_id).where(GateDecision.scenario == scenario)))
 
 
 @app.post("/invoice/{doc_id}/rerun")
 def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_session)) -> Response:
-    """Re-run the gate on one document. HTMX gets the gate panel partial; without JS, a redirect."""
+    """Re-run the gate on one document. The gate first processes every earlier document of the scenario that has
+    no decision yet (duplicate and credit-note checks look back), then this one. HTMX gets the gate panel
+    partial; without JS, a redirect."""
     doc = get_document(session, doc_id)
     with _gate_lock:
         try:
-            message = rerun_message(gate.rerun_document(session, doc, allow_api=bool(config.GEMINI_API_KEY)))
-        except Exception as exc:  # never a 500: the panel shows the error
+            before = processed_doc_ids(session, doc.scenario)
+            decision = gate.rerun_document(session, doc, allow_api=bool(config.GEMINI_API_KEY))
+            new = processed_doc_ids(session, doc.scenario) - before - {doc_id}
+            message = rerun_message(decision, [d.doc_id for d in scenario_documents(session, doc.scenario)
+                                               if d.doc_id in new])
+        except Exception as exc:  # never a 500: the panel shows a short message, the log has the error
             session.rollback()
             print(f"[rerun] doc={doc_id} FAILED: {exc!r}")
-            message = ("error", f"The gate could not process {doc_id}: {exc}")
+            message = ("error", f"The gate could not process {doc_id}; see the server log.")
     session.expire_all()
     doc = get_document(session, doc_id)
     if request.headers.get("HX-Request"):
@@ -861,10 +928,13 @@ PVI_STATUS = {"pending_payment": ("pending payment", "neutral"), "credit_applied
 
 
 def pvi_chips(row: PendingVendorInvoice) -> list[dict[str, Optional[str]]]:
-    """Flag chips of a posted invoice: terms source, wrong entity, duplicate of, credit, DoA."""
+    """Flag chips of a posted invoice: terms source (only when the row has terms: not for a credit note), wrong
+    entity, duplicate of, credit, DoA."""
     flags = row.flags or {}
-    chips = [{"label": f"terms: {row.terms_source}", "tone": "ok" if row.terms_source == "master" else "warn",
-              "href": None}]
+    chips = []
+    if row.terms_days is not None and row.terms_source:
+        chips.append({"label": f"terms: {row.terms_source}", "tone": "ok" if row.terms_source == "master" else "warn",
+                      "href": None})
     if flags.get("terms_variance"):
         chips.append({"label": "terms variance", "tone": "warn", "href": None})
     if flags.get("wrong_entity"):
@@ -1123,13 +1193,15 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
     if owner:
         queue = [v for v in queue if owner in (v["owner_name"], v.get("next_owner_name"))]
         info = [item for item in info if item["flag"].get("owner_name") == owner]
+    loop = [v for v in views if v["is_email_loop"]]
     return render(request, "exceptions.html", {
         "page_title": "Exception cockpit", "has_run": bool(decisions),
         "routing": routing,
         "groups": group_by_type(queue), "queue_count": len(queue), "info": info,
-        "loop": [v for v in views if v["is_email_loop"]],
+        # as-is: every document of the run that went through the loop; the snapshot tells which were still in it
+        "loop": loop, "loop_open": sum(1 for v in loop if not v["posted_by_snapshot"]),
         "blocked": [v for v in views if v["outcome"] == "blocked_duplicate"],
-        "owners": owners, "owner": owner, "as_of": as_of,
+        "owners": owners, "owner": owner, "as_of": as_of, "ap_specialist": world.AP_SPECIALIST.name,
     })
 
 
@@ -1164,15 +1236,25 @@ def kpi_display(kpi: Optional[dict[str, Any]], available: bool) -> str:
     return str(kpi.get("display") if kpi.get("display") not in (None, "") else "—")
 
 
+CHART_LABEL_WIDTH = 22  # characters per line of a category label on a chart axis
+
+
+def label_lines(label: str, width: int = CHART_LABEL_WIDTH) -> list[str]:
+    """A long category label as lines of about `width` characters (Chart.js draws an array as several lines),
+    so the axis never cuts it off. Words are never split."""
+    return textwrap.wrap(label, width=width, break_long_words=False, break_on_hyphens=False) or [label]
+
+
 def chart_data(data: dict[str, Any]) -> dict[str, Any]:
     """Chart.js inputs: outcomes (doughnut), exceptions by type (bar), cycle days per document (bar)."""
     outcomes = data.get("outcomes") or {}
     by_type = data.get("exceptions_by_type") or {}
     cycle = data.get("cycle_by_doc") or []
+    type_labels = [EMAIL_LOOP_LABEL if k == "email_loop" else taxonomy.label(k) for k in by_type]
     return {
         "outcomes": {"labels": [OUTCOME_LABELS.get(k, k) for k in outcomes], "values": list(outcomes.values()),
                      "colours": [CHART_COLOURS.get(k, "#6b7280") for k in outcomes]},
-        "exceptions": {"labels": [EMAIL_LOOP_LABEL if k == "email_loop" else taxonomy.label(k) for k in by_type],
+        "exceptions": {"labels": type_labels, "lines": [label_lines(label) for label in type_labels],
                        "values": list(by_type.values()),
                        "colours": ["#ec835a" if k == "email_loop" else "#d03b3b" for k in by_type]},
         "cycle": {"labels": [c.get("doc_id") for c in cycle], "values": [c.get("days") for c in cycle],
@@ -1190,6 +1272,17 @@ def safe_metrics(call: Callable[[], dict[str, Any]], what: str) -> tuple[Optiona
         return None, f"The {what} could not be computed: {exc}"
 
 
+def partial_run_warning(data: Optional[dict[str, Any]]) -> Optional[str]:
+    """'Only N of M documents processed — run the scenario' when the KPIs cover part of the documents only
+    (e.g. after re-running single documents); None when every document has a decision or nothing ran."""
+    if not data or not data.get("available"):
+        return None
+    done, total = int(data.get("documents") or 0), int(data.get("documents_total") or 0)
+    if done >= total:
+        return None
+    return f"Only {done} of {total} documents processed — run the scenario"
+
+
 @app.get("/gate/kpis")
 def kpis(request: Request, session: Session = Depends(db.get_session)) -> Response:
     scenario = active_scenario(request)
@@ -1203,6 +1296,7 @@ def kpis(request: Request, session: Session = Depends(db.get_session)) -> Respon
     return render(request, "kpis.html", {
         "page_title": "KPIs", "data": data, "error": error, "available": available, "groups": groups,
         "tiles": tiles, "charts": chart_data(data) if data and available else None,
+        "partial_warning": partial_run_warning(data),
     })
 
 
@@ -1242,8 +1336,10 @@ def compare(request: Request, session: Session = Depends(db.get_session)) -> Res
     kpi_rows = compare_kpi_rows(data) if data else []
     rows = [{**r, "a": compare_cell(r.get("asis")), "b": compare_cell(r.get("tobe"))}
             for r in (data or {}).get("rows") or []]
+    partial = [(config.SCENARIO_LABELS[s], warning) for s in config.SCENARIOS
+               if (warning := partial_run_warning((data or {}).get(s)))]
     return render(request, "compare.html", {
-        "page_title": "Compare", "data": data, "error": error, "rows": rows,
+        "page_title": "Compare", "data": data, "error": error, "rows": rows, "partial_warnings": partial,
         "both_available": bool(data and data.get("both_available")),
         "available": {s: bool(data and (data.get(s) or {}).get("available")) for s in config.SCENARIOS},
         "groups": [{"key": key, "title": title, "rows": [r for r in kpi_rows if r.get("group") == key]}

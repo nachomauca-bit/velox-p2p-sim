@@ -154,6 +154,68 @@ def test_scenario_switch_sets_cookie_and_redirects_back(client):
     assert 'switch-tobe active' in client.get("/inbox").text
 
 
+def form_html(html: str, action: str) -> str:
+    """HTML of the first form posting to `action`."""
+    start = html.index(f'action="{action}"')
+    return html[start:html.index("</form>", start)]
+
+
+def test_header_actions_act_on_the_scenario_the_page_shows(client, session):
+    """A second tab that switched the cookie must not make this page's Run / Reset / Load hit the other scenario."""
+    use_scenario(client, "asis")
+    html = client.get("/inbox").text  # rendered for as-is (header forms and the empty-state Load form)
+    for action in ("/documents/load", "/run", "/reset"):
+        assert '<input type="hidden" name="scenario" value="asis">' in form_html(html, action), action
+    assert html.count('<input type="hidden" name="scenario" value="asis">') == 4
+    use_scenario(client, "tobe")  # the other tab
+    r = client.post("/run", data={"scenario": "asis"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/run"
+    assert "scenario=asis" in r.headers["set-cookie"]  # the step log opens on the scenario that ran
+    assert count_rows(session, GateDecision, "asis") == len(world.DOCUMENTS)
+    assert count_rows(session, GateDecision, "tobe") == 0
+    assert client.cookies.get("scenario") == "asis"
+    use_scenario(client, "tobe")
+    r = client.post("/reset", data={"scenario": "asis"}, follow_redirects=False)
+    assert r.status_code == 303 and client.cookies.get("scenario") == "asis"
+    session.expire_all()
+    assert count_rows(session, GateDecision, "asis") == 0 and count_docs(session, "tobe") == 0
+    use_scenario(client, "asis")
+    r = client.post("/documents/load", data={"scenario": "tobe"}, follow_redirects=False)
+    assert r.status_code == 303 and client.cookies.get("scenario") == "tobe"
+    assert count_docs(session, "tobe") == len(world.DOCUMENTS)
+    for action in ("/run", "/reset", "/documents/load"):
+        assert client.post(action, data={"scenario": "prod"}, follow_redirects=False).status_code == 400, action
+
+
+def test_run_buttons_of_empty_states_carry_the_scenario(client):
+    use_scenario(client, "tobe")
+    for path in ("/run", "/gate/exceptions", "/gate/kpis", "/erp/pending-invoices"):
+        html = client.get(path).text
+        body = html[html.index('<main class="content">'):]  # skip the header forms
+        assert '<input type="hidden" name="scenario" value="tobe">' in form_html(body, "/run"), path
+
+
+def test_load_extracts_inside_the_gate_lock(client, monkeypatch):
+    held = []
+
+    def extract_documents(session, docs, allow_api=False):
+        held.append(main._gate_lock.locked())
+        return {"extracted": 0, "from_cache": 0, "unavailable": len(docs), "failed": 0}
+    monkeypatch.setattr(extract, "extract_documents", extract_documents)
+    load_documents(client, "asis")
+    assert held == [True]  # a Run clicked meanwhile waits for the extraction
+
+
+def test_load_extraction_crash_is_a_short_message(client, monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(extract, "extract_documents", boom)
+    html = load_documents(client, "asis")
+    assert f"{len(world.DOCUMENTS)} documents loaded, but the extraction failed; see the server log." in html
+    assert "database is locked" not in html
+    assert "extraction error: RuntimeError('database is locked')" in capsys.readouterr().out
+
+
 def test_scenario_switch_ignores_foreign_referer_and_rejects_bad_values(client):
     r = client.post("/scenario/asis", headers={"referer": "https://evil.example/phish"}, follow_redirects=False)
     assert r.headers["location"] == "/inbox"
@@ -737,14 +799,16 @@ def test_run_page_warns_about_documents_without_extraction(client, monkeypatch, 
     assert "B-01" in html and "flash-warn" in html
 
 
-def test_run_failure_is_reported_not_500(client, monkeypatch):
+def test_run_failure_is_reported_not_500(client, monkeypatch, capsys):
     def boom(*args, **kwargs):
         raise RuntimeError("rule table broken")
     monkeypatch.setattr(gate, "run_scenario", boom)
     use_scenario(client, "tobe")
     r = client.post("/run")
     assert r.status_code == 200 and r.url.path == "/inbox"
-    assert "The gate run of B — To-be failed: rule table broken" in r.text
+    assert "The gate run of B — To-be failed; see the server log." in r.text
+    assert "rule table broken" not in r.text  # the raw error goes to the log, not the page
+    assert "[run] scenario=tobe FAILED: RuntimeError('rule table broken')" in capsys.readouterr().out
 
 
 def test_log_line_split_and_tone():
@@ -814,6 +878,9 @@ def test_invoice_b02_blocked_as_a_duplicate_of_b01(client):
     assert "Duplicate of" in panel and '<a href="/invoice/B-01">B-01</a>' in panel
     assert "<strong>Marco Ruiz</strong>" in panel and "blocked on arrival" in panel
     assert "Reply to supplier with status" in panel
+    assert "Draft message to owner" not in panel  # touchless: the supplier gets an automatic status reply
+    r = client.post("/invoice/B-02/draft", headers={"HX-Request": "true"})
+    assert "Handled automatically: the supplier gets a status reply." in r.text
 
 
 def test_invoice_b01_posted_on_master_terms_with_an_info_flag(client, session):
@@ -837,6 +904,8 @@ def test_invoice_a02_duplicate_posting_and_asis_badges(client):
     assert "Untracked manual follow-up by email" in panel
     assert "V-000117" in panel and "from the invoice" in panel
     assert "Draft message to owner" not in panel
+    # the quick-fix tool keys the document once AP opens ap@: no claim that AP keyed it by hand
+    assert "AP opens ap@ and the quick-fix tool keys it" in panel and "AP opens and keys" not in panel
     assert ">wrong entity<" in gate_panel(client.get("/invoice/A-08").text)
     assert ">unapplied credit<" in gate_panel(client.get("/invoice/A-04").text)
 
@@ -858,7 +927,14 @@ def test_cockpit_tobe_groups_by_type_with_owner_sla_and_age(client):
     assert age == 1 and "Tue 2026-10-06" in bucket and f"{age} d" in bucket
     info = section(html, "info-tasks")
     assert 'href="/invoice/B-01"' in info and "Invoice payment terms differ from the master (info)" in info
+    assert "Listed from the whole run." in info
+    blocked = squash(page_text(section(html, "blocked-duplicates")))
     assert 'href="/invoice/B-02"' in section(html, "blocked-duplicates")
+    assert ("Not posted. The supplier gets an automatic reply with the status of the original invoice; "
+            f"{world.AP_SPECIALIST.name} is informed. Listed from the whole run.") in blocked
+    lead = squash(page_text(html[html.index('class="lead"'):html.index("</p>", html.index('class="lead"'))]))
+    assert ("The blocking queue is a snapshot at the close of Mon 2026-10-05, the day the last open exception "
+            "arrived") in lead and "Info tasks and blocked duplicates are listed from the whole run." in lead
     assert "Email loop" not in html
 
 
@@ -885,6 +961,36 @@ def test_cockpit_asis_is_a_single_email_loop_bucket(client):
     assert "Email loop — untracked" in bucket and '<span class="count">9</span>' in bucket
     assert bucket.count('class="doc-id"') == 9
     assert "owner-filter" not in html
+
+
+def test_cockpit_asis_ages_stop_at_the_posting_day(client, session):
+    """The as-is email loop ends in a posting: a document posted by the snapshot is marked so, and its age is
+    counted to its posting day, not to the snapshot."""
+    run_scenario(client, "asis")
+    html = client.get("/gate/exceptions").text
+    bucket = section(html, "bucket-email_loop")
+    assert "<th>Posted on</th>" in bucket and "Days in loop" in bucket
+    loop = session.scalars(select(GateDecision).where(GateDecision.scenario == "asis",
+                                                      GateDecision.exception_type == "email_loop")).all()
+    registered = {d.doc_id: get_doc(session, d.doc_id).registered_on for d in loop}
+    as_of = sim.cockpit_as_of(registered.values())
+    closed = 0
+    for d in loop:
+        row = bucket[bucket.index(f'id="loop-{d.doc_id}"'):]
+        row = squash(page_text(row[:row.index("</tr>")]))
+        age = sim.business_days_between(registered[d.doc_id], min(as_of, d.decided_on))
+        assert f" {age} d " in f" {row} ", (d.doc_id, row)
+        marker = f"posted {main.fmt_date(d.decided_on)}"
+        if d.decided_on <= as_of:
+            closed += 1
+            assert marker in row, d.doc_id
+        else:
+            assert marker not in row and f"{main.fmt_date(d.decided_on)} after the snapshot" in row, d.doc_id
+    assert 0 < closed < len(loop)  # the snapshot shows both kinds
+    lead = squash(page_text(html[html.index('class="lead"'):html.index("</p>", html.index('class="lead"'))]))
+    assert f"All {len(loop)} documents of the run that went through it are listed." in lead
+    assert (f"Snapshot at the close of {main.fmt_date(as_of)}, when the last of them was registered: "
+            f"{len(loop) - closed} still in the loop that evening, {closed} already posted.") in lead
 
 
 def test_cockpit_before_a_run_offers_the_button(client):
@@ -964,14 +1070,51 @@ def test_rerun_gate_htmx_partial_and_no_js_fallback(client, session):
     assert len(rows) == 1  # the old decision is replaced, not duplicated
 
 
-def test_rerun_error_is_reported_not_500(client, monkeypatch):
+def test_rerun_error_is_reported_not_500(client, monkeypatch, capsys):
     run_scenario(client, "tobe")
 
     def boom(*args, **kwargs):
         raise RuntimeError("PO table locked")
     monkeypatch.setattr(gate, "rerun_document", boom)
     r = client.post("/invoice/B-06/rerun", headers={"HX-Request": "true"})
-    assert r.status_code == 200 and "The gate could not process B-06: PO table locked" in r.text
+    assert r.status_code == 200 and "The gate could not process B-06; see the server log." in r.text
+    assert "PO table locked" not in r.text
+    assert "[rerun] doc=B-06 FAILED: RuntimeError('PO table locked')" in capsys.readouterr().out
+
+
+def test_rerun_processes_the_earlier_unprocessed_documents_first(client, session):
+    load_documents(client, "tobe")
+    r = client.post("/invoice/B-06/rerun", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    session.expire_all()
+    docs = sorted(session.scalars(select(InboundDocument).where(InboundDocument.scenario == "tobe")),
+                  key=gate.order_key)
+    ids = [d.doc_id for d in docs]
+    earlier = ids[:ids.index("B-06")]
+    processed = set(session.scalars(select(GateDecision.doc_id).where(GateDecision.scenario == "tobe")))
+    assert earlier and processed == set(earlier) | {"B-06"}  # the earlier ones, then B-06; nothing later
+    text = squash(page_text(r.text))
+    assert (f"{len(earlier)} earlier documents not processed yet went first, in processing order: "
+            f"{', '.join(earlier)}.") in text
+    assert "Exception: Price or quantity outside tolerance" in text
+
+
+def test_kpis_and_compare_warn_when_only_some_documents_are_processed(client, session):
+    load_documents(client, "tobe")
+    client.post("/invoice/B-06/rerun")
+    session.expire_all()
+    done, n = count_rows(session, GateDecision, "tobe"), len(world.DOCUMENTS)
+    assert 0 < done < n
+    warning = f"Only {done} of {n} documents processed — run the scenario"
+    use_scenario(client, "tobe")
+    html = client.get("/gate/kpis").text
+    assert warning in squash(page_text(html))
+    kpi_warning = html[html.index("partial-run"):]
+    assert '<input type="hidden" name="scenario" value="tobe">' in kpi_warning[:kpi_warning.index("</form>")]
+    assert f"B — To-be: {warning}" in squash(page_text(client.get("/gate/compare").text))
+    run_scenario(client, "tobe")
+    assert "documents processed — run the scenario" not in client.get("/gate/kpis").text
+    assert "documents processed — run the scenario" not in client.get("/gate/compare").text
 
 
 def test_draft_button_shows_the_unavailable_reason_in_fixture_mode(client):
@@ -1028,6 +1171,34 @@ def test_pending_invoices_show_flag_chips_and_totals(client, session):
     html = client.get("/erp/pending-invoices").text
     assert ">DoA auto-approved<" in html and ">terms: master<" in html and ">credit applied<" in html
     assert ">terms: invoice<" not in html and "duplicate of" not in html
+
+
+@pytest.mark.parametrize("scenario", config.SCENARIOS)
+def test_pending_invoices_terms_chip_only_on_rows_with_terms(client, session, scenario):
+    run_scenario(client, scenario)
+    html = client.get("/erp/pending-invoices").text
+    rows = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.scenario == scenario)).all()
+    assert any(r.terms_days is None for r in rows)  # the credit note
+    for r in rows:
+        row = html[html.index(f'<tr id="{r.invoice_id}">'):]
+        row = row[:row.index("</tr>")]
+        assert ('class="chip chip-ok">terms: ' in row or 'class="chip chip-warn">terms: ' in row) == (
+            r.terms_days is not None), r.invoice_id
+
+
+def test_exceptions_chart_labels_are_wrapped(client):
+    run_scenario(client, "tobe")
+    html = client.get("/gate/kpis").text
+    data = json.loads(re.search(r'id="chart-data" type="application/json">(.*?)</script>', html).group(1))
+    exceptions = data["exceptions"]
+    assert len(exceptions["lines"]) == len(exceptions["labels"]) > 0
+    for label, lines in zip(exceptions["labels"], exceptions["lines"]):
+        assert " ".join(lines) == label
+        assert all(len(line) <= main.CHART_LABEL_WIDTH for line in lines), lines
+    assert any(len(lines) > 1 for lines in exceptions["lines"])  # e.g. "PO exists, no receipt or service ..."
+    assert "labels: data.exceptions.lines" in html
+    assert main.label_lines("Supercalifragilisticexpialidocious-and-more") == [
+        "Supercalifragilisticexpialidocious-and-more"]  # a single long word is never split
 
 
 def test_load_documents_clears_previous_gate_results(client, session):

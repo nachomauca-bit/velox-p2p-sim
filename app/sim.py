@@ -13,7 +13,7 @@ from typing import Iterable, Optional, TypeVar
 DURATIONS: dict[str, dict[str, int]] = {
     "asis": {
         "store_forwarding": 7,  # store mailbox -> forwarded to AP
-        "ap_open_and_key": 1,  # AP opens ap@ and keys the invoice
+        "ap_open_and_key": 1,  # AP opens ap@; the quick-fix tool keys the invoice
         "email_loop_min": 8,  # untracked back-and-forth, uniform 8..16 (mean 12)
         "email_loop_max": 16,
         "email_approval": 4,

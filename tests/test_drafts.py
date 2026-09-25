@@ -29,7 +29,7 @@ DETAIL_KEYS = (
     "contract_id", "contract_period", "doa_auto_approved", "requester_name", "next_owner_name", "next_owner_role",
     "credit_status", "applied_to", "flags", "terms_days", "terms_source", "invoice_terms_days", "agreed_terms_days",
     "terms_variance_paid", "touchless", "path", "cycle_breakdown", "registration_lag_days", "email_loop_days",
-    "line_checks",
+    "line_checks", "lookup_party_id", "invoice_date", "posted_on",
 )
 
 # Labels build_prompt may use; anything else in a prompt would be a fact the contract does not provide.
@@ -183,7 +183,7 @@ def test_format_amount(amount, currency, expected):
 
 
 @pytest.mark.parametrize("exception_type", ["po_no_receipt", "price_qty_mismatch", "wrong_legal_entity",
-                                            "duplicate_invoice", "human_review", "unknown_vendor", "no_po",
+                                            "human_review", "unknown_vendor", "no_po",
                                             "credit_note_without_invoice", "po_not_found"])
 def test_to_be_blocking_exceptions_with_an_owner_are_draftable(exception_type):
     assert drafts.is_draftable(make_decision(exception_type=exception_type))
@@ -202,6 +202,9 @@ def test_to_be_blocking_exceptions_with_an_owner_are_draftable(exception_type):
     pytest.param(make_decision(outcome="posted", exception_type="duplicate_vendor_account", sla_days=5),
                  id="duplicate_vendor_account info type"),
     pytest.param(make_decision(exception_type="email_loop", owner_name=None, sla_days=None), id="to-be email loop"),
+    pytest.param(make_decision(outcome="blocked_duplicate", exception_type="duplicate_invoice",
+                               owner_name="Marco Ruiz", owner_role="AP specialist", sla_days=0),
+                 id="blocked duplicate (automatic status reply)"),
     pytest.param(make_decision(owner_name=None), id="no owner"),
     pytest.param(make_decision(exception_type="not_a_type"), id="unknown type"),
 ])
@@ -333,6 +336,8 @@ def test_no_key_is_unavailable(gemini_mode, monkeypatch, client_creations):
     (make_decision(scenario="asis", exception_type="email_loop", owner_name=None, sla_days=None), "as-is"),
     (make_decision(outcome="posted", exception_type=None, owner_name=None, sla_days=None), "no open exception"),
     (make_decision(outcome="posted", exception_type="terms_variance", sla_days=None), "information flag"),
+    (make_decision(outcome="blocked_duplicate", exception_type="duplicate_invoice", owner_name="Marco Ruiz",
+                   sla_days=0), "Handled automatically: the supplier gets a status reply"),
     (make_decision(owner_name=None), "no owner"),
     (None, "no gate decision"),
 ])

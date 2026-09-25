@@ -15,7 +15,7 @@
 <article class="empty-state">
   <h2>{{ scenario_label }} has not been run yet</h2>
   <p>Run the scenario to send every document through the gate and watch the step log.</p>
-  {{ m.run_button() }}
+  {{ m.run_button(scenario=scenario) }}
 </article>
 {% else %}
 

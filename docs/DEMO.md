@@ -4,9 +4,9 @@
 
 ## Before the audience arrives (2 minutes)
 
-1. `make seed` (fresh database, 14 documents in both inboxes), then `make run` and open http://127.0.0.1:8010.
-2. Extraction must be in the cache: `make extract` once with `GEMINI_API_KEY` in `.env` (after that the demo runs offline). Without a key, set `EXTRACTOR=fixture` in `.env` and say so: the fields are then ground truth, not Gemini output, and the UI labels them.
-3. Reset both scenarios so nothing is processed yet: open http://127.0.0.1:8010/inbox?scenario=asis and press **Reset**, then http://127.0.0.1:8010/inbox?scenario=tobe and press **Reset**.
+1. **Extraction first.** Copy `.env.example` to `.env`. Either set `GEMINI_API_KEY` and run `make extract` once (the results are cached, so the demo then runs offline), or set `EXTRACTOR=fixture` and say so during the demo: the fields are then ground truth, not Gemini output, and the UI labels them. The app reads `.env` only when it starts, so do this **before** step 2 (or restart `make run` after editing `.env`).
+2. `make seed` (fresh database, 14 documents in both inboxes), then `make run` and open http://127.0.0.1:8010.
+3. Reset both scenarios so nothing is processed yet: open http://127.0.0.1:8010/inbox?scenario=asis and press **Reset**, then http://127.0.0.1:8010/inbox?scenario=tobe and press **Reset**. The Reset message must say "14 extracted"; if it says "Extraction pending", go back to step 1.
 4. Keep these tabs ready: Inbox (A), Vendor master (A), Compare.
 
 ## 0:00 – 0:30 · The as-is world (scenario A)
@@ -24,7 +24,7 @@
 ## 1:15 – 2:15 · The to-be world (scenario B)
 
 - Switch to **B — To-be**. **Vendor master**: 16 accounts / 12 suppliers, every account linked to its party, VAT ID and IBAN filled, terms from the contract.
-- **Inbox**: one intake channel; every document is registered on arrival.
+- **Inbox**: both mailboxes feed one intake step; every document is registered on arrival, including the three sent to the store.
 - Press **Run scenario**. Walk through three invoice pages:
   - **B-02**: resolved by **VAT ID** to the same supplier as B-01, same normalised invoice number and amount → **blocked duplicate**, the supplier gets a status reply.
   - **B-06**: 150 × 44.00 against PO 4500109 at 42.00, +300.00 outside the tolerance → exception to the **buyer, Sofia Brandt**, SLA 2 days, with the reason in one sentence. (With a key: **Draft message to owner** writes the two-sentence note, labelled "Draft by Gemini — reviewed by AP".)

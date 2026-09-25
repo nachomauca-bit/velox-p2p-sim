@@ -28,6 +28,14 @@
 <p class="flash flash-error">{{ error }}</p>
 {% endif %}
 
+{% for label, warning in partial_warnings %}
+<p class="flash flash-warn partial-run" role="status">{{ label }}: {{ warning }}. Its KPIs and column cover the
+  processed documents only.</p>
+{% endfor %}
+{% if partial_warnings and both_available %}
+<div class="compare-run">{{ m.run_button("Run both scenarios", "/run-both") }}</div>
+{% endif %}
+
 {% if data and not both_available %}
 <article class="empty-state compare-run">
   <h2>{% if not available.asis and not available.tobe %}Neither scenario has been run yet{% elif not available.asis %}Scenario A — As-is has not been run yet{% else %}Scenario B — To-be has not been run yet{% endif %}</h2>

@@ -51,7 +51,7 @@ Set `EXTRACTOR=fixture` in `.env` to use the ground-truth JSON in `tests/fixture
 - **Compare**: A vs B for the same 14 documents (**Run both scenarios** fills it in one click).
 - Every invoice page shows the PDF, the extracted fields with confidence, the gate trace, the outcome and (to-be exceptions, with a key) a two-sentence message to the owner drafted by Gemini.
 - Any page accepts `?scenario=asis` or `?scenario=tobe`, handy for links and screenshots.
-- The 3-minute demo script is in [docs/DEMO.md](docs/DEMO.md); screenshots are in [docs/img](docs/img).
+- The 3-minute demo script is in [docs/DEMO.md](docs/DEMO.md); screenshots are in [docs/img](docs/img) (taken with `EXTRACTOR=fixture`, because no Gemini key was available: the invoice page labels the fields as fixture data).
 
 ## Project layout
 
