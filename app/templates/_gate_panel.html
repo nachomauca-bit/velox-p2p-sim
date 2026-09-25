@@ -1,0 +1,165 @@
+{# Gate panel: outcome card, info flags, gate trace, line checks and simulated cycle.
+   Rendered inside invoice.html and returned alone to HTMX after "Re-run gate". #}
+{% import "_macros.html" as m %}
+<article class="panel gate-panel" id="gate-panel">
+  <header class="panel-head">
+    <h2>Control gate</h2>
+    <form method="post" action="/invoice/{{ doc.doc_id }}/rerun"
+          hx-post="/invoice/{{ doc.doc_id }}/rerun" hx-target="#gate-panel" hx-swap="outerHTML"
+          hx-disabled-elt="find button">
+      <button type="submit" class="{{ 'secondary outline' if gv else '' }}">{{ 'Re-run gate' if gv else 'Run gate on this document' }}</button>
+    </form>
+  </header>
+
+  {% if gate_message %}
+  <p class="flash flash-{{ gate_message[0] }}" role="status">{{ gate_message[1] }}</p>
+  {% endif %}
+
+  {% if not gv %}
+  <p class="placeholder-box"><strong>Not processed by the gate yet.</strong>
+    Press <strong>Run scenario</strong> in the header to process every document of the scenario,
+    or run the gate on this document only.</p>
+  {% else %}
+
+  <section class="outcome-card outcome-{{ gv.chip_tone }}" id="outcome">
+    <div class="outcome-head">
+      {{ m.outcome(gv.chip_label, gv.chip_tone) }}
+      {% if gv.badges %}<span class="outcome-badges">{{ m.badges(gv.badges) }}</span>{% endif %}
+    </div>
+    {% if gv.reason %}<p class="outcome-reason">{{ gv.reason }}</p>{% endif %}
+
+    <dl class="kv outcome-kv">
+      {% if gv.is_email_loop %}
+        <dt>Follow-up</dt>
+        <dd>Untracked manual follow-up by email: nobody owns it, no SLA, not tracked by type.
+          {% if gv.email_loop_days is not none %}<strong>{{ gv.email_loop_days }} business days</strong> in the email loop.{% endif %}</dd>
+      {% elif gv.exception_type and gv.outcome in ("exception", "human_review", "blocked_duplicate") %}
+        <dt>Exception</dt><dd>{{ gv.type_label }} <code>{{ gv.exception_type }}</code></dd>
+        <dt>Owner</dt><dd>{{ m.owner(gv.owner_name, gv.owner_role, gv.next_owner_name, gv.next_owner_role) }}</dd>
+        <dt>SLA</dt>
+        <dd>{% if gv.sla_days is none %}—{% elif gv.sla_days == 0 %}0 business days (blocked on arrival){% else %}{{ gv.sla_days }} business day{{ '' if gv.sla_days == 1 else 's' }}
+            · due <strong>{{ gv.sla_due|d }}</strong>{% endif %}</dd>
+        {% if gv.type_info %}<dt>Resolution</dt><dd>{{ gv.type_info.resolution }}</dd>{% endif %}
+      {% endif %}
+
+      {% if duplicate_link %}
+        <dt>Duplicate of</dt><dd><a href="{{ duplicate_link.href }}">{{ duplicate_link.label }}</a></dd>
+      {% endif %}
+      {% if gv.credit_status %}
+        <dt>Credit note</dt>
+        <dd>{% if gv.credit_status == "applied" %}<span class="chip chip-ok">applied</span>{% else %}<span class="chip chip-bad">unapplied</span>{% endif %}
+          {% if applied_link %} to <a href="{{ applied_link.href }}">{{ applied_link.label }}</a>{% elif gv.credit_status != "applied" %} — not linked to the invoice it credits{% endif %}</dd>
+      {% endif %}
+
+      {% if gv.account_id %}
+        <dt>Vendor account</dt>
+        <dd><code>{{ gv.account_id }}</code>{% if gv.resolution_method %} <small class="muted">found by {{ resolution_labels.get(gv.resolution_method, gv.resolution_method) }}</small>{% endif %}</dd>
+      {% endif %}
+      <dt>Billed to</dt><dd>{{ gv.bill_to_entity or '—' }}</dd>
+
+      {% if gv.posted %}
+        <dt>Posted to</dt>
+        <dd>{{ gv.posted_entity or '—' }}
+          {% if gv.wrong_entity_posting %}<span class="chip chip-bad">wrong entity: billed to {{ gv.bill_to_entity }}</span>{% endif %}</dd>
+        <dt>Pending invoice</dt>
+        <dd>{% if gv.invoice_id %}<a href="/erp/pending-invoices#{{ gv.invoice_id }}"><code>{{ gv.invoice_id }}</code></a>{% else %}—{% endif %}
+          {% if pvi and pvi.posted_on %}<small class="muted">posted {{ pvi.posted_on|d }}</small>{% endif %}</dd>
+        <dt>Payment terms</dt>
+        <dd>{% if gv.terms_days is not none %}{{ gv.terms_days }} days{% else %}—{% endif %}
+          {% if gv.terms_source %}<span class="chip chip-{{ 'ok' if gv.terms_source == 'master' else 'warn' }}">from the {{ gv.terms_source }}</span>{% endif %}
+          {% if gv.invoice_terms_days is not none and gv.agreed_terms_days is not none and gv.invoice_terms_days != gv.agreed_terms_days %}
+            <small class="muted">invoice {{ gv.invoice_terms_days }} days · agreed {{ gv.agreed_terms_days }} days</small>{% endif %}</dd>
+        <dt>Due date</dt><dd>{{ pvi.due_date|d if pvi else '—' }}</dd>
+      {% endif %}
+
+      {% if gv.commitment %}
+        <dt>Commitment</dt>
+        <dd>{% if gv.commitment == "po" %}PO <code>{{ gv.po_number }}</code>
+            {% elif gv.commitment == "contract" %}Contract <code>{{ gv.contract_id }}</code>{% if gv.contract_period %} · period {{ gv.contract_period }}{% endif %}
+            {% else %}No PO, no contract{% endif %}
+            {% if gv.doa_auto_approved %}<span class="chip chip-info">auto-approved under the DoA limit</span>{% endif %}
+            {% if gv.requester_name %}<small class="muted">requester {{ gv.requester_name }}</small>{% endif %}</dd>
+      {% endif %}
+      <dt>Simulated cycle</dt><dd>{{ gv.days if gv.days is not none else '—' }} business day{{ '' if gv.days == 1 else 's' }}{% if gv.path_label %} <small class="muted">({{ gv.path_label }})</small>{% endif %}</dd>
+    </dl>
+
+    {% if draftable %}
+    <div class="draft-box" id="draft-box">
+      <form method="post" action="/invoice/{{ doc.doc_id }}/draft"
+            hx-post="/invoice/{{ doc.doc_id }}/draft" hx-target="#draft-box" hx-swap="outerHTML"
+            hx-disabled-elt="find button">
+        <button type="submit" class="secondary">Draft message to owner</button>
+      </form>
+      <p class="muted small">A Gemini model drafts two sentences from the facts of this decision only; AP reviews the text before anything is sent.</p>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if gv.flags %}
+  <section class="info-flags">
+    <h3>Info tasks (non-blocking)</h3>
+    <ul>
+      {% for f in gv.flags %}
+      <li><span class="chip chip-info">{{ f.label or f.type }}</span>
+        {% if f.owner_name %}→ <strong>{{ f.owner_name }}</strong>{% endif %}
+        <span class="muted">{{ f.detail }}</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section>
+    <h3>Gate trace</h3>
+    <ol class="trace">
+      {% for s in trace %}
+      <li class="trace-step trace-{{ s.tone }}">
+        <span class="trace-name">{{ s.label }}</span>
+        <span class="chip chip-{{ s.tone }}">{{ s.result }}</span>
+        <span class="trace-detail">{{ s.detail }}</span>
+      </li>
+      {% else %}
+      <li class="muted">No steps recorded.</li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  {% if line_checks %}
+  <section>
+    <h3>Line checks</h3>
+    <div class="overflow-auto">
+    <table class="subtable line-checks">
+      <thead><tr>{% for c in line_columns %}<th>{{ c|replace('_', ' ') }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for row in line_checks %}
+        <tr>{% for c in line_columns %}{% set v = row.get(c) %}<td class="{{ 'num' if v is number and v is not boolean else '' }}">
+          {%- if v is sameas true %}yes{% elif v is sameas false %}<strong class="bad">no</strong>
+          {%- elif v is none or v == [] %}—
+          {%- elif c == "result" %}<span class="chip chip-{{ 'ok' if v == 'ok' else 'bad' }}">{{ v }}</span>
+          {%- elif v is number %}{{ v|qty }}
+          {%- elif v is iterable and v is not string %}<strong class="bad">{{ v|join(', ') }}</strong>
+          {%- else %}{{ v }}{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if cycle %}
+  <section>
+    <h3>Simulated cycle: {{ gv.days if gv.days is not none else '—' }} business day{{ '' if gv.days == 1 else 's' }}</h3>
+    {% if gv.days %}
+    <div class="cycle-bar" aria-hidden="true">
+      {% for c in cycle if c.days %}<span class="seg seg-{{ c.key }}" style="flex-grow: {{ c.days }}" title="{{ c.label }}: {{ c.days }}">{{ c.days }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <ul class="cycle-list">
+      {% for c in cycle %}
+      <li><span class="swatch seg-{{ c.key }}"></span>{{ c.label }} <strong>{{ c.days }}</strong></li>
+      {% endfor %}
+    </ul>
+    {% if gv.registration_lag_days %}<p class="muted small">Includes {{ gv.registration_lag_days }} business day{{ '' if gv.registration_lag_days == 1 else 's' }} before the document was registered.</p>{% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
+</article>

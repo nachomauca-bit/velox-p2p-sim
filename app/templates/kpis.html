@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block head %}
+{% if charts %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>{% endif %}
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › KPIs</p>
+  <h1>KPIs <span class="muted h1-sub">{{ scenario_label }}</span></h1>
+  <p class="lead">The same definitions as in the case deck. Hover a tile for its formula, or see the numbered notes below.
+    {% if data and data.run %}Latest run finished {{ data.run.finished_on|dt }}.{% endif %}</p>
+</div>
+
+{% if error %}
+<p class="flash flash-error">{{ error }}</p>
+{% endif %}
+
+{% if data and not available %}
+<p class="flash flash-info">{{ scenario_label }} has not been run yet: the vendor-master KPIs are shown as the data
+  stands; the KPIs computed from gate decisions need a run.</p>
+{% endif %}
+
+{% for g in groups %}
+<section class="kpi-group kpi-{{ g.key }}">
+  <h2>{{ g.title }}</h2>
+  <div class="kpi-tiles">
+    {% for t in g.tiles %}
+    <div class="kpi-tile{{ ' kpi-na' if t.shown == 'Run the scenario' else '' }}" id="kpi-{{ t.key }}" title="{{ t.formula }}">
+      <span class="kpi-value">{{ m.value(t.shown) }}</span>
+      <span class="kpi-label">{{ t.label }}<sup><a href="#note-{{ t.note }}">{{ t.note }}</a></sup></span>
+    </div>
+    {% endfor %}
+  </div>
+  {% if g.key == 'downstream' and not available and data %}
+  <div class="kpi-run">{{ m.run_button() }}</div>
+  {% endif %}
+</section>
+{% endfor %}
+
+{% if charts %}
+<section class="kpi-charts">
+  <figure class="chart-card">
+    <figcaption>Outcomes</figcaption>
+    <div class="chart-box chart-doughnut"><canvas id="chart-outcomes" aria-label="Outcomes per document" role="img"></canvas></div>
+    <details><summary>Data</summary>
+      <table class="subtable"><tbody>{% for label in charts.outcomes.labels %}<tr><td>{{ label }}</td><td class="num">{{ charts.outcomes["values"][loop.index0] }}</td></tr>{% endfor %}</tbody></table>
+    </details>
+  </figure>
+  <figure class="chart-card">
+    <figcaption>Exceptions by type <small class="muted">(blocking; info flags excluded)</small></figcaption>
+    <div class="chart-box"><canvas id="chart-exceptions" aria-label="Exceptions by type" role="img"></canvas></div>
+    <details><summary>Data</summary>
+      <table class="subtable"><tbody>{% for label in charts.exceptions.labels %}<tr><td>{{ label }}</td><td class="num">{{ charts.exceptions["values"][loop.index0] }}</td></tr>{% else %}<tr><td class="muted">No exceptions.</td></tr>{% endfor %}</tbody></table>
+    </details>
+  </figure>
+  <figure class="chart-card chart-wide">
+    <figcaption>Simulated cycle time per document <small class="muted">(business days from receipt to posting or resolution; 0 = handled the day it arrived)</small></figcaption>
+    <div class="chart-box"><canvas id="chart-cycle" aria-label="Simulated cycle days per document" role="img"></canvas></div>
+    <details><summary>Data</summary>
+      <table class="subtable"><tbody>{% for label in charts.cycle.labels %}<tr><td>{{ label }}</td><td>{{ charts.cycle.paths[loop.index0] }}</td><td class="num">{{ charts.cycle["values"][loop.index0] }}</td></tr>{% endfor %}</tbody></table>
+    </details>
+  </figure>
+</section>
+<script id="chart-data" type="application/json">{{ charts|tojson }}</script>
+<script>
+  window.addEventListener("load", function () {
+    if (!window.Chart) { return; }  /* offline: the Data tables below each chart still work */
+    var data = JSON.parse(document.getElementById("chart-data").textContent);
+    Chart.defaults.font.size = 15;
+    Chart.defaults.color = "#52514e";
+    var grid = { color: "#e1e0d9" };
+    new Chart(document.getElementById("chart-outcomes"), {
+      type: "doughnut",
+      data: { labels: data.outcomes.labels, datasets: [{ data: data.outcomes.values,
+              backgroundColor: data.outcomes.colours, borderColor: "#ffffff", borderWidth: 2 }] },
+      options: { maintainAspectRatio: false, cutout: "58%", plugins: { legend: { position: "right" } } }
+    });
+    new Chart(document.getElementById("chart-exceptions"), {
+      type: "bar",
+      data: { labels: data.exceptions.labels, datasets: [{ label: "Documents", data: data.exceptions.values,
+              backgroundColor: data.exceptions.colours, borderRadius: 4, maxBarThickness: 34 }] },
+      options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false } },
+                 scales: { x: { beginAtZero: true, ticks: { precision: 0 }, grid: grid }, y: { grid: { display: false } } } }
+    });
+    var paths = [];  /* one dataset per path, so the legend names the colours */
+    data.cycle.paths.forEach(function (p, i) { if (paths.indexOf(p) < 0) { paths.push(p); } });
+    new Chart(document.getElementById("chart-cycle"), {
+      type: "bar",
+      data: { labels: data.cycle.labels, datasets: paths.map(function (p) {
+        var i0 = data.cycle.paths.indexOf(p);
+        return { label: p, backgroundColor: data.cycle.colours[i0], borderRadius: 4, maxBarThickness: 34,
+                 data: data.cycle.values.map(function (v, i) { return data.cycle.paths[i] === p ? v : null; }) };
+      }) },
+      options: { maintainAspectRatio: false, skipNull: true,
+                 scales: { x: { stacked: true, grid: { display: false } },
+                           y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: grid,
+                                title: { display: true, text: "business days" } } } }
+    });
+  });
+</script>
+{% endif %}
+
+<section class="kpi-notes">
+  <h2>How each KPI is computed</h2>
+  <ol>
+    {% for t in tiles %}
+    <li id="note-{{ t.note }}"><strong>{{ t.label }}.</strong> {{ t.formula }}</li>
+    {% endfor %}
+  </ol>
+</section>
+{% endblock %}

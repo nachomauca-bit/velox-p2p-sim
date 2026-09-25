@@ -1,4 +1,4 @@
-"""Render the 12 sample documents (world.DOCUMENTS) as realistic one-page A4 PDFs (brief 5.6).
+"""Render the sample documents (world.DOCUMENTS: brief 5.6 plus 2 clean ones) as realistic one-page A4 PDFs.
 
 Four supplier templates, keyed by spec.layout:
   classic  Times fonts, logo-box letterhead top-left, boxed meta table top-right

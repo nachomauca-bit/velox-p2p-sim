@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › Run</p>
+  <h1>Gate run <span class="muted h1-sub">{{ scenario_label }}</span></h1>
+  {% if run %}
+  <p class="lead">Run <code>{{ run.run_id }}</code> · finished {{ run.finished_on|dt }} ·
+    {{ summary.documents or 0 }} documents · {{ summary.touchless or 0 }} touchless · {{ summary.exceptions or 0 }} exceptions.
+    <a href="/gate/exceptions">Exception cockpit</a> · <a href="/gate/kpis">KPIs</a> · <a href="/gate/compare">Compare A vs B</a> · <a href="/inbox">Inbox</a></p>
+  {% endif %}
+</div>
+
+{% if not run %}
+<article class="empty-state">
+  <h2>{{ scenario_label }} has not been run yet</h2>
+  <p>Run the scenario to send every document through the gate and watch the step log.</p>
+  {{ m.run_button() }}
+</article>
+{% else %}
+
+{% if no_extraction or extraction.unavailable or extraction.failed %}
+<p class="flash flash-warn">
+  {% if no_extraction %}No extraction for {{ no_extraction|length }} document{{ '' if no_extraction|length == 1 else 's' }}:
+    {{ no_extraction|join(', ') }}. The gate had no fields to read (see the outcome per document below).
+    {{ no_extraction_reason }}{% endif %}
+  {% if extraction.failed %}Extraction failed for {{ extraction.failed }} document{{ '' if extraction.failed == 1 else 's' }}{% if extraction.error %}: {{ extraction.error }}{% endif %}.{% endif %}
+</p>
+{% endif %}
+{% if unprocessed %}
+<p class="flash flash-info">Not in this run: {{ unprocessed|join(', ') }} (loaded after it). Run the scenario again to include {{ 'it' if unprocessed|length == 1 else 'them' }}.</p>
+{% endif %}
+
+<section class="run-log-wrap">
+  <header class="run-log-head">
+    <h2>Step log</h2>
+    <a href="#run-log" class="show-all">Show all</a>
+  </header>
+  <div class="run-log" id="run-log" role="log" aria-label="Gate step log">
+    {% for line in lines %}<div class="log-line log-{{ line.kind }}" style="animation-delay: {{ loop.index0 * step_ms }}ms"><span class="log-prefix">{{ line.prefix }}</span> {{ line.before }}<span class="log-token log-{{ line.tone }}">{{ line.token }}</span>{{ line.after }}</div>
+    {% else %}<div class="log-line muted">The run recorded no log lines.</div>{% endfor %}
+  </div>
+  <script>
+    (function () {  /* keep the newest revealed line in view while the log plays */
+      var log = document.getElementById("run-log");
+      function follow() { log.scrollTop = log.scrollHeight; }
+      log.addEventListener("animationstart", follow);
+      log.addEventListener("animationend", follow);
+    })();
+  </script>
+</section>
+
+<section class="run-outcomes">
+  <h2>Outcome per document</h2>
+  <div class="overflow-auto">
+  <table class="gate-table striped">
+    <thead>
+      <tr><th>Doc</th><th>Supplier</th><th class="num">Amount</th><th>Outcome</th><th>Owner</th><th class="num">SLA</th><th class="num">Simulated days</th></tr>
+    </thead>
+    <tbody>
+    {% for v in rows %}
+      <tr id="row-{{ v.doc_id }}">
+        <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
+        <td>{{ v.supplier }}</td>
+        <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
+        <td>{{ m.outcome(v.chip_label, v.chip_tone) }}{% if v.badges %}<div class="cell-badges">{{ m.badges(v.badges) }}</div>{% endif %}</td>
+        <td>{{ m.owner(v.owner_name, None, v.next_owner_name) }}</td>
+        <td class="num">{% if v.sla_days is none %}—{% else %}{{ v.sla_days }} d{% endif %}</td>
+        <td class="num"><strong>{{ v.days if v.days is not none else '—' }}</strong></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

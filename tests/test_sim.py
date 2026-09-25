@@ -72,7 +72,7 @@ def test_business_days_between_inverts_add_business_days() -> None:
 # Registration per scenario and channel (brief section 6)
 # --------------------------------------------------------------------------------------------
 
-# Expected as-is registration of the 12 sample documents: ap@ +1 business day, store mailbox +7.
+# Expected as-is registration of the 14 sample documents: ap@ +1 business day, store mailbox +7.
 ASIS_REGISTERED_ON = {
     1: datetime(2026, 10, 2, 8, 42),
     2: datetime(2026, 10, 26, 16, 5),  # store mailbox, received Thu 15 Oct
@@ -86,6 +86,8 @@ ASIS_REGISTERED_ON = {
     10: datetime(2026, 10, 12, 12, 10),  # store mailbox, received Thu 1 Oct
     11: datetime(2026, 10, 5, 9, 5),
     12: datetime(2026, 10, 6, 8, 30),
+    13: datetime(2026, 10, 5, 14, 20),  # received Fri -> Mon
+    14: datetime(2026, 10, 2, 16, 40),
 }
 
 
@@ -146,3 +148,9 @@ def test_email_loop_days_stays_within_8_to_16() -> None:
 def test_email_loop_days_mean_is_about_12() -> None:
     values = [sim.email_loop_days(f"doc-{i}") for i in range(500)]
     assert 11 <= sum(values) / len(values) <= 13
+
+
+def test_cockpit_snapshot_is_the_close_of_the_last_registration_day() -> None:
+    registered = [datetime(2026, 10, 1, 14, 2), None, datetime(2026, 10, 5, 8, 30), datetime(2026, 10, 2, 10, 21)]
+    assert sim.cockpit_as_of(registered) == datetime(2026, 10, 5, 17, 0)
+    assert sim.cockpit_as_of([]) is None

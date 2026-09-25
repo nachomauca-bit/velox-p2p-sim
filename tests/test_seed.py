@@ -363,7 +363,8 @@ def _naive_asis_lookup(printed_name: str, accounts: list[world.AccountSpec]) -> 
 
 
 ASIS_EXPECTED_ACCOUNT = {1: "V-000101", 2: "V-000117", 3: "V-000102", 4: "V-000119", 5: "V-000103", 6: "V-000106",
-                         7: "V-000105", 8: "V-000107", 9: "V-000108", 10: "V-000109", 11: "V-000104", 12: "V-000112"}
+                         7: "V-000105", 8: "V-000107", 9: "V-000108", 10: "V-000109", 11: "V-000104", 12: "V-000112",
+                         13: "V-000110", 14: "V-000111"}
 
 
 @pytest.mark.parametrize("spec", world.DOCUMENTS, ids=lambda d: f"doc{d.no:02d}")

@@ -1,0 +1,125 @@
+# Expected control-gate result per sample document and scenario, with the ground-truth (fixture) extraction.
+# Source: brief section 5.6 and section 8, plus the decisions of 24 Sep 2026 (docs 13-14 added; doc 12 routed
+# to the receiver first, then the buyer; non-PO requester of doc 10 = Paul Neumann). Drives tests/test_golden.py.
+#
+# Keys compared when present (see gate.py for their meaning):
+#   outcome, exception_type, owner_name, next_owner_name, sla_days, account (vendor account used),
+#   posted (a pending vendor invoice was written), posted_entity, wrong_entity_posting, duplicate_posting,
+#   commitment (po | contract | none), po_number, contract_id, credit_status, flags (info flag types),
+#   touchless, terms_source, terms_days, doa_auto_approved, requester_name, simulated_days
+
+documents:
+  1:
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000101,
+           posted: true, posted_entity: VDE, wrong_entity_posting: false, duplicate_posting: false,
+           touchless: false, terms_source: invoice, terms_days: 14}
+    tobe: {outcome: posted, exception_type: null, account: V-000101, posted: true, posted_entity: VDE,
+           commitment: contract, contract_id: CT-2025-001, flags: [terms_variance], touchless: true,
+           terms_source: master, terms_days: 30, simulated_days: 0}
+  2:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000117, posted: true, posted_entity: VDE,
+           duplicate_posting: true, touchless: false, terms_source: invoice, terms_days: 14}
+    tobe: {outcome: blocked_duplicate, exception_type: duplicate_invoice, owner_name: Marco Ruiz, sla_days: 0,
+           account: V-000101, posted: false, touchless: true, simulated_days: 0}
+  3:
+    asis: {outcome: posted, exception_type: null, account: V-000102, posted: true, posted_entity: VFR,
+           commitment: po, po_number: "4500117", touchless: true}
+    tobe: {outcome: posted, exception_type: null, account: V-000102, posted: true, posted_entity: VFR,
+           commitment: po, po_number: "4500117", flags: [], touchless: true, terms_source: master, terms_days: 45}
+  4:
+    asis: {outcome: posted, exception_type: null, account: V-000119, posted: true, posted_entity: VFR,
+           credit_status: unapplied, touchless: true}
+    tobe: {outcome: applied_credit, exception_type: null, account: V-000102, credit_status: applied,
+           touchless: true, simulated_days: 0}
+  5:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000103, posted: true, posted_entity: VDE,
+           touchless: false}
+    tobe: {outcome: exception, exception_type: po_no_receipt, owner_name: Jonas Weber, sla_days: 2,
+           account: V-000103, posted: false, commitment: po, po_number: "4500123", touchless: false,
+           simulated_days: 2}
+  6:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000106, posted: true, posted_entity: VDE,
+           touchless: false, terms_source: invoice, terms_days: 30}
+    tobe: {outcome: exception, exception_type: price_qty_mismatch, owner_name: Sofia Brandt, sla_days: 2,
+           account: V-000106, posted: false, commitment: po, po_number: "4500109", touchless: false,
+           simulated_days: 2}
+  7:
+    asis: {outcome: posted, exception_type: null, account: V-000105, posted: true, posted_entity: VUS,
+           commitment: po, po_number: "4500131", touchless: true}
+    tobe: {outcome: posted, exception_type: null, account: V-000105, posted: true, posted_entity: VUS,
+           commitment: po, po_number: "4500131", touchless: true}
+  8:
+    asis: {outcome: posted, exception_type: null, account: V-000107, posted: true, posted_entity: VDE,
+           wrong_entity_posting: true, commitment: po, po_number: "4500126", touchless: true}
+    tobe: {outcome: exception, exception_type: wrong_legal_entity, owner_name: Marco Ruiz, sla_days: 1,
+           account: V-000107, posted: false, touchless: false, simulated_days: 1}
+  9:
+    asis: {outcome: posted, exception_type: null, account: V-000108, posted: true, posted_entity: VFR,
+           commitment: po, po_number: "4500114", touchless: true}
+    tobe: {outcome: posted, exception_type: null, account: V-000108, posted: true, posted_entity: VFR,
+           commitment: po, po_number: "4500114", touchless: true}
+  10:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000109, posted: true, posted_entity: VDE,
+           touchless: false}
+    tobe: {outcome: posted, exception_type: null, account: V-000109, posted: true, posted_entity: VDE,
+           commitment: none, doa_auto_approved: true, requester_name: Paul Neumann, touchless: true,
+           simulated_days: 0}
+  11:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000104, posted: true, posted_entity: VDE,
+           wrong_entity_posting: true, touchless: false}
+    tobe: {outcome: posted, exception_type: null, account: V-000113, posted: true, posted_entity: VFR,
+           commitment: contract, contract_id: CT-2025-003, touchless: true}
+  12:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000112, posted: true, posted_entity: VDE,
+           touchless: false}
+    tobe: {outcome: exception, exception_type: price_qty_mismatch, owner_name: Tim Koch,
+           next_owner_name: Sofia Brandt, sla_days: 2, account: V-000112, posted: false, commitment: po,
+           po_number: "4500112", touchless: false, simulated_days: 2}
+  13:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000110, posted: true, posted_entity: VDE,
+           touchless: false}
+    tobe: {outcome: posted, exception_type: null, account: V-000110, posted: true, posted_entity: VDE,
+           commitment: po, po_number: "4500128", touchless: true}
+  14:
+    asis: {outcome: exception, exception_type: email_loop, account: V-000111, posted: true, posted_entity: VUS,
+           touchless: false}
+    tobe: {outcome: posted, exception_type: null, account: V-000111, posted: true, posted_entity: VUS,
+           commitment: contract, contract_id: CT-2025-004, touchless: true}
+
+# Scenario-level results (metrics.compute). Percentages are rounded to one decimal.
+kpis:
+  asis:
+    documents: 14
+    touchless: 5            # docs 3, 4, 7, 8, 9 (posted by the quick-fix tool with no human step)
+    touchless_rate: 35.7
+    exceptions: 9           # all in the untracked email loop
+    exceptions_by_type: {email_loop: 9}
+    duplicates_blocked: 0
+    duplicate_postings: 2   # the same Nordwind invoice posted on V-000101 (doc 1) and V-000117 (doc 2)
+    duplicate_invoices: 1
+    credit_notes_applied: 0
+    credit_notes_unapplied: 1
+    wrong_entity_postings: 2  # docs 8 and 11
+    terms_variance_paid: 3    # docs 1, 2 (14 days) and 6 (30 days) paid on invoice terms, not master terms
+    cash_leakage_amount: 29646.0  # duplicate posting 27,846.00 + unapplied credit 1,800.00
+    po_contract_coverage: 30.8    # 4 of 13 invoices have a PO in the as-is ERP; contracts are not used
+    registration_lag_days: 2.3    # (11 x 1 + 3 x 7) / 14
+    accounts_per_supplier: 2.3
+  tobe:
+    documents: 14
+    touchless: 10
+    touchless_rate: 71.4
+    exceptions: 4
+    exceptions_by_type: {po_no_receipt: 1, price_qty_mismatch: 2, wrong_legal_entity: 1}
+    duplicates_blocked: 1
+    duplicate_postings: 0
+    duplicate_invoices: 0
+    credit_notes_applied: 1
+    credit_notes_unapplied: 0
+    wrong_entity_postings: 0
+    terms_variance_paid: 0
+    cash_leakage_amount: 0.0
+    po_contract_coverage: 92.3    # 12 of 13 invoices (all but doc 10) have a PO or a recurring contract
+    registration_lag_days: 0.0
+    avg_cycle_days: 0.5           # (2 + 2 + 1 + 2) / 14
+    accounts_per_supplier: 1.3

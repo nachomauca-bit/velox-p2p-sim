@@ -1,8 +1,8 @@
-"""The clean world: single source of truth for seed data and for the 12 sample documents.
+"""The clean world: single source of truth for seed data and for the 14 sample documents.
 
 Everything else is derived from this module:
 - seed.py loads it as scenario `tobe` and derives scenario `asis` by explicit corruption rules;
-- invoices_gen.py renders DOCUMENTS as PDFs;
+- invoices_gen.py renders DOCUMENTS (the 12 of the brief plus 2 clean ones) as PDFs;
 - tests/fixtures/ ground-truth extraction JSON is built from DOCUMENTS.
 
 All companies, people, VAT IDs and bank accounts are fictional.
@@ -69,6 +69,10 @@ PEOPLE: dict[str, Person] = {
 
 MASTER_DATA_OWNER = PEOPLE["lena"]
 AP_SPECIALIST = PEOPLE["marco"]
+
+# Requester (and cost-centre owner) for non-PO spend without a contract, per supplier and legal entity.
+# Kaffee & Co supplies the Berlin 01 store; its manager owns the store cost centre.
+NON_PO_REQUESTERS: dict[tuple[str, str], str] = {("P-0009", "VDE"): "paul"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -387,7 +391,7 @@ RECEIPTS: list[ReceiptSpec] = [
 
 
 # --------------------------------------------------------------------------------------------
-# The 12 inbound documents (brief section 5.6)
+# The inbound documents: the 12 of brief section 5.6 plus two clean ones (13, 14)
 # --------------------------------------------------------------------------------------------
 
 AP_MAILBOX = "ap@velox.com"
@@ -647,7 +651,39 @@ DOCUMENTS: list[DocumentSpec] = [
         tax_rate=0.0, tax_label="VAT 0%", tax_note="Export of goods outside the UK: zero-rated.",
         po_numbers=("4500112",), layout="modern",
         designed_to_show="120 units invoiced, only 100 received (line 2: 40 invoiced, 20 received): "
-                         "quantity mismatch -> exception to the receiver; partial.",
+                         "quantity mismatch -> exception to the receiver, then the buyer; partial.",
+    ),
+    # Documents 13 and 14 are not in the brief's table: two clean, everyday invoices added so that the
+    # sample is not made of difficult cases only (decision of 24 Sep 2026; see docs/ASSUMPTIONS.md).
+    DocumentSpec(
+        no=13, filename="13_securenet_invoice.pdf", channel="ap_mailbox",
+        sender_email="billing@securenet.ch",
+        subject="Invoice SN-2026-3307 — PO 4500128",
+        received_on=datetime(2026, 10, 2, 14, 20), doc_type="invoice", party_id="P-0010",
+        printed_supplier_name="SecureNet AG", bill_to_entity="VDE",
+        invoice_number="SN-2026-3307", invoice_date=date(2026, 10, 1), payment_terms_days=30,
+        currency="EUR",
+        lines=(InvoiceLineSpec("Managed firewall service Q3 2026", 1, 4800.00),),
+        tax_rate=0.0, tax_label="VAT 0%",
+        tax_note="Reverse charge: VAT to be accounted for by the recipient (services supplied from Switzerland).",
+        po_numbers=("4500128",), layout="classic",
+        designed_to_show="Clean PO + service confirmation -> touchless (to-be); the PO was never keyed in the "
+                         "as-is ERP -> email loop.",
+    ),
+    DocumentSpec(
+        no=14, filename="14_harbor_freight_invoice.pdf", channel="ap_mailbox",
+        sender_email="billing@harborff.com",
+        subject="Invoice HFF-2026-0930 — September 2026 freight services",
+        received_on=datetime(2026, 10, 1, 16, 40), doc_type="invoice", party_id="P-0011",
+        printed_supplier_name="Harbor Freight Forwarders Inc.", bill_to_entity="VUS",
+        invoice_number="HFF-2026-0930", invoice_date=date(2026, 9, 30), payment_terms_days=30,
+        currency="USD",
+        lines=(InvoiceLineSpec("Ocean freight forwarding — September 2026", 1, 11400.00),
+               InvoiceLineSpec("Customs brokerage and drayage — September 2026", 1, 5850.00)),
+        tax_rate=0.0, tax_label="Sales tax", tax_note="Freight and customs services: no sales tax charged.",
+        contract_reference="CT-2025-004", layout="banner",
+        designed_to_show="No PO, recurring contract match inside the monthly range -> touchless (to-be) vs "
+                         "email loop (as-is).",
     ),
 ]
 DOCUMENT_BY_NO = {d.no: d for d in DOCUMENTS}

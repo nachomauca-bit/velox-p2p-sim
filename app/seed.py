@@ -3,7 +3,7 @@
 - `tobe` = the clean world, loaded as defined.
 - `asis` = the clean world after explicit corruption rules D1–D6 (documented in docs/ASSUMPTIONS.md).
 
-Also loads the 12 sample documents into the simulated mailboxes ("Load sample documents").
+Also loads the 14 sample documents into the simulated mailboxes ("Load sample documents").
 
 CLI:  python -m app.seed            # drop + create tables, seed both scenarios, generate PDFs,
                                      # load sample documents into both inboxes (cached extraction only)
@@ -247,7 +247,7 @@ def reset_scenario(session: Session, scenario: str) -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# Intake: load the 12 sample documents into the simulated mailboxes
+# Intake: load the 14 sample documents into the simulated mailboxes
 # --------------------------------------------------------------------------------------------
 
 
@@ -271,7 +271,7 @@ def ensure_pdfs() -> None:
 
 
 def load_sample_documents(session: Session, scenario: str) -> list[InboundDocument]:
-    """(Re)load the 12 sample PDFs into the two mailboxes of one scenario.
+    """(Re)load the 14 sample PDFs into the two mailboxes of one scenario.
 
     to-be: every document is registered on arrival (registered_on = received_on).
     as-is: documents stay unregistered until the scenario runs; the expected registration date

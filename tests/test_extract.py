@@ -192,12 +192,12 @@ def make_doc(session, file_path: str, sample_no: int = 4, scenario: str = "tobe"
 
 def test_every_fixture_file_validates_against_the_strict_schema():
     paths = sorted(config.FIXTURES_DIR.glob("*.json"))
-    assert len(paths) == 12
+    assert len(paths) == len(world.DOCUMENTS)
     for path in paths:
         InvoiceExtraction.model_validate(json.loads(path.read_text(encoding="utf-8"))["extraction"])
 
 
-def test_fixture_mode_returns_all_12_documents():
+def test_fixture_mode_returns_every_document():
     assert config.EXTRACTOR == "fixture"
     for spec in world.DOCUMENTS:
         result = extract.extract_file(config.INVOICES_DIR / spec.filename)
@@ -1076,4 +1076,4 @@ def test_cli_fixture_mode_updates_both_scenarios_in_the_database(cli_invoices, s
 
 def test_cli_rejects_unknown_sample_numbers(cli_invoices):
     with pytest.raises(SystemExit):
-        extract.main(["--only", "13", "--no-db"])
+        extract.main(["--only", str(len(world.DOCUMENTS) + 1), "--no-db"])

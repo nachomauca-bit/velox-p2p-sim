@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="/static/app.css">
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2/dist/htmx.min.js" defer></script>
+  {% block head %}{% endblock %}
 </head>
 <body class="scenario-{{ scenario }}">
   <header class="topbar">
@@ -25,9 +26,11 @@
       <form method="post" action="/documents/load">
         <button type="submit">Load sample documents</button>
       </form>
-      <span class="tip" title="Phase 2"><button type="button" disabled>Run scenario</button></span>
+      <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
+        <button type="submit" class="run-button" title="Process every document of {{ scenario_label }} through the gate">Run scenario</button>
+      </form>
       <form method="post" action="/reset"
-            onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded and the inbox of this scenario is emptied.');">
+            onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded, the gate results are cleared and the sample documents are reloaded, unprocessed.');">
         <button type="submit" class="secondary outline">Reset</button>
       </form>
     </div>
@@ -47,7 +50,7 @@
           {% for path, label in items %}
           <li>
             <a href="{{ path }}"{% if nav_active == path %} aria-current="page"{% endif %}>
-              {{ label }}{% if path in phase2_paths %} <small class="later">phase 2</small>{% endif %}
+              {{ label }}
             </a>
           </li>
           {% endfor %}

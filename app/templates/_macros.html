@@ -1,0 +1,28 @@
+{# Shared bits of the gate pages: outcome chip, badges, owner cell, run button. #}
+
+{% macro outcome(label, tone) -%}
+<span class="chip chip-{{ tone }} outcome-chip">{{ label }}</span>
+{%- endmacro %}
+
+{% macro badges(items) -%}
+{% for label, tone in items %}<span class="badge-mini badge-{{ tone }}">{{ label }}</span> {% endfor %}
+{%- endmacro %}
+
+{% macro owner(name, role=None, next_name=None, next_role=None) -%}
+{% if name %}<strong>{{ name }}</strong>{% if role %} <small class="muted">{{ role }}</small>{% endif %}
+{% else %}<span class="muted">—</span>{% endif %}
+{% if next_name %}<div class="next-owner">then <strong>{{ next_name }}</strong>{% if next_role %} <small class="muted">{{ next_role }}</small>{% endif %}</div>{% endif %}
+{%- endmacro %}
+
+{% macro run_button(label="Run scenario", action="/run") -%}
+<form method="post" action="{{ action }}" class="inline-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
+  <button type="submit">{{ label }}</button>
+</form>
+{%- endmacro %}
+
+{# KPI value: "3 days (0 under the 500 EUR DoA limit)" -> the value, and the parenthesis as a small note. #}
+{% macro value(text) -%}
+{%- set parts = (text or '—')|string -%}{%- set i = parts.find(' (') -%}
+{%- if i > 0 and parts.endswith(')') -%}{{ parts[:i] }}<small class="value-note">{{ parts[i + 2:-1] }}</small>
+{%- else -%}{{ parts }}{%- endif -%}
+{%- endmacro %}

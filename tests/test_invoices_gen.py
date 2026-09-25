@@ -1,4 +1,4 @@
-"""The 12 sample PDFs: generated, byte-identical across runs, and carrying the traits of brief 5.6."""
+"""The sample PDFs (12 from the brief + 2 clean ones): generated, byte-identical across runs, and carrying the traits of brief 5.6."""
 from __future__ import annotations
 
 import hashlib
@@ -34,8 +34,8 @@ def _sha256_by_name(folder: Path) -> dict[str, str]:
     return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(folder.glob("*.pdf"))}
 
 
-def test_twelve_one_page_pdfs(pdf_dir):
-    assert len(world.DOCUMENTS) == 12
+def test_one_page_pdf_per_document(pdf_dir):
+    assert len(world.DOCUMENTS) == 14  # the 12 of the brief + 2 clean documents
     for spec in world.DOCUMENTS:
         path = pdf_dir / spec.filename
         assert path.read_bytes().startswith(b"%PDF")
@@ -47,7 +47,7 @@ def test_output_is_deterministic(tmp_path):
     invoices_gen.generate_all(tmp_path / "b")
     assert [p.name for p in paths] == [d.filename for d in world.DOCUMENTS]
     first, second = _sha256_by_name(tmp_path / "a"), _sha256_by_name(tmp_path / "b")
-    assert len(first) == 12
+    assert len(first) == len(world.DOCUMENTS)
     assert first == second
 
 

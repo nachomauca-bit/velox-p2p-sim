@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
   <p class="crumb">Control gate (new) › Intake</p>
@@ -8,15 +9,26 @@
       Every document is registered on arrival: it gets a document ID and the ageing clock starts.
     {% else %}
       Documents wait in the mailboxes until AP opens ap@ or the store forwards its mail to AP.
-      Nothing is registered until then; each card shows the expected registration date and why.
+      {% if processed %}Each card shows when that happened: the ageing clock only started then.
+      {% else %}Nothing is registered until then; each card shows the expected registration date and why.{% endif %}
     {% endif %}
   </p>
+  {% if total %}
+  <p class="run-status">
+    {% if processed %}
+      <span class="chip chip-ok">Gate run</span> {{ processed }} of {{ total }} documents processed{% if run %} on {{ run.finished_on|dt }}{% endif %}.
+      <a href="/run">Step log</a> · <a href="/gate/exceptions">Exception cockpit</a> · <a href="/gate/kpis">KPIs</a> · <a href="/gate/compare">Compare</a>
+    {% else %}
+      <span class="chip chip-neutral">Not processed yet</span> Press <strong>Run scenario</strong> to send the {{ total }} documents through the gate.
+    {% endif %}
+  </p>
+  {% endif %}
 </div>
 
 {% if total == 0 %}
 <article class="empty-state">
   <h2>No documents in the mailboxes of {{ scenario_label }}</h2>
-  <p>Load the 12 sample supplier documents into ap@ and the Berlin store mailbox to start.</p>
+  <p>Load the sample supplier documents into ap@ and the Berlin store mailbox to start.</p>
   <form method="post" action="/documents/load">
     <button type="submit">Load sample documents</button>
   </form>
@@ -33,7 +45,7 @@
     {% if not box.docs %}
       <p class="muted">No documents in this mailbox.</p>
     {% endif %}
-    {% for doc, reg in box.docs %}
+    {% for doc, reg, gv in box.docs %}
     <article class="doc-card" id="doc-{{ doc.doc_id }}">
       <div class="doc-card-top">
         <a class="doc-id" href="/invoice/{{ doc.doc_id }}">{{ doc.doc_id }}</a>
@@ -50,6 +62,15 @@
             — expected {{ reg.date|d }} <span class="muted">({{ reg.reason }})</span></dd>
         {% endif %}
       </dl>
+      {% if gv %}
+      <div class="doc-outcome">
+        {{ m.outcome(gv.chip_label, gv.chip_tone) }}
+        {% if gv.owner_name or gv.outcome in ("exception", "human_review") %}
+        <span class="doc-owner">Owner: {% if gv.owner_name %}<strong>{{ gv.owner_name }}</strong>{% if gv.next_owner_name %}, then {{ gv.next_owner_name }}{% endif %}{% else %}—{% endif %}{% if gv.sla_days is not none %} · SLA {{ gv.sla_days }} day{{ '' if gv.sla_days == 1 else 's' }}{% endif %}</span>
+        {% endif %}
+        {% if gv.badges %}<div class="doc-badges">{{ m.badges(gv.badges) }}</div>{% endif %}
+      </div>
+      {% endif %}
       <div class="chips">
         {% if reg.registered %}
           <span class="chip chip-ok">Registered</span>

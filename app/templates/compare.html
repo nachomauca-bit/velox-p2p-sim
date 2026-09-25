@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+
+{% macro cell_view(c) -%}
+{% if not c %}
+  <span class="muted">Not run</span>
+{% else %}
+  <a class="doc-id" href="/invoice/{{ c.doc_id }}">{{ c.doc_id }}</a>
+  {{ m.outcome(c.chip_label, c.chip_tone) }}
+  <div class="cmp-meta">
+    Owner: {% if c.owner_name %}<strong>{{ c.owner_name }}</strong>{% if c.next_owner_name %}, then {{ c.next_owner_name }}{% endif %}{% else %}—{% endif %}
+    · <strong>{{ c.days if c.days is not none else '—' }}</strong> day{{ '' if c.days == 1 else 's' }}
+    {% if c.account_id %}· <code>{{ c.account_id }}</code>{% endif %}{% if c.posted_entity %} → {{ c.posted_entity }}{% endif %}
+  </div>
+  {% if c.badge_chips %}<div class="cell-badges">{{ m.badges(c.badge_chips) }}</div>{% endif %}
+{% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <p class="crumb">Control gate (new) › Compare</p>
+  <h1>Compare <span class="muted h1-sub">A — As-is vs B — To-be, same {{ rows|length }} documents</span></h1>
+  <p class="lead">The same supplier documents, the same extraction, two processes: a dirty vendor master and no gate (A)
+    against clean master data, commitments and a control gate (B).</p>
+</div>
+
+{% if error %}
+<p class="flash flash-error">{{ error }}</p>
+{% endif %}
+
+{% if data and not both_available %}
+<article class="empty-state compare-run">
+  <h2>{% if not available.asis and not available.tobe %}Neither scenario has been run yet{% elif not available.asis %}Scenario A — As-is has not been run yet{% else %}Scenario B — To-be has not been run yet{% endif %}</h2>
+  <p>Run both scenarios to fill the comparison (as-is first, then to-be).</p>
+  {{ m.run_button("Run both scenarios", "/run-both") }}
+</article>
+{% endif %}
+
+{% if data %}
+<section class="cycle-compare">
+  <h2>Cycle time, shown both ways</h2>
+  <div class="cycle-cards">
+    {% for r in cycle_rows %}
+    <div class="cycle-card" title="{{ r.formula }}">
+      <span class="cycle-label">{{ r.label }}</span>
+      <div class="ab">
+        <div class="ab-side side-asis{{ ' better' if r.better == 'asis' else '' }}"><span class="ab-tag">A</span><span class="ab-value">{{ m.value(r.asis) }}</span></div>
+        <div class="ab-side side-tobe{{ ' better' if r.better == 'tobe' else '' }}"><span class="ab-tag">B</span><span class="ab-value">{{ m.value(r.tobe) }}</span></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="muted small">The sample average depends on the mix of these documents; the reference path is the case's
+    typical failure (a non-PO invoice sent to a store) and uses the fixed durations on the Assumptions page.</p>
+</section>
+
+{% for g in groups %}
+<section class="kpi-group kpi-{{ g.key }}">
+  <h2>{{ g.title }}</h2>
+  <div class="kpi-tiles ab-tiles">
+    {% for r in g.rows if r.key not in ('avg_cycle_days', 'avg_cycle_followup_days', 'reference_nonpo_store_days') %}
+    <div class="kpi-tile ab-tile" id="cmp-{{ r.key }}" title="{{ r.formula }}">
+      <span class="kpi-label">{{ r.label }}</span>
+      <div class="ab">
+        <div class="ab-side side-asis{{ ' better' if r.better == 'asis' else '' }}"><span class="ab-tag">A</span><span class="ab-value">{{ m.value(r.asis) }}</span></div>
+        <div class="ab-side side-tobe{{ ' better' if r.better == 'tobe' else '' }}"><span class="ab-tag">B</span><span class="ab-value">{{ m.value(r.tobe) }}</span></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+<p class="muted small">Highlighted: the better value of the two. Formulas on hover; the numbered definitions are on the <a href="/gate/kpis">KPIs</a> page.</p>
+
+<section class="compare-docs">
+  <h2>Per document</h2>
+  <div class="overflow-auto">
+  <table class="gate-table compare-table">
+    <thead>
+      <tr><th class="num">Doc</th><th>Supplier</th><th class="num">Amount</th>
+        <th class="col-asis">A — As-is</th><th class="col-tobe">B — To-be</th></tr>
+    </thead>
+    {% for r in rows %}
+    <tbody class="cmp-row" id="cmp-doc-{{ r.sample_no }}">
+      <tr>
+        <td class="num"><strong>{{ '%02d'|format(r.sample_no) }}</strong></td>
+        <td>{{ r.supplier }}<br><small class="muted">{{ r.invoice_number }}</small></td>
+        <td class="num nowrap">{{ r.gross_total|money }} {{ r.currency }}</td>
+        <td class="col-asis">{{ cell_view(r.a) }}</td>
+        <td class="col-tobe">{{ cell_view(r.b) }}</td>
+      </tr>
+      {% if r.designed_to_show %}
+      <tr class="designed"><td></td><td colspan="4" class="muted">Designed to show: {{ r.designed_to_show }}</td></tr>
+      {% endif %}
+    </tbody>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
