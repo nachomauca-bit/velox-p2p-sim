@@ -372,6 +372,8 @@ Field rules
 USER_INSTRUCTION = "Extract the fields of this document according to the schema and the rules."
 
 REQUEST_TIMEOUT_MS = 120_000  # a hung request must not block the UI forever
+# No tools are passed, so automatic function calling is off; saying so also silences the SDK's AFC warning.
+NO_AFC = genai_types.AutomaticFunctionCallingConfig(disable=True)
 RETRY_BACKOFF_S = 2.0  # first pause on 5xx / network errors (and a 429 without a server delay); doubles each retry
 TRANSIENT_ATTEMPTS = 3  # calls per model on a transient error (the first call + 2 retries)
 OVERLOADED_CODES = frozenset({429, 500, 503, 504})  # still failing after the retries: try the next GA Flash model
@@ -641,6 +643,7 @@ def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
     """
     contents = [genai_types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"), USER_INSTRUCTION]
     gen_config = genai_types.GenerateContentConfig(
+        automatic_function_calling=NO_AFC,
         system_instruction=SYSTEM_INSTRUCTION,
         response_mime_type="application/json",
         response_schema=InvoiceExtraction,  # the SDK converts the pydantic model to its Schema

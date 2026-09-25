@@ -230,7 +230,8 @@ def clean_text(text: Optional[str]) -> str:
 
 def _call_gemini(prompt: str) -> tuple[str, str, int]:
     """(text, model, latency_ms). Any failure becomes DraftUnavailable."""
-    gen_config = genai_types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)  # temperature: extract
+    gen_config = genai_types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION,
+                                                   automatic_function_calling=extract.NO_AFC)  # temperature: extract
     try:
         client = extract._client()
         response, model, latency_ms = extract._generate(client, [prompt], gen_config)
