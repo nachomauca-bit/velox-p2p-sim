@@ -372,7 +372,9 @@ Field rules
 USER_INSTRUCTION = "Extract the fields of this document according to the schema and the rules."
 
 REQUEST_TIMEOUT_MS = 120_000  # a hung request must not block the UI forever
-RETRY_BACKOFF_S = 2.0  # one retry after this pause on 5xx / network errors (and a 429 without a server delay)
+RETRY_BACKOFF_S = 2.0  # first pause on 5xx / network errors (and a 429 without a server delay); doubles each retry
+TRANSIENT_ATTEMPTS = 3  # calls per model on a transient error (the first call + 2 retries)
+OVERLOADED_CODES = frozenset({429, 500, 503, 504})  # still failing after the retries: try the next GA Flash model
 MAX_RETRY_DELAY_S = 60.0  # cap on the pause a 429 asks for (its retry delay + 1 s)
 _RETRY_IN = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)  # "Please retry in 37.8s." in a 429 message
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)s")  # RetryInfo.retryDelay, e.g. "37s"
@@ -382,6 +384,10 @@ GA_FLASH_PATTERN = re.compile(r"^gemini-(\d+)(?:\.(\d+))?-flash$")
 
 # The model that worked in this process (None until the first successful call).
 _resolved_model: Optional[str] = None
+# Models the API rejected as unavailable in this process (404, no access): never asked again.
+_unavailable_models: set[str] = set()
+# The GA Flash models found with models.list, newest first (listed once per process).
+_flash_models: Optional[list[str]] = None
 
 
 # --------------------------------------------------------------------------------------------
@@ -458,13 +464,21 @@ def _server_retry_delay(exc: genai_errors.APIError) -> Optional[float]:
     return float(match.group(1)) if match else None
 
 
-def _retry_delay(exc: Exception) -> float:
-    """Pause before the one retry: on a 429 the server's delay + 1 s (at most 60 s), otherwise RETRY_BACKOFF_S."""
+def _retry_delay(exc: Exception, attempt: int = 1) -> float:
+    """Pause before retry number `attempt`: on a 429 the server's delay + 1 s (at most 60 s), otherwise
+    RETRY_BACKOFF_S doubled at each retry (2 s, 4 s)."""
     if isinstance(exc, genai_errors.APIError) and exc.code == 429:
         delay = _server_retry_delay(exc)
         if delay is not None:
             return min(delay + 1, MAX_RETRY_DELAY_S)
-    return RETRY_BACKOFF_S
+    return RETRY_BACKOFF_S * 2 ** (attempt - 1)
+
+
+def _is_overloaded(exc: Exception) -> bool:
+    """A model that is still busy after the retries (503 high demand, 429 rate limit, 5xx): another GA Flash
+    model may answer. Network errors are not model-specific and do not count."""
+    return (isinstance(exc, genai_errors.APIError) and not _is_model_unavailable(exc)
+            and exc.code in OVERLOADED_CODES)
 
 
 def _temperature_for(model: str) -> Optional[float]:
@@ -484,22 +498,32 @@ def _timed_generate(client: Any, model: str, contents: list[Any],
 
 def _generate_once(client: Any, model: str, contents: list[Any],
                    gen_config: genai_types.GenerateContentConfig) -> tuple[Any, int]:
-    """One generate_content call, retried once after a pause on a transient error; returns latency."""
-    try:
-        return _timed_generate(client, model, contents, gen_config)
-    except (genai_errors.APIError, httpx.HTTPError) as exc:
-        if not _is_transient(exc):
-            raise
-        delay = _retry_delay(exc)
-        print(f"[extract] WARNING model={model} transient error ({_describe(exc)}) -> retrying in {delay:g} s")
-        time.sleep(delay)
-    return _timed_generate(client, model, contents, gen_config)
+    """generate_content on one model, retried after a growing pause on a transient error (TRANSIENT_ATTEMPTS
+    calls at most); returns latency. The last transient error is raised."""
+    for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
+        try:
+            return _timed_generate(client, model, contents, gen_config)
+        except (genai_errors.APIError, httpx.HTTPError) as exc:
+            if not _is_transient(exc) or attempt == TRANSIENT_ATTEMPTS:
+                raise
+            delay = _retry_delay(exc, attempt)
+            print(f"[extract] WARNING model={model} transient error ({_describe(exc)}) -> retrying in {delay:g} s")
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # the loop returns or raises
 
 
 def _supports_generate(model: Any) -> bool:
     """AI Studio lists each model's actions; Vertex AI publisher models carry none (None): accept those."""
     actions = getattr(model, "supported_actions", None)
     return actions is None or "generateContent" in actions
+
+
+def _flash_candidates(client: Any) -> list[str]:
+    """_discover_flash_models, listed once per process."""
+    global _flash_models
+    if _flash_models is None:
+        _flash_models = _discover_flash_models(client)
+    return _flash_models
 
 
 def _discover_flash_models(client: Any) -> list[str]:
@@ -520,11 +544,17 @@ def _discover_flash_models(client: Any) -> list[str]:
 
 def _generate(client: Any, contents: list[Any],
               gen_config: genai_types.GenerateContentConfig) -> tuple[Any, str, int]:
-    """Call the working model; if the API rejects it as unavailable, fall back to the newest GA Flash."""
+    """Call the working model. If the API rejects it as unavailable (404, no access), or it is still overloaded
+    after the retries (503 high demand, 429, 5xx), try the next GA Flash model, newest first. Unavailable models
+    are remembered for the rest of the process; the model that answered is used first from then on."""
     global _resolved_model
     model = _resolved_model or config.GEMINI_MODEL
     tried: list[str] = []
-    fallbacks: Optional[list[str]] = None
+    if model in _unavailable_models:
+        candidates = [m for m in _flash_candidates(client) if m not in _unavailable_models]
+        if not candidates:
+            raise ExtractionFailed(f"model {model} is unavailable and no GA Flash model is available to fall back to")
+        model = candidates[0]
     while True:
         try:
             response, latency_ms = _generate_once(client, model, contents, gen_config)
@@ -533,16 +563,22 @@ def _generate(client: Any, contents: list[Any],
         except httpx.HTTPError as exc:
             raise ExtractionFailed(f"network error calling {model}: {_describe(exc)}") from exc
         except genai_errors.APIError as exc:
-            if not _is_model_unavailable(exc):
+            unavailable, overloaded = _is_model_unavailable(exc), _is_overloaded(exc)
+            if not (unavailable or overloaded):
                 raise ExtractionFailed(f"Gemini API error on {model}: {_describe(exc)}") from exc
             tried.append(model)
-            if fallbacks is None:
-                fallbacks = _discover_flash_models(client)
-            remaining = [m for m in fallbacks if m not in tried]
+            if unavailable:
+                _unavailable_models.add(model)
+            remaining = [m for m in _flash_candidates(client) if m not in tried and m not in _unavailable_models]
             if not remaining:
-                raise ExtractionFailed(f"model {model} is unavailable ({_describe(exc)}) and no GA Flash "
-                                       f"model is available to fall back to (tried: {', '.join(tried)})") from exc
-            print(f"[extract] WARNING model={model} unavailable ({_describe(exc)}) -> falling back to {remaining[0]}")
+                why = "is unavailable" if unavailable else "is overloaded"
+                raise ExtractionFailed(f"model {model} {why} ({_describe(exc)}) and no other GA Flash model is "
+                                       f"available (tried: {', '.join(tried)})") from exc
+            if unavailable:
+                print(f"[extract] WARNING model={model} unavailable ({_describe(exc)}) -> falling back to {remaining[0]}")
+            else:
+                print(f"[extract] WARNING model={model} still overloaded after {TRANSIENT_ATTEMPTS} attempts "
+                      f"({_describe(exc)}) -> trying {remaining[0]}")
             model = remaining[0]
             continue
         except ValueError as exc:  # the SDK could not parse a 200 response (JSONDecodeError, ValidationError)

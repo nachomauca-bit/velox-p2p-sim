@@ -576,7 +576,7 @@ def test_no_fallback_available_raises_extraction_failed(monkeypatch):
         raise not_found(model)
 
     use_client(monkeypatch, FakeClient(respond, listed_models(("gemini-3.8-flash-preview-09-2026", GEN))))
-    with pytest.raises(ExtractionFailed, match="no GA Flash model"):
+    with pytest.raises(ExtractionFailed, match="no other GA Flash model is available"):
         extract.call_gemini(b"%PDF", "x.pdf")
     assert extract._resolved_model is None
 
@@ -616,7 +616,8 @@ def test_transient_error_is_retried_once(monkeypatch, sleeps, capsys):
     (api_error(429, "RESOURCE_EXHAUSTED", "Resource has been exhausted."), "429 RESOURCE_EXHAUSTED"),
     (httpx.ConnectError("connection refused"), "network error"),
 ])
-def test_persistent_transient_error_fails_after_one_retry(monkeypatch, sleeps, error, message):
+def test_persistent_transient_error_fails_after_the_retries(monkeypatch, sleeps, error, message):
+    """TRANSIENT_ATTEMPTS calls with growing pauses (2 s, 4 s); with no other GA Flash model listed, it fails."""
     def respond(model):
         raise error
 
@@ -624,8 +625,51 @@ def test_persistent_transient_error_fails_after_one_retry(monkeypatch, sleeps, e
     use_client(monkeypatch, client)
     with pytest.raises(ExtractionFailed, match=message):
         extract.call_gemini(b"%PDF", "x.pdf")
-    assert len(client.models.calls) == 2
-    assert sleeps == [extract.RETRY_BACKOFF_S]
+    assert len(client.models.calls) == extract.TRANSIENT_ATTEMPTS == 3
+    assert sleeps == [extract.RETRY_BACKOFF_S, 2 * extract.RETRY_BACKOFF_S]
+
+
+def test_overloaded_model_falls_back_to_the_next_ga_flash_and_remembers_it(monkeypatch, sleeps, capsys):
+    """The case seen live: 2.5 no longer available (404), 3.8 answering 503 "high demand" on every retry."""
+    parsed = InvoiceExtraction.model_validate(fixture_extraction("09_quickprint_invoice"))
+    busy = api_error(503, "UNAVAILABLE", "This model is currently experiencing high demand. Please try again later.")
+
+    def respond(model):
+        if model == "gemini-2.5-flash":
+            raise not_found(model)
+        if model == "gemini-3.8-flash":
+            raise busy
+        return fake_response(parsed=parsed)
+
+    client = FakeClient(respond, FALLBACK_LIST)
+    use_client(monkeypatch, client)
+    assert extract.call_gemini(b"%PDF", "x.pdf").model == "gemini-3.5-flash"
+    assert client.models.calls == ["gemini-2.5-flash"] + ["gemini-3.8-flash"] * 3 + ["gemini-3.5-flash"]
+    log = capsys.readouterr().out
+    assert "still overloaded after 3 attempts (503 UNAVAILABLE" in log and "-> trying gemini-3.5-flash" in log
+
+    # The next document goes straight to the model that answered; the model list is not fetched again.
+    assert extract.call_gemini(b"%PDF", "y.pdf").model == "gemini-3.5-flash"
+    assert client.models.calls[-1] == "gemini-3.5-flash" and client.models.list_calls == 1
+
+
+def test_an_unavailable_model_is_never_asked_again(monkeypatch, sleeps):
+    """Even when no call succeeded yet, a model that answered 404 is skipped for the rest of the process."""
+    busy = api_error(503, "UNAVAILABLE", "This model is currently experiencing high demand.")
+
+    def respond(model):
+        if model == "gemini-2.5-flash":
+            raise not_found(model)
+        raise busy
+
+    client = FakeClient(respond, listed_models(("gemini-3.8-flash", GEN)))
+    use_client(monkeypatch, client)
+    for _ in range(2):
+        with pytest.raises(ExtractionFailed, match="overloaded"):
+            extract.call_gemini(b"%PDF", "x.pdf")
+    assert client.models.calls.count("gemini-2.5-flash") == 1
+    assert client.models.calls.count("gemini-3.8-flash") == 2 * extract.TRANSIENT_ATTEMPTS
+    assert client.models.list_calls == 1
 
 
 @pytest.mark.parametrize("error, pause", [
@@ -891,7 +935,7 @@ def test_extract_documents_counts_every_outcome(session, gemini_mode, tmp_path, 
 
 @pytest.mark.parametrize("error, api_calls, pauses", [
     (bad_key(), 1, []),  # a broken key: one call, no retry
-    (httpx.ConnectTimeout("timed out"), 2, [extract.RETRY_BACKOFF_S]),  # a broken network: one call + one retry
+    (httpx.ConnectTimeout("timed out"), 3, [extract.RETRY_BACKOFF_S, 2 * extract.RETRY_BACKOFF_S]),  # 1 call + 2 retries
 ])
 def test_extract_documents_uses_the_cache_only_after_the_first_failure(
         session, gemini_mode, tmp_path, monkeypatch, sleeps, capsys, error, api_calls, pauses):

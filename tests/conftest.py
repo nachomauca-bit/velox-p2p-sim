@@ -17,6 +17,16 @@ from app.db import SessionLocal, init_db  # noqa: E402
 from app.seed import seed_all  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def fresh_model_state(monkeypatch):
+    """The extraction module remembers the working model, unavailable models and the model list per process."""
+    from app import extract
+
+    monkeypatch.setattr(extract, "_resolved_model", None)
+    monkeypatch.setattr(extract, "_unavailable_models", set())
+    monkeypatch.setattr(extract, "_flash_models", None)
+
+
 @pytest.fixture()
 def session():
     """A freshly seeded database (both scenarios, empty inboxes)."""
