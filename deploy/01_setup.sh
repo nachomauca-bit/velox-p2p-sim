@@ -8,8 +8,13 @@
 # are taken from the environment when set, otherwise asked for without echo. An empty IMAP2_PASSWORD skips the
 # second mailbox. Re-running is safe: existing resources are kept and a secret gets a new version.
 #
+# A new service account takes a while to be usable in IAM policies: 01 waits for it and retries every role binding
+# (up to RETRY_ATTEMPTS times, default 6, RETRY_DELAY_S seconds apart, default 10).
+#
 # NOT TESTED against Google Cloud (written offline). Needs: gcloud CLI logged in (`gcloud auth login`) as a
-# project Owner (or Editor + Project IAM Admin + Secret Manager Admin), billing enabled on the project.
+# project Owner (or Editor + Project IAM Admin + Secret Manager Admin + Cloud Run Admin: roles/run.admin, which
+# 02 and 03 need to make the service public and to let the scheduler start the job), billing enabled on the
+# project.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
@@ -34,21 +39,25 @@ if ! gcloud storage buckets describe "gs://${BUCKET}" >/dev/null 2>&1; then
 fi
 
 echo "== 3/5 Service account ${SA_EMAIL} and its roles"
-if ! gcloud iam service-accounts describe "${SA_EMAIL}" >/dev/null 2>&1; then
+sa_exists() { gcloud iam service-accounts describe "${SA_EMAIL}" >/dev/null 2>&1; }
+if ! sa_exists; then
   gcloud iam service-accounts create "${SA_NAME}" --display-name="Velox P2P simulator (Cloud Run)"
+  # IAM is eventually consistent: a new service account can be "not found" for a minute or more.
+  retry sa_exists
 fi
 member="serviceAccount:${SA_EMAIL}"
+# Every binding is retried: it can still fail with "does not exist" shortly after the account was created.
 # Gemini on Vertex AI (generateContent, models.list).
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
+retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
   --role="roles/aiplatform.user" --condition=None >/dev/null
 # BigQuery export: replace the tables (dataEditor) and run the load jobs (jobUser). Tighter alternative:
 # grant dataEditor on the dataset only, after 04_bigquery.sh has created it.
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
+retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
   --role="roles/bigquery.dataEditor" --condition=None >/dev/null
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
+retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="${member}" \
   --role="roles/bigquery.jobUser" --condition=None >/dev/null
 # The bucket only (not the whole project): read and write objects through the volume mount.
-gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" --member="${member}" \
+retry gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" --member="${member}" \
   --role="roles/storage.objectAdmin" >/dev/null
 
 echo "== 4/5 Artifact Registry repository ${AR_REPO} (${REGION})"
@@ -80,7 +89,7 @@ put_secret() {  # put_secret NAME VALUE: create the secret if needed, add VALUE 
   fi
   # printf, not echo: no trailing newline in the secret.
   printf '%s' "${value}" | gcloud secrets versions add "${name}" --data-file=-
-  gcloud secrets add-iam-policy-binding "${name}" --member="${member}" \
+  retry gcloud secrets add-iam-policy-binding "${name}" --member="${member}" \
     --role="roles/secretmanager.secretAccessor" >/dev/null
 }
 

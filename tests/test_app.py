@@ -518,6 +518,8 @@ def test_pdf_is_served_inline(client):
     assert r.headers["content-type"] == "application/pdf"
     assert r.headers["content-disposition"].startswith("inline")
     assert r.content.startswith(b"%PDF-")
+    # no content sniffing; no CSP sandbox, which would break the browser's PDF viewer in the invoice-page frame
+    assert r.headers["x-content-type-options"] == "nosniff" and "content-security-policy" not in r.headers
 
 
 def test_path_traversal_is_refused(client, session):
@@ -768,7 +770,7 @@ def test_webhook_ubl_e_invoice_is_parsed_without_a_model_and_posted(client, sess
     assert (doc.content_type, doc.source_name, doc.extraction.model) == ("ubl_xml", "MM-2026-248.xml", ubl.UBL_MODEL)
     assert list(bucket_dir.glob("*.xml"))
     xml = client.get("/files/B-W01.xml")
-    assert xml.status_code == 200 and xml.headers["content-type"].startswith("application/xml")
+    assert xml.status_code == 200 and xml.headers["content-type"] == "text/plain; charset=utf-8"
     assert xml.content == content
     html = client.get("/invoice/B-W01").text
     assert "<iframe" not in html and 'class="doc-text xml-text"' in html
@@ -925,10 +927,11 @@ def test_invoice_pages_of_the_v2_formats(client):
     assert "Extract now" not in email
     forwarded = client.get("/invoice/B2-08").text
     assert 'src="/files/B2-08.pdf#' in forwarded and "Email text" in forwarded and "Bonjour" in forwarded
-    r = client.get("/files/B2-11.xml")
-    assert r.status_code == 200 and r.headers["content-type"].startswith("application/xml")
-    r = client.get("/files/B2-14.txt")
-    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    for url in ("/files/B2-11.xml", "/files/B2-14.txt"):  # received content is never rendered as markup
+        r = client.get(url)
+        assert r.status_code == 200 and r.headers["content-type"] == "text/plain; charset=utf-8", url
+        assert r.headers["x-content-type-options"] == "nosniff", url
+        assert r.headers["content-security-policy"] == "default-src 'none'; sandbox", url
 
 
 def test_compare_warns_when_the_scenarios_hold_different_datasets(client):
@@ -1449,3 +1452,179 @@ def test_load_documents_clears_previous_gate_results(client, session):
     load_documents(client, "tobe")
     session.expire_all()
     assert count_rows(session, GateDecision, "tobe") == 0 and count_rows(session, Run, "tobe") == 0
+
+
+def test_live_resend_of_a_sample_invoice_is_blocked_and_aged_to_today(client, session, bucket_dir):
+    """A live document (real date) is processed after the loaded sample set (simulated dates): resending the v2
+    UBL invoice 11 through the webhook is caught as a duplicate of B2-11, and live rows are aged to today."""
+    use_scenario(client, "tobe")
+    assert client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"}).status_code == 200
+    assert client.post("/run", data={"scenario": "tobe"}).status_code == 200
+    r = post_webhook(client, content=ubl_invoice(11), filename="einvoice.xml", scenario="tobe",
+                     message_id="<resend-11@test>")
+    assert r.status_code == 201, r.text
+    assert r.json()["outcome"] == "blocked_duplicate"
+    decision = session.scalar(select(GateDecision).where(GateDecision.doc_id == r.json()["doc_id"]))
+    assert decision.details["duplicate_of"] == "B2-11"
+
+    body_only = post_webhook(client, content=None, scenario="tobe", email_body="Invoice 77 for 120.00 EUR",
+                             message_id="<body-77@test>")
+    assert body_only.json()["outcome"] == "human_review"
+    html = client.get("/gate/exceptions").text
+    assert "aged to today" in " ".join(page_text(html).split())
+
+
+# --------------------------------------------------------------------------------------------
+# Review round 3: received files, live documents, exports, messages
+# --------------------------------------------------------------------------------------------
+
+XHTML_SCRIPT = b'<h:script xmlns:h="http://www.w3.org/1999/xhtml">alert(document.domain)</h:script>'
+
+
+def test_a_ubl_carrying_an_xhtml_script_is_never_served_as_xml_or_html(client, session, bucket_dir):
+    """Stored XSS: an emailed e-invoice with an XHTML <script> must not run in the app's origin. The file is served
+    as plain text in a CSP sandbox with no content sniffing (or the webhook refuses it outright)."""
+    content = ubl_invoice(11)
+    evil = content.replace(b"<cbc:ID>", XHTML_SCRIPT + b"<cbc:ID>", 1)
+    assert evil != content
+    r = post_webhook(client, content=evil, filename="evil.xml", scenario="tobe")
+    assert r.status_code in (201, 400), r.text
+    if r.status_code == 400:
+        return  # refused as not a UBL e-invoice: nothing stored, nothing served
+    doc_id = r.json()["doc_id"]
+    for url in (f"/files/{doc_id}.xml", f"/files/{doc_id}"):
+        served = client.get(url)
+        assert served.status_code == 200, url
+        content_type = served.headers["content-type"]
+        assert content_type == "text/plain; charset=utf-8", (url, content_type)
+        assert "xml" not in content_type and "html" not in content_type
+        assert served.headers["x-content-type-options"] == "nosniff"
+        csp = served.headers["content-security-policy"]
+        assert "sandbox" in csp and "default-src 'none'" in csp
+    html = client.get(f"/invoice/{doc_id}").text  # the invoice page shows the XML escaped, never as markup
+    assert "<h:script" not in html and "&lt;h:script" in html
+
+
+def test_live_resend_is_blocked_even_when_the_sample_set_was_not_run(client, session, bucket_dir, capsys):
+    """K1 without a run: the loaded sample documents without a decision are processed first, in processing order,
+    so resending the v2 UBL invoice 11 is caught as a duplicate of B2-11 (never posted a second time)."""
+    use_scenario(client, "tobe")
+    assert client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"}).status_code == 200
+    assert count_rows(session, GateDecision, "tobe") == 0
+    capsys.readouterr()
+    r = post_webhook(client, content=ubl_invoice(11), filename="einvoice.xml", scenario="tobe",
+                     message_id="<resend-11-norun@test>")
+    assert r.status_code == 201, r.text
+    assert (r.json()["outcome"], r.json()["exception_type"]) == ("blocked_duplicate", "duplicate_invoice")
+    decision = session.scalar(select(GateDecision).where(GateDecision.doc_id == r.json()["doc_id"]))
+    assert decision.details["duplicate_of"] == "B2-11"
+    n = len(world.documents_for("v2"))
+    assert count_rows(session, GateDecision, "tobe") == n + 1  # every sample document was decided first
+    postings = session.scalars(select(PendingVendorInvoice.doc_id).where(
+        PendingVendorInvoice.scenario == "tobe", PendingVendorInvoice.invoice_number == "MM-2026-248")).all()
+    assert postings == ["B2-11"]
+    assert f"[intake] {n} earlier documents not processed yet went first, in processing order: B2-" in (
+        capsys.readouterr().out)
+
+
+def test_asis_live_documents_are_not_registered_yet_and_reported_apart_in_the_cockpit(client, session,
+                                                                                         bucket_dir):
+    """As-is live documents: registration day ahead (shown as not registered yet), their own seeded email-loop
+    length, and not counted in the simulated snapshot of the cockpit."""
+    run_scenario(client, "asis")
+    lead = squash(page_text(client.get("/gate/exceptions").text))
+    before = re.search(r"(\d+) still in the loop that evening, (\d+) already posted", lead).groups()
+    ids = [post_webhook(client, scenario="asis", subject=f"Scan {i}").json()["doc_id"] for i in (1, 2)]
+    assert ids == ["A-W01", "A-W02"]
+    session.expire_all()
+    for doc_id in ids:
+        decision = session.scalar(select(GateDecision).where(GateDecision.doc_id == doc_id))
+        assert decision.exception_type == "email_loop"
+        assert decision.details["email_loop_days"] == sim.email_loop_days(doc_id)  # seeded by its own id
+        assert decision.steps[0]["detail"].startswith("Not registered yet: expected 1 business day(s) after receipt")
+        assert get_doc(session, doc_id).registered_on > datetime.now()
+        page = squash(page_text(client.get(f"/invoice/{doc_id}").text))
+        assert "Registered Not registered yet — expected" in page
+    inbox = client.get("/inbox").text
+    for doc_id in ids:
+        start = inbox.index(f'id="doc-{doc_id}"')
+        assert "Not registered yet" in inbox[start:inbox.index("</article>", start)]
+    lead = squash(page_text(client.get("/gate/exceptions").text))
+    after = re.search(r"(\d+) still in the loop that evening, (\d+) already posted", lead).groups()
+    assert after == before  # the snapshot counts the sample documents only
+    assert ("2 of them were received live through the intake webhook: they carry real dates, are not part of the "
+            "snapshot and are aged to today.") in lead
+
+
+def test_every_change_of_the_gate_results_is_exported(client, session, bucket_dir, monkeypatch, capsys):
+    export_bq = pytest.importorskip("app.export_bq")
+    calls = []
+    monkeypatch.setattr(export_bq, "export_all", lambda db_session: calls.append(1) or {"gate_decision": 1})
+    monkeypatch.setattr(config, "BQ_EXPORT", True)
+    run_scenario(client, "tobe")
+    assert post_webhook(client, scenario="tobe").status_code == 201
+    assert client.post("/invoice/B-03/rerun", data={}).status_code == 200
+    assert client.post("/reset", data={"scenario": "tobe"}).status_code == 200
+    out = capsys.readouterr().out
+    for event in ("run", "intake of B-W01", "re-run of B-03", "reset"):
+        assert f"[export] after the tobe {event}: 1 rows in 1 tables" in out, event
+    assert len(calls) == 4
+
+    def broken(db_session):
+        raise RuntimeError("BigQuery unreachable")
+    monkeypatch.setattr(export_bq, "export_all", broken)
+    r = post_webhook(client, scenario="tobe")  # never fatal: the document is still stored and gated
+    assert r.status_code == 201 and r.json()["outcome"] == "human_review"
+    assert client.post("/invoice/B-03/rerun", data={}).status_code == 200
+    assert client.post("/reset", data={"scenario": "tobe"}).status_code == 200
+    assert "[export] after the tobe reset FAILED: RuntimeError('BigQuery unreachable')" in capsys.readouterr().out
+
+
+def test_extraction_messages_name_the_ubl_parser_and_never_none_ms(client, session, monkeypatch):
+    client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})
+    for force in (0, 1):
+        r = client.post(f"/invoice/B2-11/extract?force={force}", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "Parsed the UBL e-invoice (structured XML, no model call)." in r.text
+        assert "None ms" not in r.text and "via the Gemini API" not in r.text
+    doc = get_doc(session, "B2-01")
+
+    def fake_row(latency_ms, from_cache=False):
+        return lambda *args, **kwargs: type("Row", (), {"model": "gemini-test", "from_cache": from_cache,
+                                                        "latency_ms": latency_ms})()
+    monkeypatch.setattr(extract, "extract_document", fake_row(None))
+    assert main.run_extraction(session, doc, force=False) == (
+        "info", "Extracted with gemini-test (via the Gemini API).")
+    monkeypatch.setattr(extract, "extract_document", fake_row(850))
+    assert main.run_extraction(session, doc, force=False) == (
+        "info", "Extracted with gemini-test (via the Gemini API in 850 ms).")
+    monkeypatch.setattr(extract, "extract_document", fake_row(None, from_cache=True))
+    assert main.run_extraction(session, doc, force=False) == ("info", "Extracted with gemini-test (from cache).")
+
+
+def test_load_and_reset_warn_that_documents_received_by_email_are_replaced(client):
+    html = client.get("/inbox").text
+    load = squash(page_text(form_html(html, "/documents/load")))
+    assert "documents received by email (live intake) included" in load
+    reset = html[html.index('action="/reset"'):]
+    reset = html_lib.unescape(reset[:reset.index(">")])
+    assert "Documents received by email (live intake) are removed." in reset
+
+
+def test_startup_prints_the_columns_an_older_database_gets(session, monkeypatch, capsys):
+    """db.init_db returns the columns it added to an older database; the startup prints them once."""
+    from app import db, models
+
+    calls = []
+
+    def add_missing_columns(engine):
+        calls.append(engine)
+        return ["inbound_document.source_name"]
+    monkeypatch.setattr(models, "add_missing_columns", add_missing_columns)
+    assert db.init_db() == ["inbound_document.source_name"]
+    capsys.readouterr()
+    with TestClient(main.app):
+        pass
+    out = capsys.readouterr().out
+    assert out.count("[startup] database upgraded: added inbound_document.source_name") == 1
+    assert len(calls) == 2  # once per init_db: the startup does not add the columns a second time

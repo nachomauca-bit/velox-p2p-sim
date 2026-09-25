@@ -1,7 +1,9 @@
 """UBL e-invoices (app/ubl.py): Peppol BIS Billing 3.0 rendering, parsing without a model call, safe XML.
 
 The round trip parse_ubl(render_ubl(spec)) must give back the ground truth of tests/make_fixtures.py for every
-field a UBL invoice carries, with confidence 1.0 instead of 0.99 (notes are the fixed UBL text).
+field a UBL invoice carries, with confidence 1.0 instead of 0.99 (notes are the fixed UBL text). Hand-written
+XML covers what other senders do: odd amounts (only xs:decimal is read), Skonto clauses in the payment terms
+note, unknown declared encodings and DOCTYPE / entity attacks.
 """
 from __future__ import annotations
 
@@ -179,22 +181,89 @@ def test_unreadable_values_are_null():
     assert parsed["gross_total"] == {"value": 119.0, "confidence": 1.0}
 
 
-@pytest.mark.parametrize("terms, expected", [
-    ("<cac:PaymentTerms><cbc:Note>Zahlbar innerhalb von 14 Tagen netto</cbc:Note></cac:PaymentTerms>", 14),
-    ("<cac:PaymentTerms><cbc:Note>Paiement à 45 jours</cbc:Note></cac:PaymentTerms>", 45),
-    ("<cac:PaymentTerms><cbc:Note>Payable on receipt</cbc:Note></cac:PaymentTerms>", 30),  # from the dates
-    ("", 30),  # from the dates
+def terms_note(*notes: str) -> str:
+    return "".join(f"<cac:PaymentTerms><cbc:Note>{note}</cbc:Note></cac:PaymentTerms>" for note in notes)
+
+
+@pytest.mark.parametrize("terms", [
+    "",
+    terms_note("Zahlbar innerhalb von 14 Tagen netto"),  # a note that disagrees with the dates
+    terms_note("Payable on receipt"),
+    terms_note("2% discount if paid within 10 days, 30 days net"),
+    terms_note("Zahlbar innerhalb von 14 Tagen mit 2 % Skonto, 30 Tage netto"),
+    terms_note("2 % Skonto bei Zahlung innerhalb 8 Tagen, netto 30 Tage"),
 ])
-def test_payment_terms_from_the_note_else_from_the_dates(terms, expected):
+def test_payment_terms_are_due_date_minus_issue_date_whatever_the_note(terms):
+    # BT-9 (DueDate) is the authoritative due date: a Skonto period in the note never overrides it.
     parsed = ubl.parse_ubl(xml_doc(
         f"<cbc:ID>X-2</cbc:ID><cbc:IssueDate>2026-10-30</cbc:IssueDate><cbc:DueDate>2026-11-29</cbc:DueDate>{terms}"))
-    assert parsed["payment_terms_days"] == {"value": expected, "confidence": 1.0}
+    assert parsed["payment_terms_days"] == {"value": 30, "confidence": 1.0}
     assert parsed["due_date"]["value"] == "2026-11-29"
+
+
+@pytest.mark.parametrize("notes, expected", [
+    (("Zahlbar innerhalb von 14 Tagen netto",), 14),
+    (("Paiement à 45 jours",), 45),
+    (("2% discount if paid within 10 days, 30 days net",), 30),
+    (("2.5% discount if paid within 10 days; 45 days net",), 45),  # a decimal point in the rate is harmless
+    (("Zahlbar innerhalb von 14 Tagen mit 2 % Skonto, 30 Tage netto",), 30),
+    (("2 % Skonto bei Zahlung innerhalb 8 Tagen, netto 30 Tage",), 30),
+    (("2 % d'escompte pour paiement à 10 jours ; 60 jours net",), 60),
+    (("Pago a 30 días neto; 2 % de descuento por pronto pago en 10 días",), 30),
+    (("Betaling binnen 14 dagen met 2% korting, 30 dagen netto",), 30),
+    (("Payment within 30 days. Late payment interest after 60 days",), 30),  # the first, not the largest
+    (("2 % Skonto bei Zahlung innerhalb 10 Tagen", "Zahlbar innerhalb 21 Tagen"), 21),  # a second note
+    (("2 % Skonto bei Zahlung innerhalb 10 Tagen",), None),  # only a cash-discount period: no net terms
+    (("Payable on receipt",), None),
+])
+def test_payment_terms_from_the_note_when_the_due_date_is_missing(notes, expected):
+    parsed = ubl.parse_ubl(xml_doc(
+        f"<cbc:ID>X-2</cbc:ID><cbc:IssueDate>2026-10-30</cbc:IssueDate>{terms_note(*notes)}"))
+    assert parsed["payment_terms_days"] == ({"value": expected, "confidence": 1.0} if expected is not None
+                                            else {"value": None, "confidence": 0.0})
+
+
+def test_a_due_date_before_the_issue_date_falls_back_to_the_note():
+    parsed = ubl.parse_ubl(xml_doc(
+        "<cbc:ID>X-2</cbc:ID><cbc:IssueDate>2026-10-30</cbc:IssueDate><cbc:DueDate>2026-10-01</cbc:DueDate>"
+        + terms_note("2 % Skonto innerhalb 8 Tagen, 30 Tage netto")))
+    assert parsed["payment_terms_days"] == {"value": 30, "confidence": 1.0}
+    assert parsed["due_date"]["value"] == "2026-10-01"  # read as printed; the gate judges it
 
 
 def test_no_terms_without_a_note_or_a_due_date():
     parsed = ubl.parse_ubl(xml_doc("<cbc:ID>X-3</cbc:ID><cbc:IssueDate>2026-10-30</cbc:IssueDate>"))
     assert parsed["payment_terms_days"] == {"value": None, "confidence": 0.0}
+
+
+@pytest.mark.parametrize("text", ["NaN", "nan", "Infinity", "-INF", "inf", "1e3", "1E999", "9" * 400, "1,5",
+                                  "1 234.00", "0x10", "١٢٣", "12.5.1", "+", ".", "--1"])
+def test_amounts_that_are_not_xs_decimal_are_null(text):
+    # float() would take NaN / Infinity / 1e999 and put them in the ledger with confidence 1.0.
+    parsed = ubl.parse_ubl(xml_doc(
+        f"<cbc:ID>X-5</cbc:ID><cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>"
+        f"<cac:TaxTotal><cbc:TaxAmount currencyID=\"EUR\">{text}</cbc:TaxAmount></cac:TaxTotal>"
+        f"<cac:LegalMonetaryTotal><cbc:TaxExclusiveAmount currencyID=\"EUR\">{text}</cbc:TaxExclusiveAmount>"
+        f"<cbc:TaxInclusiveAmount currencyID=\"EUR\">{text}</cbc:TaxInclusiveAmount></cac:LegalMonetaryTotal>"
+        f"<cac:InvoiceLine><cbc:ID>1</cbc:ID><cbc:InvoicedQuantity unitCode=\"C62\">{text}</cbc:InvoicedQuantity>"
+        f"<cbc:LineExtensionAmount currencyID=\"EUR\">{text}</cbc:LineExtensionAmount>"
+        f"<cac:Item><cbc:Name>Poster</cbc:Name></cac:Item>"
+        f"<cac:Price><cbc:PriceAmount currencyID=\"EUR\">{text}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>"))
+    for name in ("net_total", "tax_total", "gross_total"):
+        assert parsed[name] == {"value": None, "confidence": 0.0}, name
+    assert parsed["lines"]["value"] == [{"description": "Poster", "quantity": None, "unit_price": None,
+                                         "amount": None}]
+    assert InvoiceExtraction.model_validate(parsed).model_dump(mode="json") == parsed
+
+
+@pytest.mark.parametrize("text, value", [("119.00", 119.0), ("+5", 5.0), ("5.", 5.0), (".5", 0.5), ("-0.00", 0.0),
+                                         (" 42.10 ", 42.1), ("007", 7.0)])
+def test_xs_decimal_amounts_are_read(text, value):
+    parsed = ubl.parse_ubl(xml_doc(
+        f"<cbc:ID>X-6</cbc:ID><cac:LegalMonetaryTotal><cbc:TaxInclusiveAmount currencyID=\"EUR\">{text}"
+        "</cbc:TaxInclusiveAmount></cac:LegalMonetaryTotal>"))
+    assert parsed["gross_total"] == {"value": value, "confidence": 1.0}
+    assert math.copysign(1.0, parsed["gross_total"]["value"]) == 1.0  # "-0.00" is not -0.0
 
 
 def test_parties_bank_and_references_from_other_senders():
@@ -282,6 +351,23 @@ def test_non_ubl_input_is_rejected(data, message):
     with pytest.raises(ValueError, match=message):
         ubl.parse_ubl(data)
     assert ubl.is_ubl(data) is False
+
+
+@pytest.mark.parametrize("encoding", ["x-foo", "rot13", "x-user-defined", "base64", "utf-7"])
+def test_an_unknown_or_unusable_declared_encoding_is_a_value_error(encoding):
+    # expat asks the codec registry: a LookupError used to escape is_ubl (webhook 500, poller message failed).
+    data = f'<?xml version="1.0" encoding="{encoding}"?><Invoice xmlns="{ubl.INVOICE_NS}"/>'.encode("ascii")
+    with pytest.raises(ValueError, match="encoding|not well-formed"):
+        ubl.parse_ubl(data)
+    assert ubl.is_ubl(data) is False
+
+
+def test_is_ubl_never_raises(monkeypatch):
+    def explode(_data: bytes) -> None:
+        raise RuntimeError("something nobody expected")
+
+    monkeypatch.setattr(ubl, "_parse_root", explode)
+    assert ubl.is_ubl(ubl.render_ubl(world.DOCUMENT_BY_NO[3])) is False
 
 
 def test_is_ubl_accepts_invoices_and_credit_notes():

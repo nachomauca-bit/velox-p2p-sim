@@ -48,7 +48,7 @@ from app.normalize import (
     normalise_po_number,
     normalise_vat,
 )
-from app.seed import SCENARIO_LETTER
+from app.seed import LIVE_DATASET, SCENARIO_LETTER
 
 Log = Callable[[str], None]
 
@@ -250,9 +250,11 @@ def registration_on(doc: InboundDocument) -> datetime:
     return sim.registration_date("asis", doc.channel, doc.received_on)
 
 
-def order_key(doc: InboundDocument) -> tuple[datetime, str]:
-    """Processing order of a scenario's documents: registration datetime, then doc_id."""
-    return registration_on(doc), doc.doc_id
+def order_key(doc: InboundDocument) -> tuple[int, datetime, str]:
+    """Processing order of a scenario's documents: the loaded sample set first (simulated Oct–Nov 2026 dates), then
+    documents received live through the intake webhook (real dates); within each, registration datetime, doc_id.
+    A live document is therefore checked against every sample document (duplicates, credit notes, contracts)."""
+    return int(doc.dataset == LIVE_DATASET), registration_on(doc), doc.doc_id
 
 
 def money(amount: Optional[float], currency: Optional[str] = None) -> str:
@@ -630,7 +632,9 @@ class _Gate:
 
     @property
     def key(self) -> str:
-        return f"{self.doc.sample_no:02d}"
+        """Seed key of the as-is email loop: the sample number; a live (webhook) document's own id, so each one gets
+        its own loop length."""
+        return f"{self.doc.sample_no:02d}" if self.doc.sample_no else self.doc.doc_id
 
     @property
     def log_label(self) -> int | str:
@@ -694,6 +698,12 @@ def _register(g: _Gate) -> None:
     if lag == 0:
         g.step("register", "ok", f"Registered on arrival as {g.doc.doc_id} ({reg:%a %d %b %Y %H:%M}); the ageing "
                                  "clock starts.", lag_days=0)
+        return
+    if g.doc.dataset == LIVE_DATASET and reg > datetime.now():  # received live: the registration day is ahead
+        why = ("the store forwards it to AP" if g.doc.channel == "store_mailbox"
+               else "AP opens ap@ and the quick-fix tool keys it")
+        g.step("register", "info", f"Not registered yet: expected {lag} business day(s) after receipt, on "
+                                   f"{reg:%a %d %b %Y}, when {why}.", lag_days=lag)
         return
     why = "the store forwarded it to AP" if g.doc.channel == "store_mailbox" else "AP opened ap@ and the quick-fix tool keyed it"
     g.step("register", "info", f"Registered {lag} business day(s) after receipt, on {reg:%a %d %b %Y}, when {why}.",
@@ -877,23 +887,32 @@ def _legal_entity(g: _Gate) -> None:
            account_entity=acc.legal_entity_code)
 
 
+def _numbered(word: str, number: Any) -> str:
+    """'Invoice INV-7', 'Credit note CN-3'; 'Invoice (no number read)' when the number is missing or blank."""
+    text = str(number).strip() if number is not None else ""
+    return f"{word} {text}" if text else f"{word} (no number read)"
+
+
 def _duplicate_check(g: _Gate) -> None:
     number, gross = g.details["invoice_number"], g.details["gross_total"]
+    blank = not (str(number).strip() if number is not None else "")
     if g.cfg["duplicate_check"] == "party_normalised":  # a document that is not an invoice is never the original
         hit = next((d.doc_id for d in g.earlier if g.same_party(d) and d.details.get("doc_type") != "other"
                     and same_invoice(number, gross, d.details.get("invoice_number"), d.details.get("gross_total"))),
                    None)
         scope = f"from {g.party.canonical_name if g.party else 'this supplier'} on any account"
     else:
+        # A missing number is not a number: it never equals the blank number of an earlier posting.
         earlier_ids = [d.doc_id for d in g.earlier]
-        hit = g.session.scalar(select(PendingVendorInvoice.doc_id).where(
+        hit = None if blank else g.session.scalar(select(PendingVendorInvoice.doc_id).where(
             PendingVendorInvoice.scenario == g.doc.scenario, PendingVendorInvoice.doc_id.in_(earlier_ids),
             PendingVendorInvoice.vendor_account_id == g.account.account_id,
-            PendingVendorInvoice.invoice_number == (number or "")).limit(1))
+            PendingVendorInvoice.invoice_number == number).limit(1))
         scope = f"posted on account {g.account.account_id} (other accounts are not checked)"
     if hit is None:
-        g.step("duplicate_check", "ok", f"No earlier invoice {number} {scope}.",
-               number=g.details["invoice_number_norm"])
+        detail = (f"No invoice number read, so no earlier invoice {scope} can be matched." if blank
+                  else f"No earlier invoice {number} {scope}.")
+        g.step("duplicate_check", "ok", detail, number=g.details["invoice_number_norm"])
         return
     routed = g.cfg["exception_routing"]
     ap = world.AP_SPECIALIST
@@ -902,8 +921,9 @@ def _duplicate_check(g: _Gate) -> None:
     g.sla_days = taxonomy.get("duplicate_invoice").sla_days if routed else None
     g.details["duplicate_of"] = hit
     supplier = g.party.canonical_name if g.party else g.account.display_name
-    g.reason = (f"Invoice {number} from {supplier} ({money(gross, g.details['currency'])}) was already registered "
-                f"as {hit}: blocked" + (", and the supplier gets an automatic status reply." if routed else "."))
+    g.reason = (f"{_numbered('Invoice', number)} from {supplier} ({money(gross, g.details['currency'])}) was already "
+                f"registered as {hit}: blocked"
+                + (", and the supplier gets an automatic status reply." if routed else "."))
     g.stopped_at = "duplicate_check"
     g.step("duplicate_check", "blocked", g.reason, duplicate_of=hit)
 
@@ -913,6 +933,7 @@ def _credit_note(g: _Gate) -> None:
         g.step("credit_note", "skipped", "Not a credit note.", quiet=True)
         return
     ref = g.v("referenced_invoice_number")
+    ref = str(ref).strip() if ref is not None else ""  # blank: no reference (never matches a blank number)
     if g.cfg["credit_matching"] == "party":
         ref_norm = normalise_invoice_number(ref)
         target = next((d for d in g.earlier if ref_norm and g.same_party(d)
@@ -921,23 +942,25 @@ def _credit_note(g: _Gate) -> None:
         applied_to = (target.details.get("invoice_id") or target.doc_id) if target else None
         where = f"document {target.doc_id}, same supplier" if target else ""
     else:
+        # No reference: nothing to look up (a blank reference would equal the blank number of an earlier posting).
         earlier_ids = [d.doc_id for d in g.earlier]
         applied_to = g.session.scalar(select(PendingVendorInvoice.invoice_id).where(
             PendingVendorInvoice.scenario == g.doc.scenario, PendingVendorInvoice.doc_id.in_(earlier_ids),
             PendingVendorInvoice.vendor_account_id == g.account.account_id,
-            PendingVendorInvoice.invoice_number == (ref or "")).limit(1))
+            PendingVendorInvoice.invoice_number == ref).limit(1)) if ref else None
         where = f"same vendor account {g.account.account_id}"
     if applied_to:
         g.details.update(credit_status="applied", applied_to=applied_to)
-        g.step("credit_note", "applied", f"Credit note {g.details['invoice_number']} applied to invoice {ref} "
-                                         f"({applied_to}; {where}).", applied_to=applied_to)
+        g.step("credit_note", "applied", f"{_numbered('Credit note', g.details['invoice_number'])} applied to "
+                                         f"invoice {ref} ({applied_to}; {where}).", applied_to=applied_to)
         return
     if g.cfg["credit_matching"] == "party":
         # Pending, not unapplied: nothing is posted until AP identifies the invoice (credit_status stays None, so it
         # is neither an unapplied credit nor cash leakage).
         ap = world.AP_SPECIALIST
         g.fail("credit_note", "credit_note_without_invoice", role=ap.role, owner=ap.name,
-               reason=f"Credit note {g.details['invoice_number']} ({money(g.details['gross_total'], g.details['currency'])}) "
+               reason=f"{_numbered('Credit note', g.details['invoice_number'])} "
+                      f"({money(g.details['gross_total'], g.details['currency'])}) "
                       + (f"references invoice {ref}, which is not known for this supplier" if ref
                          else "references no invoice")
                       + f": routed to the AP specialist {ap.name} to identify the original invoice.",
@@ -1014,22 +1037,29 @@ def _match_po(g: _Gate) -> None:
         _po_not_found(g)
         return
     usable = [po for po in found if _usable_po(g, po)]
-    if len(usable) > 1:
-        _match_pos(g, usable, [po for po in found if po not in usable])
+    ignored = [po for po in found if po not in usable]
+    wrong_entity = [po for po in ignored if _supplier_po(g, po)]  # the supplier's own POs of another legal entity
+    if usable and wrong_entity:
+        _pos_of_another_entity(g, usable, wrong_entity, [po for po in ignored if po not in wrong_entity])
         return
-    po = usable[0] if usable else found[0]  # none usable: the first quoted PO says why
+    if len(usable) > 1:
+        _match_pos(g, usable, ignored)
+        return
+    # None usable: the supplier's own PO (a legal-entity issue) says why before a PO of another supplier.
+    po = usable[0] if usable else (wrong_entity or found)[0]
+    others = _ignored_sentence([p for p in ignored if p is not po])
     number = g.details["po_number"] = po.po_number
     if not _supplier_po(g, po):
         g.fail("commitment_match", "po_not_found", role="Requester", owner=po.requester_name, po=number,
                reason=f"PO {number} belongs to another supplier (account {po.vendor_account_id}): routed to the "
-                      f"requester {po.requester_name} to provide the correct PO.",
+                      f"requester {po.requester_name} to provide the correct PO.{others}",
                cause=f"PO {number} belongs to another vendor account")
         return
     if g.cfg["entity_check"] and po.legal_entity_code != g.details["bill_to_entity"]:
         g.fail("commitment_match", "wrong_legal_entity", role=ap.role, owner=ap.name, po=number,
                reason=f"Billed to {g.entity_label(g.details['bill_to_entity'])} but PO {number} belongs to "
                       f"{po.legal_entity_code}: routed to the AP specialist {ap.name} to ask for a re-issued invoice "
-                      "or re-assign it.", cause=f"PO {number} belongs to another legal entity")
+                      f"or re-assign it.{others}", cause=f"PO {number} belongs to another legal entity")
         return
     g.details.update(commitment="po", po_numbers=[number])
     receipts = _receipts(g, number)
@@ -1046,16 +1076,44 @@ def _match_po(g: _Gate) -> None:
     if unreadable:
         g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name, po=number,
                reason=f"PO {number}: {unreadable}. Routed to the AP specialist {ap.name} to check the invoice lines "
-                      "against the document.", cause=f"PO {number}: {unreadable}")
+                      f"against the document.{others}", cause=f"PO {number}: {unreadable}")
         return
     if issues:
-        _route_po_issues(g, po, issues)
+        _route_po_issues(g, po, issues, note=others.strip())
         return
     received = "received in full" if fully_received(po, receipts) else "the invoiced quantities received"
-    what = (f"3-way match on PO {number}: {lines_ok} and {received}" if po.category == "goods"
-            else f"PO {number} + service confirmation: {lines_ok}")
+    skipped = _ignored_note(ignored)
+    what = (f"3-way match on PO {number}{skipped}: {lines_ok} and {received}" if po.category == "goods"
+            else f"PO {number}{skipped} + service confirmation: {lines_ok}")
     g.posted_note = what
     g.step("commitment_match", "ok", f"{what}.", commitment="po", po=number)
+
+
+def _ignored_note(ignored: list[PurchaseOrder]) -> str:
+    """' (PO 4500105 quoted too, but not of this supplier and billed entity)'; '' when no quoted PO was ignored."""
+    return f" ({_po_label(ignored)} quoted too, but not of this supplier and billed entity)" if ignored else ""
+
+
+def _ignored_sentence(ignored: list[PurchaseOrder]) -> str:
+    """The same as a sentence appended to an exception reason; '' when no quoted PO was ignored."""
+    return f" {_po_label(ignored)} quoted too, but not of this supplier and billed entity." if ignored else ""
+
+
+def _pos_of_another_entity(g: _Gate, usable: list[PurchaseOrder], wrong: list[PurchaseOrder],
+                           others: list[PurchaseOrder]) -> None:
+    """The invoice quotes POs of the billed entity and POs of the same supplier in another Velox entity: one invoice
+    for two legal entities. Never matched on the billed entity's POs alone: the AP specialist asks for one invoice
+    per entity (the single-PO entity check routes the same way)."""
+    ap, label = world.AP_SPECIALIST, _po_label(wrong)
+    verb = "belongs" if len(wrong) == 1 else "belong"
+    entities = and_list(sorted({po.legal_entity_code for po in wrong}))
+    g.details["po_number"] = wrong[0].po_number
+    g.fail("commitment_match", "wrong_legal_entity", role=ap.role, owner=ap.name,
+           po=",".join(po.po_number for po in wrong),
+           reason=f"Billed to {g.entity_label(g.details['bill_to_entity'])} with {_po_label(usable)}, but the invoice "
+                  f"also quotes {label} of the same supplier, which {verb} to {entities}: routed to the AP specialist "
+                  f"{ap.name} to ask for one invoice per legal entity or re-assign it.{_ignored_sentence(others)}",
+           cause=f"{label} quoted on the invoice {verb} to another legal entity")
 
 
 def _receipts(g: _Gate, po_number: str) -> list[ProductReceipt]:
@@ -1080,21 +1138,21 @@ def _match_pos(g: _Gate, pos: list[PurchaseOrder], ignored: list[PurchaseOrder])
         checks, issues, unreadable = check_header_across_pos(net, pos, receipts, currency)
         lines_ok = "no invoice lines read, net total within tolerance of the POs' total"
     g.details["line_checks"] = checks
-    skipped = (f" ({_po_label(ignored)} quoted too, but not of this supplier and billed entity)" if ignored else "")
+    skipped = _ignored_note(ignored)
     if unreadable:
         g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name, po=",".join(numbers),
                reason=f"{label}: {unreadable}. Routed to the AP specialist {ap.name} to check the invoice lines "
-                      "against the document.", cause=f"{label}: {unreadable}")
+                      f"against the document.{_ignored_sentence(ignored)}", cause=f"{label}: {unreadable}")
         return
     if issues:
-        _route_multi_po_issues(g, pos, issues, checks)
+        _route_multi_po_issues(g, pos, issues, checks, _ignored_sentence(ignored))
         return
     g.posted_note = f"Multi-PO match on {label}{skipped}: {lines_ok}, every line received or confirmed"
     g.step("commitment_match", "ok", f"{g.posted_note}.", commitment="po", po=",".join(numbers))
 
 
 def _route_multi_po_issues(g: _Gate, pos: list[PurchaseOrder], issues: list[dict[str, Any]],
-                           checks: list[dict[str, Any]]) -> None:
+                           checks: list[dict[str, Any]], ignored: str = "") -> None:
     """Route the highest-priority issue (missing receipt, quantity, price) to the owners of the PO it is on; an
     invoice line on none of the POs goes to the buyer of the first one."""
     priority = ("no_receipt", "quantity", "price")
@@ -1107,7 +1165,7 @@ def _route_multi_po_issues(g: _Gate, pos: list[PurchaseOrder], issues: list[dict
                 if amounts and all(a is not None for a in amounts) else None)
     clean = [p for p in pos if not any(i.get("po") == p.po_number for i in issues)]
     note = f"Invoice lines on {_po_label(pos)}" + (f"; the lines on {_po_label(clean)} match." if clean else ".")
-    _route_po_issues(g, po, mine, invoiced=invoiced, note=note)
+    _route_po_issues(g, po, mine, invoiced=invoiced, note=note + ignored)
 
 
 def _route_po_issues(g: _Gate, po: PurchaseOrder, issues: list[dict[str, Any]], *, invoiced: Optional[str] = None,
@@ -1346,13 +1404,14 @@ def _posting_reason(g: _Gate) -> str:
         extra += f" — the same invoice was already posted as {d['duplicate_of']}"
     if g.is_credit_note:
         amount = money(-abs(d["gross_total"] or 0.0), d["currency"])
+        credit = _numbered("Credit note", d["invoice_number"])
         ref = g.v("referenced_invoice_number") or "no invoice"
         if d["credit_status"] == "applied":
-            return f"Credit note {d['invoice_number']} ({amount}) applied to invoice {ref} ({d['applied_to']}) and posted to {where}{extra}."
-        if not g.v("referenced_invoice_number"):
-            return (f"Credit note {d['invoice_number']} ({amount}) references no invoice and was posted to {where}: "
+            return f"{credit} ({amount}) applied to invoice {ref} ({d['applied_to']}) and posted to {where}{extra}."
+        if not str(g.v("referenced_invoice_number") or "").strip():
+            return (f"{credit} ({amount}) references no invoice and was posted to {where}: "
                     f"the credit stays unapplied{extra}.")
-        return (f"Credit note {d['invoice_number']} ({amount}) posted to {where}, where no invoice {ref} exists: "
+        return (f"{credit} ({amount}) posted to {where}, where no invoice {ref} exists: "
                 f"the credit stays unapplied{extra}.")
     terms = (f"on the invoice terms ({d['terms_days']} days)" if d["terms_source"] == "invoice"
              else f"on master terms of {d['terms_days']} days")
@@ -1513,13 +1572,13 @@ def clear_results(session: Session, scenario: str) -> None:
 
 
 def run_scenario(session: Session, scenario: str, *, allow_api: bool = False, log: Optional[Log] = None) -> Run:
-    """Clear the scenario's results, extract what is missing, process every document in registration order and
-    store a Run with the step log and the counts."""
+    """Extract what is missing, clear the scenario's results, process every document in processing order and store
+    a Run with the step log and the counts. The extraction comes first: if it raises, the previous results stay."""
     emit = log or print
     started = datetime.now()  # wall-clock time: run metadata only
-    clear_results(session, scenario)
     docs = list(session.scalars(select(InboundDocument).where(InboundDocument.scenario == scenario)))
     extraction = extract.extract_documents(session, [d for d in docs if d.extraction is None], allow_api=allow_api)
+    clear_results(session, scenario)
     lines: list[str] = []
 
     def collect(line: str) -> None:

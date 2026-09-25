@@ -10,10 +10,14 @@ Four supplier templates, keyed by spec.layout:
   modern   accent side bar, right-aligned meta block, Helvetica
   compact  small-business style: small fonts, simple black rules
 Labels follow spec.language (en, de, fr, es); numbers and dates follow the supplier's country conventions, so the
-extraction has to cope with both. A statement (doc_type "other") lists open items and a balance: no VAT block and
-no payment request.
-Scans (spec.scan): the native page is rasterised with pypdfium2 at 300 dpi, rotated by the skew, degraded with
-noise seeded by the document number, and embedded as a JPEG, the only content of the page: no text layer.
+extraction has to cope with both. A French supplier's French-language document groups thousands with a no-break
+space ('14 400,00'); its English documents (all of v1) keep '14.400,00'. Localised (non-English) documents print
+proper names with their national spelling (Straße, Chaussée-d'Antin, Alcalá, Crédit Lyonnais); the world stores
+them in ASCII, as the English documents print them. A statement (doc_type "other") lists open items and a
+balance: no VAT block and no payment request.
+Scans (spec.scan): the native page is rasterised with pypdfium2 at 300 dpi (2480 x 3508 px), rotated by the skew
+inside that frame (the corners show the scanner lid, as on a flatbed), degraded with noise seeded by the document
+number, and embedded as a JPEG at exactly 300 dpi, the only content of the page: no text layer.
 Output is byte-identical across runs (reportlab invariant mode, no timestamps, seeded randomness; scans on the
 same pypdfium2 / Pillow versions). Phone and company-registration numbers are fake and derived from the supplier
 number.
@@ -149,14 +153,39 @@ COUNTRY_NAMES: dict[str, dict[str, str]] = {
 }
 
 
+# National spelling of proper names on localised (non-English) documents, keyed by the address's country line.
+# The world (seed and vendor master) stores them in ASCII, and the English documents (all of v1) print them so.
+SPELLINGS: dict[str, tuple[tuple[str, str], ...]] = {
+    "Germany": (("strasse", "straße"), ("Strasse", "Straße")),
+    "Switzerland": (("Zurich", "Zürich"),),  # no ß in Switzerland: 'Bahnhofstrasse' stays
+    "France": (("Chaussee d'Antin", "Chaussée-d'Antin"), ("Jean Jaures", "Jean Jaurès")),
+    "Spain": (("Alcala", "Alcalá"),),
+}
+BANK_SPELLINGS = {"Credit Lyonnais": "Crédit Lyonnais", "Zuercher Kantonalbank": "Zürcher Kantonalbank"}
+
+
 def labels(spec: DocumentSpec) -> dict[str, str]:
     return LABELS[spec.language]
 
 
+def spell(text: str, country_line: str, language: str) -> str:
+    """text with the national spelling of the proper names of that country; unchanged on English documents."""
+    if language == "en":
+        return text
+    for ascii_form, national in SPELLINGS.get(country_line, ()):
+        text = text.replace(ascii_form, national)
+    return text
+
+
+def bank_name(party: PartySpec, language: str) -> str:
+    return party.bank_name if language == "en" else BANK_SPELLINGS.get(party.bank_name, party.bank_name)
+
+
 def localise_address(lines: tuple[str, ...], language: str) -> list[str]:
-    """Address lines with the country (last line) in the document language."""
-    names = COUNTRY_NAMES.get(language, {})
-    return [names.get(line, line) if i == len(lines) - 1 else line for i, line in enumerate(lines)]
+    """Address lines with the country (last line) in the document language and names in their national spelling."""
+    names, country = COUNTRY_NAMES.get(language, {}), lines[-1]
+    return [names.get(line, line) if i == len(lines) - 1 else spell(line, country, language)
+            for i, line in enumerate(lines)]
 
 
 # --------------------------------------------------------------------------------------------
@@ -164,34 +193,41 @@ def localise_address(lines: tuple[str, ...], language: str) -> list[str]:
 # --------------------------------------------------------------------------------------------
 
 _DECIMAL_COMMA = frozenset({"DE", "NL", "ES", "FR"})  # 23.400,00; every other country 23,400.00
+# French thousands separator. It is in cp1252 (U+202F is not), so the built-in PDF fonts print it (WinAnsi writes
+# it as the space glyph); in the strings it keeps _wrap from breaking a number across lines.
+NBSP = "\u00a0"
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _VAT_GROUPS = {"DE": (3, 3, 3), "FR": (2, 3, 3, 3), "GB": (3, 4, 2), "NL": (4, 4, 4)}
 _CALLING_CODES = {"DE": "49", "FR": "33", "GB": "44", "NL": "31", "ES": "34", "CH": "41", "US": "1"}
 _US_BANK = re.compile(r"ABA (\d+) ACCT (\d+)")
 
 
-def _swap_separators(text: str, country: str) -> str:
+def _swap_separators(text: str, country: str, language: str = "en") -> str:
+    """'23,400.00' in the supplier's style: FR in French '23 400,00' (no-break space), continental '23.400,00'."""
+    if country == "FR" and language == "fr":
+        return text.translate(str.maketrans(",.", f"{NBSP},"))
     return text.translate(str.maketrans(",.", ".,")) if country in _DECIMAL_COMMA else text
 
 
-def fmt_amount(value: float, country: str) -> str:
-    """Two decimals with the supplier's separators: DE '23.400,00', GB/US '23,400.00'; '-' for negatives."""
-    text = _swap_separators(f"{abs(value):,.2f}", country)
+def fmt_amount(value: float, country: str, language: str = "en") -> str:
+    """Two decimals with the supplier's separators: DE '23.400,00', GB/US '23,400.00', FR in French '23 400,00';
+    '-' for negatives."""
+    text = _swap_separators(f"{abs(value):,.2f}", country, language)
     return f"-{text}" if value < 0 else text
 
 
-def fmt_quantity(value: float, country: str) -> str:
-    """No decimals when whole ('150', DE '10.000', GB '10,000'), otherwise two."""
+def fmt_quantity(value: float, country: str, language: str = "en") -> str:
+    """No decimals when whole ('150', DE '10.000', GB '10,000', FR in French '10 000'), otherwise two."""
     if value == int(value):
-        return _swap_separators(f"{int(value):,}", country)
-    return fmt_amount(value, country)
+        return _swap_separators(f"{int(value):,}", country, language)
+    return fmt_amount(value, country, language)
 
 
-def fmt_money(value: float, currency: str, country: str) -> str:
+def fmt_money(value: float, currency: str, country: str, language: str = "en") -> str:
     """Amount with currency code: '23.400,00 EUR' (continental) or 'USD 9,600.00' (GB/US style)."""
     if country in _DECIMAL_COMMA:
-        return f"{fmt_amount(value, country)} {currency}"
-    return f"{currency} {fmt_amount(value, country)}"
+        return f"{fmt_amount(value, country, language)} {currency}"
+    return f"{currency} {fmt_amount(value, country, language)}"
 
 
 def fmt_date(d: date, country: str) -> str:
@@ -253,14 +289,23 @@ def fake_phone(party: PartySpec) -> str:
     return f"+{_CALLING_CODES[party.country]} {20 + n} {n * 397 % 900 + 100} {n * 7919 % 9000 + 1000}"
 
 
+def _german_register(party: PartySpec, city: str, num: int) -> str:
+    """'Amtsgericht Hamburg, HRB 109358': partnerships (OHG, KG, e.K.) in section A (HRA), companies (GmbH, AG) in
+    section B (HRB). Berlin's register court is the Amtsgericht Charlottenburg, its numbers end in ' B'."""
+    section = "HRA" if party.canonical_name.split()[-1] in ("OHG", "KG", "e.K.") else "HRB"
+    if city == "Berlin":
+        return f"Amtsgericht Charlottenburg, {section} {num} B"
+    return f"Amtsgericht {city}, {section} {num}"
+
+
 def fake_registration(party: PartySpec, language: str = "en") -> str:
     """Deterministic fictional company-register entry in the supplier country's usual form (and language)."""
-    city, num = city_of(party), (party.no * 7331 + 2027) % 900000 + 100000
+    city, num = spell(city_of(party), party.address[-1], language), (party.no * 7331 + 2027) % 900000 + 100000
     if party.country == "FR":  # SIREN = French VAT ID without the country code and key
         siren = party.vat_id[4:]
         return f"RCS {city} {siren[:3]} {siren[3:6]} {siren[6:]}"
     local = {
-        ("de", "DE"): f"Amtsgericht {city}, HRB {num}",
+        ("de", "DE"): _german_register(party, city, num),
         ("es", "ES"): f"Registro Mercantil de {city}, hoja M-{num}",
         ("fr", "NL"): f"Chambre de commerce (KvK) n° {num:08d}",
     }
@@ -290,7 +335,7 @@ def is_statement(spec: DocumentSpec) -> bool:
 
 
 def money(spec: DocumentSpec, value: float) -> str:
-    return fmt_money(value, spec.currency, spec.party.country)
+    return fmt_money(value, spec.currency, spec.party.country, spec.language)
 
 
 def contact_email(spec: DocumentSpec) -> str:
@@ -370,13 +415,14 @@ def totals_rows(spec: DocumentSpec) -> list[tuple[str, str]]:
 def payment_block(spec: DocumentSpec) -> tuple[str, list[str]]:
     """Title and lines of the payment block. Credit notes and statements carry no payment instruction."""
     p, L = spec.party, labels(spec)
+    bank = bank_name(p, spec.language)
     if is_credit(spec):
         return L["settle_title"], [
             L["settle_text"],
             L["settle_ref"].format(ref=spec.invoice_number),
-            L["our_bank"].format(bank=p.bank_name, account=fmt_bank_account(p.bank)),
+            L["our_bank"].format(bank=bank, account=fmt_bank_account(p.bank)),
         ]
-    holder = [L["holder"].format(name=spec.printed_supplier_name), L["bank"].format(bank=p.bank_name),
+    holder = [L["holder"].format(name=spec.printed_supplier_name), L["bank"].format(bank=bank),
               fmt_bank_account(p.bank)]
     if is_statement(spec):
         return L["bank_title"], holder
@@ -388,8 +434,8 @@ def payment_block(spec: DocumentSpec) -> tuple[str, list[str]]:
 def footer_line(spec: DocumentSpec) -> str:
     """Registration line; uses the printed supplier name only (v1 docs #2 and #4 print a short name)."""
     p, L = spec.party, labels(spec)
-    return (f"{spec.printed_supplier_name} · {L['office'].format(city=city_of(p))} · "
-            f"{fake_registration(p, spec.language)}")
+    city = spell(city_of(p), p.address[-1], spec.language)
+    return f"{spec.printed_supplier_name} · {L['office'].format(city=city)} · {fake_registration(p, spec.language)}"
 
 
 def initials(name: str) -> str:
@@ -474,8 +520,22 @@ def _lines(c: Canvas, x: float, y: float, lines: list[str], font: str, size: flo
     return y
 
 
+def _split(line: str, font: str, size: float, width: float) -> list[str]:
+    """simpleSplit, except that a no-break space (French digit grouping) is kept and never breaks the line."""
+    if NBSP not in line:
+        return simpleSplit(line, font, size, width)
+    parts, current = [], ""
+    for word in line.split(" "):
+        candidate = f"{current} {word}" if current else word
+        if current and stringWidth(candidate, font, size) > width:
+            parts.append(current)
+            candidate = word
+        current = candidate
+    return parts + [current]
+
+
 def _wrap(lines: list[str], font: str, size: float, width: float) -> list[str]:
-    return [part for line in lines for part in (simpleSplit(line, font, size, width) or [""])]
+    return [part for line in lines for part in (_split(line, font, size, width) or [""])]
 
 
 def _fit(text: str, font: str, size: float, width: float) -> float:
@@ -643,7 +703,7 @@ def _table_header(ctx: Ctx, y: float, columns: list[tuple[str, float, str]]) -> 
 
 def _draw_table(ctx: Ctx, y: float) -> float:
     c, s, L = ctx.c, ctx.spec, ctx.look
-    country, x0, x1, T = s.party.country, ctx.left, ctx.right, labels(s)
+    country, language, x0, x1, T = s.party.country, s.language, ctx.left, ctx.right, labels(s)
     col_amount, col_price, col_qty = x1 - 6, x1 - 86, x1 - 146
     col_desc = max(x0 + 26, x0 + 12 + stringWidth(T["col_no"], L.bold, L.size - 0.5))  # room for "Pos."
     statement = is_statement(s)  # open items: description and amount only
@@ -664,9 +724,9 @@ def _draw_table(ctx: Ctx, y: float) -> float:
         _text(c, x0 + 6, base, str(no), L.font, L.size)
         _lines(c, col_desc, base, desc, L.font, L.size)
         if not statement:
-            _text(c, col_qty, base, fmt_quantity(line.quantity, country), L.font, L.size, INK, "right")
-            _text(c, col_price, base, fmt_amount(line.unit_price, country), L.font, L.size, INK, "right")
-        _text(c, col_amount, base, fmt_amount(line.amount, country), L.font, L.size, INK, "right")
+            _text(c, col_qty, base, fmt_quantity(line.quantity, country, language), L.font, L.size, INK, "right")
+            _text(c, col_price, base, fmt_amount(line.unit_price, country, language), L.font, L.size, INK, "right")
+        _text(c, col_amount, base, fmt_amount(line.amount, country, language), L.font, L.size, INK, "right")
         y -= len(desc) * L.size * 1.35 + 10
         _rule(c, x0, x1, y, RULE, 0.4)
     _rule(c, x0, x1, y, ctx.accent if L.table_header != "ink_rules" else INK, 0.8)
@@ -766,6 +826,7 @@ def _draw_native(spec: DocumentSpec, target: Union[str, BinaryIO]) -> None:
 # --------------------------------------------------------------------------------------------
 
 SCAN_DPI = 300
+SCAN_SIZE = (round(PAGE_W * SCAN_DPI / 72), round(PAGE_H * SCAN_DPI / 72))  # A4 at 300 dpi: 2480 x 3508 px
 
 
 @dataclass(frozen=True)
@@ -777,7 +838,7 @@ class ScanProfile:
     blur: float  # Gaussian radius in pixels (0 = none)
     speckles: int  # number of grey dust specks
     smudge: bool  # smudge the invoice number and the gross total (the low-confidence fields)
-    border: int  # grey level of the scanner lid around the rotated page
+    border: int  # grey level of the scanner lid, seen in the corners the rotated page leaves uncovered
     jpeg_quality: int = 70
 
 
@@ -798,14 +859,16 @@ Box = tuple[float, float, float, float]  # left, top, right, bottom in pixels
 
 
 def _rasterise(pdf_bytes: bytes, targets: list[str]) -> tuple[PILImage, list[Box]]:
-    """Render page 1 at SCAN_DPI; return the RGB image and the pixel boxes of every occurrence of targets."""
+    """Render page 1 at SCAN_DPI; return the RGB image (SCAN_SIZE) and the pixel boxes of every occurrence of
+    targets."""
     import pypdfium2 as pdfium  # lazy: only scans need it
 
     scale = SCAN_DPI / 72
     pdf = pdfium.PdfDocument(pdf_bytes)
     try:
         page = pdf[0]
-        image = page.render(scale=scale).to_pil().convert("RGB")
+        # pdfium rounds the pixel size up (2481 px for 2480.3); the dropped column is white page margin
+        image = page.render(scale=scale).to_pil().convert("RGB").crop((0, 0, *SCAN_SIZE))
         boxes: list[Box] = []
         textpage = page.get_textpage()
         for text in targets:
@@ -822,7 +885,9 @@ def _rasterise(pdf_bytes: bytes, targets: list[str]) -> tuple[PILImage, list[Box
 
 
 def _degrade(image: PILImage, boxes: list[Box], profile: ScanProfile, rng: random.Random) -> PILImage:
-    """Paper tone, smudges, blur, lower contrast, dust and skew; deterministic for a given rng."""
+    """Paper tone, smudges, blur, lower contrast, dust and skew; deterministic for a given rng. The skew rotates
+    the page about its centre inside the same frame, like a sheet laid askew on a flatbed: the size (and so the
+    300 dpi) stays, the corners show the scanner lid, and the page content keeps its margins (>= 7 mm at 3°)."""
     from PIL import Image, ImageDraw, ImageEnhance, ImageFilter  # lazy: only scans need Pillow directly
 
     if profile.greyscale:
@@ -848,11 +913,11 @@ def _degrade(image: PILImage, boxes: list[Box], profile: ScanProfile, rng: rando
         grey = rng.randrange(60, 200)
         draw.ellipse((x - r, y - r, x + r, y + r), fill=grey if profile.greyscale else (grey,) * 3)
     border = profile.border if profile.greyscale else (profile.border,) * 3
-    return image.rotate(profile.skew, resample=Image.BICUBIC, expand=True, fillcolor=border)
+    return image.rotate(profile.skew, resample=Image.BICUBIC, expand=False, fillcolor=border)
 
 
 def render_scan(spec: DocumentSpec, path: Path) -> Path:
-    """Render spec as a scanned-image PDF: one JPEG on an A4 page, no text layer."""
+    """Render spec as a scanned-image PDF: one JPEG drawn at exactly SCAN_DPI on an A4 page, no text layer."""
     profile = SCAN_PROFILES[spec.scan]
     native = io.BytesIO()
     _draw_native(spec, native)
@@ -861,9 +926,7 @@ def render_scan(spec: DocumentSpec, path: Path) -> Path:
     jpeg = io.BytesIO()
     image.save(jpeg, "JPEG", quality=profile.jpeg_quality, optimize=False, progressive=False)
 
-    width_pt, height_pt = (px * 72 / SCAN_DPI for px in image.size)
-    scale = min(PAGE_W / width_pt, PAGE_H / height_pt)
-    w, h = width_pt * scale, height_pt * scale
+    w, h = (px * 72 / SCAN_DPI for px in image.size)  # 595.2 x 841.92 pt: A4 within 0.08 pt, centred below
     c = Canvas(str(path), pagesize=A4, invariant=1)
     c.setTitle(f"SCAN_{spec.received_on:%Y%m%d_%H%M}")
     c.setCreator("velox-p2p-sim invoices_gen (fictional sample document, simulated scan)")

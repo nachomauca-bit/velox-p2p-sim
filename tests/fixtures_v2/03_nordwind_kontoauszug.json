@@ -77,7 +77,7 @@
     "lines": {
       "value": [
         {
-          "description": "Rechnung NWL-2026-00913 vom 30.09.2026",
+          "description": "Rechnung NWL-2026-00871 vom 31.08.2026",
           "quantity": null,
           "unit_price": null,
           "amount": 27846.0
@@ -92,7 +92,7 @@
       "confidence": 0.99
     },
     "notes": {
-      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00913 vom 30.09.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
+      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00871 vom 31.08.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
       "confidence": 0.99
     }
   }

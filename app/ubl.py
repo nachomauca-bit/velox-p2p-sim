@@ -3,12 +3,16 @@
 - parse_ubl(data) returns a dict shaped exactly like extract.InvoiceExtraction.model_dump(mode="json"):
   confidence 1.0 for every value present in the XML, null with confidence 0.0 for a missing one. Credit-note
   amounts come out negative (the AP sign convention of the extraction schema; UBL writes them positive).
+  Amounts and quantities must be in the xs:decimal form UBL uses ("1234.50"): "NaN", "INF", "1e3" or "1,5" come
+  out null with confidence 0, so the gate routes the document to review. Payment terms are DueDate - IssueDate
+  (BT-9 is the authoritative due date); the terms note is read only when a date is missing, and a cash-discount
+  clause ("2 % Skonto innerhalb 8 Tagen") is never taken for the net terms.
 - render_ubl(spec) writes a world.DocumentSpec as a Peppol BIS Billing 3.0 Invoice or CreditNote (UTF-8), used
   by the v2 test set (document 11). parse_ubl(render_ubl(spec)) gives back the spec's ground truth for every
   field a UBL invoice carries (notes excepted: they are fixed text here).
 - Safe to feed untrusted mail attachments: a document with a DOCTYPE or entity declarations is rejected before
   ElementTree sees it (no entity expansion, no external entities), and any XML that is not a UBL Invoice or
-  CreditNote raises ValueError.
+  CreditNote raises ValueError (an unknown or unusable declared encoding included); is_ubl never raises.
 
 Stdlib only and no import of app.extract (which imports this module): the IMAP poller loads it cheaply.
 Limitation: UBL carries one order reference per document (BT-13); render_ubl writes the first PO number, and
@@ -16,6 +20,7 @@ parse_ubl also reads line-level order references when another sender uses them.
 """
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -69,6 +74,8 @@ def _check_no_dtd(data: bytes) -> None:
         scanner.Parse(data, True)
     except expat.ExpatError as exc:
         raise ValueError(f"not well-formed XML: {exc}") from None
+    except (LookupError, UnicodeError) as exc:  # e.g. encoding="x-foo" or "rot13": expat asks the codec registry
+        raise ValueError(f"unsupported XML encoding: {exc}") from None
 
 
 def _parse_root(data: bytes) -> ET.Element:
@@ -80,16 +87,19 @@ def _parse_root(data: bytes) -> ET.Element:
         root = ET.fromstring(bytes(data))
     except ET.ParseError as exc:
         raise ValueError(f"not well-formed XML: {exc}") from None
+    except (LookupError, UnicodeError) as exc:
+        raise ValueError(f"unsupported XML encoding: {exc}") from None
     if root.tag not in _ROOTS:
         raise ValueError(f"not a UBL Invoice or CreditNote (root element {root.tag})")
     return root
 
 
 def is_ubl(data: bytes) -> bool:
-    """True if the bytes are a (safe, well-formed) UBL Invoice or CreditNote. Never raises."""
+    """True if the bytes are a (safe, well-formed) UBL Invoice or CreditNote. Never raises: it classifies
+    untrusted mail attachments, and one odd file must not fail the webhook or the poller's whole message."""
     try:
         _parse_root(data)
-    except ValueError:
+    except Exception:  # noqa: BLE001  ValueError, and anything else a hostile document could provoke
         return False
     return True
 
@@ -105,11 +115,17 @@ def _text(element: Optional[ET.Element], path: str) -> Optional[str]:
     return (text or "").strip() or None
 
 
+# xs:decimal, the lexical form of UBL amounts and quantities: no exponent, no NaN / INF, ASCII digits only.
+_XS_DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+
+
 def _float(text: Optional[str]) -> Optional[float]:
-    try:
-        return float(text) if text else None
-    except ValueError:  # not a number: treated as missing
+    """The number, or None (treated as missing) when the text is not an xs:decimal or overflows a float.
+    float() alone takes "NaN", "Infinity" or "1e999", which would reach the ledger with confidence 1.0."""
+    if not text or not _XS_DECIMAL.fullmatch(text):
         return None
+    value = float(text)
+    return value if math.isfinite(value) else None  # a 400-digit amount overflows to inf
 
 
 def _number(element: Optional[ET.Element], path: str) -> Optional[float]:
@@ -134,6 +150,9 @@ def _compact(value: Optional[str]) -> Optional[str]:
 
 _IBAN_LIKE = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9 ]{8,}")
 _TERMS_DAYS = re.compile(r"(\d{1,3})\s*(?:days?|tagen?|jours?|d[ií]as|dagen)\b", re.IGNORECASE)
+_TERMS_CLAUSE = re.compile(r"[,;.]")
+_CASH_DISCOUNT = re.compile(r"skonto|discount|escompte|descuento|korting", re.IGNORECASE)
+_NET = re.compile(r"\bnet(?:to|o)?\b", re.IGNORECASE)  # net (EN, FR), netto (DE, NL), neto (ES)
 
 
 def _tax_id(party: Optional[ET.Element]) -> Optional[str]:
@@ -164,15 +183,25 @@ def _due_date(root: ET.Element) -> Optional[str]:
 
 
 def _terms_days(root: ET.Element, issue: Optional[str], due: Optional[str]) -> Optional[int]:
-    """Days from the payment terms note ("30 days net"), else DueDate - IssueDate."""
-    for note in root.findall("cac:PaymentTerms/cbc:Note", NS):
-        match = _TERMS_DAYS.search(note.text or "")
-        if match:
-            return int(match.group(1))
+    """DueDate - IssueDate (BT-9 is the authoritative due date). Only when a date is missing (or the due date is
+    before the issue date) is the payment terms note read, clause by clause (split on , ; .): a cash-discount
+    clause ("2 % Skonto bei Zahlung innerhalb 8 Tagen") is skipped, a net clause ("netto 30 Tage") wins, else the
+    first remaining "N days". Never the largest number: a late-interest clause ("interest after 60 days") would."""
     if issue and due:
         days = (date.fromisoformat(due) - date.fromisoformat(issue)).days
-        return days if days >= 0 else None
-    return None
+        if days >= 0:
+            return days
+    first: Optional[int] = None
+    for note in root.findall("cac:PaymentTerms/cbc:Note", NS):
+        for clause in _TERMS_CLAUSE.split(note.text or ""):
+            match = _TERMS_DAYS.search(clause)
+            if match is None or _CASH_DISCOUNT.search(clause):
+                continue
+            if _NET.search(clause):
+                return int(match.group(1))
+            if first is None:
+                first = int(match.group(1))
+    return first
 
 
 def _tax_total(root: ET.Element, currency: Optional[str]) -> Optional[float]:

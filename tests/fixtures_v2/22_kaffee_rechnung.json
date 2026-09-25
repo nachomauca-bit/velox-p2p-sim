@@ -59,11 +59,11 @@
       "confidence": 0.99
     },
     "tax_total": {
-      "value": 35.77,
+      "value": 13.18,
       "confidence": 0.99
     },
     "gross_total": {
-      "value": 224.03,
+      "value": 201.44,
       "confidence": 0.99
     },
     "po_numbers": {
@@ -83,7 +83,7 @@
           "amount": 148.0
         },
         {
-          "description": "Hafermilch 1 l, Karton à 12",
+          "description": "Vollmilch 3,5 %, 1 l, Karton à 12",
           "quantity": 2,
           "unit_price": 14.98,
           "amount": 29.96

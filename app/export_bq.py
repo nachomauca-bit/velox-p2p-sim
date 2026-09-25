@@ -8,7 +8,8 @@ the KPI page can also be built in Looker Studio (Data Studio) on top of them.
   carries a few flattened fields of `details` (touchless, supplier, amount, ...) and the document's dataset,
   so a Looker Studio report needs no JSON parsing.
 - When BQ_EXPORT is on, each file is loaded into BQ_PROJECT.BQ_DATASET.<table> with WRITE_TRUNCATE: every export
-  replaces the tables, so BigQuery always mirrors the app's database. google-cloud-bigquery
+  replaces the tables. The export runs after a scenario run, a webhook document, a re-run and a reset (not after
+  loading a set alone), so BigQuery reflects the database as of the last of those. google-cloud-bigquery
   (requirements-gcp.txt) is imported only then. The dataset must exist (deploy/04_bigquery.sh).
 
 CLI:  python -m app.export_bq [--bq | --no-bq]      (default: load into BigQuery only if BQ_EXPORT is on)

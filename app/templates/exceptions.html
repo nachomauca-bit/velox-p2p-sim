@@ -10,13 +10,18 @@
       {% if as_of %}The blocking queue is a snapshot at the close of {{ as_of|d }}, the day the last open exception
       arrived: age is counted to it (the simulation assumes every SLA is met). Info tasks and blocked duplicates
       are listed from the whole run.{% endif %}
+      {% if has_live %}Documents received live through the intake webhook carry real dates and are aged to
+      today.{% endif %}
     {% else %}
       Without a gate nothing is tracked by type: every document that does not match a PO goes into the same
       email loop, with no owner and no SLA. All {{ loop|length }} documents of the run that went through it are
       listed.
       {% if as_of %}Snapshot at the close of {{ as_of|d }}, when the last of them was registered: {{ loop_open }}
-      still in the loop that evening, {{ loop|length - loop_open }} already posted. Age is counted to the snapshot,
+      still in the loop that evening, {{ loop_sample - loop_open }} already posted. Age is counted to the snapshot,
       or to the posting day for a document posted by then.{% endif %}
+      {% if has_live %}{{ loop_live }} of them {{ 'was' if loop_live == 1 else 'were' }} received live through the
+      intake webhook: {{ 'it carries' if loop_live == 1 else 'they carry' }} real dates, {{ 'is' if loop_live == 1
+      else 'are' }} not part of the snapshot and {{ 'is' if loop_live == 1 else 'are' }} aged to today.{% endif %}
     {% endif %}
   </p>
 </div>

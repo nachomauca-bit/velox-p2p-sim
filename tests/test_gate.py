@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import copy
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -1085,3 +1085,117 @@ def test_log_lines_of_a_live_document_carry_its_id(session: Session) -> None:
     lines: list[str] = []
     gate.process(session, doc, log=lines.append)
     assert lines and all(line.startswith("[doc B-03] ") for line in lines)
+
+
+# --------------------------------------------------------------------------------------------
+# Review round 3: blank numbers (as-is), POs of two legal entities, runs that fail early, live documents
+# --------------------------------------------------------------------------------------------
+
+
+def test_asis_blank_numbers_are_never_duplicates_nor_credit_targets(session: Session) -> None:
+    """As-is v2: two QuickPrint invoices with no invoice number read, on the same account (V-000108), then a
+    QuickPrint credit note with no reference. A missing number is not a number: no duplicate block, and the credit
+    stays unapplied (it is never applied to a blank-number posting)."""
+    docs = {d.sample_no: d for d in seed.load_sample_documents(session, "asis", "v2")}
+    extract.extract_documents(session, list(docs.values()), allow_api=False)
+    first, second, credit = docs[25], docs[8], docs[7]
+    for doc in (first, second):
+        patch(doc, invoice_number=(None, 0.0))
+    patch(credit, referenced_invoice_number=("  ", 0.0))
+    credit.channel, credit.received_on = second.channel, second.received_on + timedelta(days=14)  # after both
+    session.commit()
+    gate.run_scenario(session, "asis", log=quiet)
+    a, b, c = (decision(session, d.doc_id) for d in (first, second, credit))
+    assert (a.details["account_id"], b.details["account_id"], c.details["account_id"]) == ("V-000108",) * 3
+    assert gate.order_key(first) < gate.order_key(second) < gate.order_key(credit)
+    assert b.outcome != "blocked_duplicate" and b.details["duplicate_of"] is None and b.details["posted"]
+    assert (c.details["credit_status"], c.details["applied_to"]) == ("unapplied", None)
+    texts = " ".join([a.reason or "", b.reason or "", c.reason or ""]
+                     + [s["detail"] for d in (a, b, c) for s in d.steps])
+    assert "None" not in texts
+    assert "No invoice number read, so no earlier invoice posted on account V-000108" in texts
+
+
+WD_120 = "Wall display unit WD-120, oak finish"
+
+
+def test_multi_po_invoice_with_the_suppliers_po_of_another_entity_is_a_wrong_legal_entity(session: Session) -> None:
+    """Atlas Displays billed to VDE, quoting its VDE PO 4500109 (150 units) and its VFR PO 4500105 (80 units): one
+    invoice for two legal entities goes to the AP specialist as a wrong legal entity, never to the buyer as a
+    quantity mismatch on the VDE PO."""
+    doc = load(session, "tobe")[6]
+    lines = [{"description": WD_120, "quantity": 150, "unit_price": 42.0, "amount": 6300.0},
+             {"description": WD_120, "quantity": 80, "unit_price": 42.0, "amount": 3360.0}]
+    patch(doc, po_numbers=(["4500109", "4500105"], 0.95), lines=(lines, 0.95), net_total=(9660.0, 0.95),
+          gross_total=(11495.4, 0.95))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.details["po_number"]) == (
+        "exception", "wrong_legal_entity", "Marco Ruiz", "AP specialist", "4500105")
+    assert ("Billed to Velox Retail GmbH (VDE) with PO 4500109, but the invoice also quotes PO 4500105 of the same "
+            "supplier, which belongs to VFR") in d.reason
+
+
+def test_multi_po_invoice_names_the_po_of_another_entity_whatever_the_print_order(session: Session) -> None:
+    """Shopsys billed to VDE, quoting its VUS PO 4500131 first and its VDE PO 4500107 second."""
+    doc = load(session, "tobe")[7]
+    patch(doc, po_numbers=(["4500131", "4500107"], 0.95), bill_to_name=("Velox Retail GmbH", 0.95),
+          bill_to_vat_id=("DE 298 765 431", 0.95), currency=("EUR", 0.95))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.exception_type, d.owner_name, d.details["po_number"]) == ("wrong_legal_entity", "Marco Ruiz", "4500131")
+    assert "with PO 4500107, but the invoice also quotes PO 4500131 of the same supplier, which belongs to VUS" \
+        in d.reason
+    assert "invoiced" not in d.reason  # not a missing service confirmation on the VDE PO
+
+
+@pytest.mark.parametrize("printed", [["4500128", "4500105"], ["4500105", "4500128"]])
+def test_no_usable_po_prefers_the_suppliers_own_po_of_another_entity(session: Session, printed: list[str]) -> None:
+    """Atlas Displays billed to VDE quoting SecureNet's PO 4500128 and its own VFR PO 4500105: the entity issue goes
+    to the AP specialist whatever the print order (never to the requester of another supplier's PO), and the other
+    supplier's PO is named."""
+    doc = load(session, "tobe")[6]
+    patch(doc, po_numbers=(printed, 0.95))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.exception_type, d.owner_name, d.details["po_number"]) == ("wrong_legal_entity", "Marco Ruiz", "4500105")
+    assert "but PO 4500105 belongs to VFR" in d.reason
+    assert "PO 4500128 quoted too, but not of this supplier and billed entity." in d.reason
+
+
+def test_a_single_matched_po_names_the_ignored_ones(session: Session) -> None:
+    doc = load(session, "tobe")[3]
+    patch(doc, po_numbers=(["4500128", "PO 4500117"], 0.95))  # 4500128 is SecureNet's
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.details["po_number"]) == ("posted", "4500117")
+    assert "PO 4500117 (PO 4500128 quoted too, but not of this supplier and billed entity)" in d.reason
+
+
+def test_a_run_whose_extraction_raises_keeps_the_previous_results(session: Session, monkeypatch) -> None:
+    """The extraction runs before the results are cleared: an unexpected error (e.g. a credentials error of the
+    Vertex backend) never deletes the scenario's previous decisions."""
+    load(session, "tobe")
+    gate.run_scenario(session, "tobe", log=quiet)
+    n = count(session, GateDecision, "tobe")
+    postings = count(session, PendingVendorInvoice, "tobe")
+    assert n == len(world.DOCUMENTS) and postings > 0
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("DefaultCredentialsError: no application default credentials")
+    monkeypatch.setattr(extract, "extract_documents", broken)
+    with pytest.raises(RuntimeError):
+        gate.run_scenario(session, "tobe", log=quiet)
+    session.rollback()
+    assert count(session, GateDecision, "tobe") == n and count(session, PendingVendorInvoice, "tobe") == postings
+    assert count(session, Run, "tobe") == 1
+
+
+def test_live_asis_documents_get_their_own_email_loop_length(session: Session) -> None:
+    """The seeded as-is email loop is keyed by the sample number; a live document (sample 0) by its own id."""
+    docs = load(session, "asis")
+    sample = gate.process(session, docs[1], log=quiet)
+    assert sample.details["email_loop_days"] == sim.email_loop_days("01")
+    for no in (1, 5):
+        docs[no].sample_no = 0  # as a document received through the webhook
+        d = gate.process(session, docs[no], log=quiet)
+        assert d.exception_type == "email_loop"
+        assert d.details["email_loop_days"] == sim.email_loop_days(docs[no].doc_id), no
+    keys = {sim.email_loop_days(k) for k in ("A-W01", "A-W02", "A-W03", "A-W04")}
+    assert len(keys) > 1  # live documents no longer share one loop length

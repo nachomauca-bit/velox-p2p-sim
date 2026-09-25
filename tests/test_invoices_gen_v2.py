@@ -56,9 +56,9 @@ EXPECTED = {
          "2026-104", (10, 30), 30, "VDE", 40000.00, 0.0, 40000.00, "EUR", ("4500101",), None, None,
          "GB293 8475 61"),
     13: ("Kaffee & Co OHG", "de", "pdf", "low", "store_mailbox", "info@kaffee-und-co.de", (2, 12, 0),
-         "2026/139", (10, 30), 14, "VDE", 80.78, 15.35, 96.13, "EUR", (), None, None, None),
+         "2026/139", (10, 30), 14, "VDE", 80.78, 5.65, 86.43, "EUR", (), None, None, None),
     14: ("Kaffee & Co OHG", "de", "email_body", None, "store_mailbox", "info@kaffee-und-co.de", (6, 9, 30),
-         "2026/140", (11, 6), 14, "VDE", 49.00, 9.31, 58.31, "EUR", (), None, None, None),
+         "2026/140", (11, 6), 14, "VDE", 49.00, 3.43, 52.43, "EUR", (), None, None, None),
     15: ("Lumen Store Lighting Ltd", "en", "pdf", None, "ap_mailbox", "accounts@lumenlighting.co.uk", (4, 8, 5),
          "LSL-INV-5602", (10, 29), 30, "VDE", 4200.00, 0.0, 4200.00, "EUR", ("4500112",), None, None, None),
     16: ("SecureNet AG", "en", "pdf", None, "ap_mailbox", "billing@securenet.ch", (5, 13, 10),
@@ -76,7 +76,7 @@ EXPECTED = {
          "INV-2026-0530", (11, 3), 45, "VFR", 12000.00, 2400.00, 14400.00, "EUR", ("4500117",), None, None,
          "FR 62 512 345 678"),
     22: ("Kaffee & Co OHG", "de", "pdf", None, "store_mailbox", "info@kaffee-und-co.de", (2, 12, 5),
-         "2026/136", (10, 30), 14, "VDE", 188.26, 35.77, 224.03, "EUR", (), None, None, None),
+         "2026/136", (10, 30), 14, "VDE", 188.26, 13.18, 201.44, "EUR", (), None, None, None),
     23: ("Nordwind Logistics GmbH", "de", "pdf", None, "ap_mailbox", "billing@nordwind-logistics.de", (9, 8, 30),
          "NWL-2026-01064", (11, 6), 30, "VDE", 7400.00, 1406.00, 8806.00, "EUR", (), "CT-2025-001", None, None),
     24: ("Lumen Store Lighting Ltd", "en", "pdf", None, "ap_mailbox", "accounts@lumenlighting.co.uk", (5, 9, 0),
@@ -185,7 +185,7 @@ def test_special_documents():
     assert docs[2].heading == "RECHNUNG — KOPIE" and docs[2].watermark == "KOPIE"
     assert docs[3].doc_type == "other" and docs[3].heading == "KONTOAUSZUG"
     assert [(ln.description, ln.amount) for ln in docs[3].lines] == [
-        ("Rechnung NWL-2026-00913 vom 30.09.2026", 27846.00), ("Rechnung NWL-2026-01027 vom 31.10.2026", 28679.00)]
+        ("Rechnung NWL-2026-00871 vom 31.08.2026", 27846.00), ("Rechnung NWL-2026-01027 vom 31.10.2026", 28679.00)]
     assert docs[7].doc_type == "credit_note" and docs[7].referenced_invoice_number is None
     assert docs[19].doc_type == "credit_note"
     assert docs[8].subject == "TR: Facture QP-26-1107"
@@ -198,6 +198,23 @@ def test_special_documents():
     assert [(ln.quantity, ln.unit_price) for ln in docs[13].lines] == [(3, 18.50), (1, 14.98), (1, 10.30)]
     assert [(ln.quantity, ln.unit_price) for ln in docs[22].lines] == [(8, 18.50), (2, 14.98), (1, 10.30)]
     assert [(ln.quantity, ln.unit_price) for ln in docs[8].lines] == [(400, 3.50), (10000, 0.10)]
+    for no in (13, 14, 22):  # food (coffee, milk): the reduced German VAT rate, one rate per document
+        assert (docs[no].tax_rate, docs[no].tax_label) == (0.07, "MwSt. 7 %")
+    for no in (13, 22):
+        assert [ln.description for ln in docs[no].lines] == [
+            "Kaffeebohnen Espresso 1 kg", "Vollmilch 3,5 %, 1 l, Karton à 12", "Lieferung"]
+    assert docs[22].gross_total < 500  # still under the store manager's DoA limit
+
+
+def test_v2_lists_no_case_document_invoice():
+    """v2 is a separate run on the same seed, as if the 14 case documents had not been received."""
+    case_numbers = {spec.invoice_number for spec in world.DOCUMENTS}
+    for spec in SPECS:
+        assert spec.invoice_number not in case_numbers, spec.no
+        assert spec.referenced_invoice_number not in case_numbers, spec.no
+        printed = [line.description for line in spec.lines] + list(spec.printed_notes) + [spec.email_body or ""]
+        for text in printed:
+            assert not any(number in text for number in case_numbers), (spec.no, text)
 
 
 def test_unknown_supplier_is_not_in_the_vendor_master():
@@ -284,7 +301,7 @@ def test_key_fields_printed(texts, spec):
     assert spec.invoice_number in text
     assert spec.printed_supplier_name in text
     assert spec.bill_to.name in text
-    assert fmt_amount(spec.gross_total, spec.party.country) in text
+    assert " ".join(fmt_amount(spec.gross_total, spec.party.country, spec.language).split()) in text
     assert spec.currency in text
     for po in spec.po_numbers:
         assert po in text
@@ -312,7 +329,7 @@ def test_kopie_watermark(texts):
 def test_statement_is_not_an_invoice(texts):
     text = texts[3]
     assert "KONTOAUSZUG" in text and "Offener Saldo 56.525,00 EUR" in text
-    assert "Rechnung NWL-2026-00913 vom 30.09.2026 27.846,00" in text
+    assert "Rechnung NWL-2026-00871 vom 31.08.2026 27.846,00" in text
     assert "Rechnung NWL-2026-01027 vom 31.10.2026 28.679,00" in text
     for word in ("RECHNUNG ", "USt. 19", "Nettobetrag", "Rechnungsbetrag", "Bitte überweisen", "Fällig am",
                  "Verwendungszweck"):
@@ -337,6 +354,82 @@ def test_multi_po_invoice(texts):
     assert "Your PO 4500128" in texts[16] and "Your PO 4500130" in texts[16]
 
 
+def test_french_number_format():
+    """A French supplier's French document groups thousands with a no-break space; its English documents (v1 and
+    document 25) and other countries keep their own style."""
+    nbsp = invoices_gen.NBSP
+    assert fmt_amount(14400, "FR", "fr") == f"14{nbsp}400,00"
+    assert fmt_amount(-1234567.5, "FR", "fr") == f"-1{nbsp}234{nbsp}567,50"
+    assert fmt_amount(0.10, "FR", "fr") == "0,10"
+    assert invoices_gen.fmt_quantity(10000, "FR", "fr") == f"10{nbsp}000"
+    assert invoices_gen.fmt_money(2880, "EUR", "FR", "fr") == f"2{nbsp}880,00 EUR"
+    assert fmt_amount(14400, "FR") == fmt_amount(14400, "FR", "en") == "14.400,00"  # v1 style
+    assert fmt_amount(3300, "NL", "fr") == "3.300,00"  # a Dutch supplier writing in French keeps its own style
+    assert fmt_amount(23400, "DE", "de") == "23.400,00" and fmt_amount(9600, "US", "fr") == "9,600.00"
+    check_glyphs(nbsp)
+
+
+def test_french_documents_print_french_grouping(texts):
+    assert "Total TTC 14 400,00 EUR" in texts[21] and "Merci de régler 14 400,00 EUR avant le" in texts[21]
+    assert "Flyers A5 recto-verso 10 000 0,10 1 000,00" in texts[8] and "Total HT 2 400,00 EUR" in texts[8]
+    assert "Total TTC 7 200,00 EUR" in texts[6]
+    assert "14.400" not in texts[21] and "10.000" not in texts[8]
+    assert "Total due 1.100,00 EUR" in texts[25]  # QuickPrint in English, as in the case documents
+    assert "Total TTC 3.300,00 EUR" in texts[5]  # Cleanspace (NL) in French
+
+
+def test_wrapping_keeps_a_grouped_number_together():
+    nbsp = invoices_gen.NBSP
+    line = f"Merci de régler 14{nbsp}400,00 EUR avant le 18/12/2026 par virement sur le compte :"
+    parts = invoices_gen._wrap([line], "Helvetica", 9.5, 90)
+    assert len(parts) > 1 and f"14{nbsp}400,00" in " ".join(parts)
+    assert " ".join(parts) == line
+    assert invoices_gen._wrap(["no grouped number here"], "Helvetica", 9.5, 60) == invoices_gen.simpleSplit(
+        "no grouped number here", "Helvetica", 9.5, 60)
+
+
+def test_german_register_lines(texts):
+    """Partnerships (OHG) in section A, companies (GmbH) in section B; Berlin's court is Charlottenburg."""
+    assert "Kaffee & Co OHG · Sitz: Berlin · Amtsgericht Charlottenburg, HRA 168006 B" in texts[22]
+    assert "Berliner Blumen GmbH · Sitz: Berlin · Amtsgericht Charlottenburg, HRB 197330 B" in texts[26]
+    assert "Nordwind Logistics GmbH · Sitz: Hamburg · Amtsgericht Hamburg, HRB 109358" in texts[1]
+    assert "Amtsgericht Berlin" not in " ".join(texts.values())
+    kaffee = world.PARTY_BY_ID["P-0009"]
+    assert invoices_gen.fake_registration(kaffee) == "Commercial register: Berlin local court, HRB 168006"  # v1
+
+
+def test_localised_documents_spell_names_with_accents(texts):
+    assert "42 avenue Jean Jaurès" in texts[8] and "Banque : Crédit Lyonnais" in texts[8]
+    assert "Nos coordonnées bancaires : Crédit Lyonnais" in texts[7]
+    for no in (5, 6, 7, 8, 9, 21):  # Velox Retail SAS, Paris
+        assert "25 rue de la Chaussée-d'Antin" in texts[no], no
+    assert "Calle de Alcalá 145" in texts[9] and "Calle de Alcalá 145" in texts[10]
+    assert "Hafenstraße 12" in texts[1] and "Torstraße 140" in texts[1]
+    assert "Oranienstraße 25" in texts[22] and "Rosenthaler Straße 40" in texts[22]
+    assert "Rosenthaler Straße 40" in texts[26]
+    for no in (4, 12, 15, 16, 17, 18, 19, 20, 24, 25):  # English documents print the ASCII spelling of the world
+        assert not any(ch in texts[no] for ch in "éèáß"), no
+    assert "Torstrasse 140" in texts[4] and "Bahnhofstrasse 10" in texts[16] and "8001 Zurich" in texts[16]
+    assert "Chaussee" not in " ".join(texts[no] for no in (5, 6, 7, 8, 9, 21))
+
+
+def test_spelling_follows_the_address_country():
+    assert invoices_gen.spell("Bahnhofstrasse 10", "Switzerland", "de") == "Bahnhofstrasse 10"  # no ß in Switzerland
+    assert invoices_gen.spell("8001 Zurich", "Switzerland", "de") == "8001 Zürich"
+    assert invoices_gen.spell("Torstrasse 140", "Germany", "es") == "Torstraße 140"
+    assert invoices_gen.spell("Torstrasse 140", "Germany", "en") == "Torstrasse 140"
+    assert invoices_gen.localise_address(("Calle de Alcala 145", "28009 Madrid", "Spain"), "fr") == [
+        "Calle de Alcalá 145", "28009 Madrid", "Espagne"]
+    quickprint = world.PARTY_BY_ID["P-0008"]
+    assert invoices_gen.bank_name(quickprint, "fr") == "Crédit Lyonnais"
+    assert invoices_gen.bank_name(quickprint, "en") == quickprint.bank_name == "Credit Lyonnais"  # world unchanged
+    for pairs in invoices_gen.SPELLINGS.values():
+        for _, national in pairs:
+            check_glyphs(national)
+    for national in invoices_gen.BANK_SPELLINGS.values():
+        check_glyphs(national)
+
+
 @pytest.mark.parametrize("spec", SCANS, ids=lambda s: f"{s.no:02d}")
 def test_scans_have_no_text_layer(v2_dir, spec):
     page = PdfReader(v2_dir / spec.filename).pages[0]
@@ -347,25 +440,63 @@ def test_scans_have_no_text_layer(v2_dir, spec):
 
 
 @pytest.mark.parametrize("spec", SCANS, ids=lambda s: f"{s.no:02d}")
-def test_scans_are_rotated_by_the_skew(v2_dir, spec):
+def test_scans_are_full_a4_at_exactly_300_dpi(v2_dir, spec):
     import pypdfium2 as pdfium
+
+    assert invoices_gen.SCAN_DPI == 300 and invoices_gen.SCAN_SIZE == (2480, 3508)
+    image = next(iter(PdfReader(v2_dir / spec.filename).pages[0]["/Resources"]["/XObject"].values())).get_object()
+    assert (image["/Width"], image["/Height"]) == (2480, 3508)
+    assert image["/ColorSpace"] == ("/DeviceGray" if spec.scan == "low" else "/DeviceRGB")
+    pdf = pdfium.PdfDocument(v2_dir / spec.filename)
+    try:
+        [obj] = [o for o in pdf[0].get_objects() if o.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE]
+        meta = obj.get_metadata()
+        assert (meta.width, meta.height) == (2480, 3508)
+        assert round(meta.horizontal_dpi, 2) == round(meta.vertical_dpi, 2) == 300.0
+        left, bottom, right, top = obj.get_bounds()  # the whole A4 page, centred (within 0.1 pt)
+        assert max(abs(left), abs(bottom), abs(right - invoices_gen.PAGE_W), abs(top - invoices_gen.PAGE_H)) < 0.1
+    finally:
+        pdf.close()
+
+
+@pytest.mark.parametrize("spec", SCANS, ids=lambda s: f"{s.no:02d}")
+def test_scan_skew_keeps_the_page_content_inside_the_frame(spec):
+    """The page is rotated about its centre within the 300 dpi frame: every inked pixel of the native page stays
+    inside it, at least 5 mm from the edge (about 7 mm at 3°)."""
+    from PIL import ImageOps
 
     native = io.BytesIO()
     invoices_gen._draw_native(spec, native)
-    pdf = pdfium.PdfDocument(native.getvalue())
-    try:
-        width, height = pdf[0].render(scale=invoices_gen.SCAN_DPI / 72).to_pil().size  # unrotated 300 dpi page
-    finally:
-        pdf.close()
-    image = next(iter(PdfReader(v2_dir / spec.filename).pages[0]["/Resources"]["/XObject"].values())).get_object()
-    w, h = image["/Width"], image["/Height"]
-    assert (w, h) != (width, height)
-    assert w > width and h > height and abs(w / h - width / height) > 0.005
+    image, _ = invoices_gen._rasterise(native.getvalue(), [])
+    assert image.size == invoices_gen.SCAN_SIZE
+    left, top, right, bottom = ImageOps.invert(image.convert("L")).point(lambda v: 255 if v > 8 else 0).getbbox()
+    width, height = image.size
     angle = math.radians(invoices_gen.SCAN_PROFILES[spec.scan].skew)
-    assert abs(w - (width * math.cos(angle) + height * math.sin(angle))) <= 3
-    assert abs(h - (height * math.cos(angle) + width * math.sin(angle))) <= 3
     assert invoices_gen.SCAN_PROFILES[spec.scan].skew == {"clean": 1.5, "low": 3.0}[spec.scan]
-    assert image["/ColorSpace"] == ("/DeviceGray" if spec.scan == "low" else "/DeviceRGB")
+    margin = 5 / 25.4 * invoices_gen.SCAN_DPI  # 5 mm in pixels
+    for x in (left, right):
+        for y in (top, bottom):
+            for sign in (1, -1):  # either direction of rotation
+                dx, dy = x - width / 2, y - height / 2
+                rx = width / 2 + dx * math.cos(angle) + sign * dy * math.sin(angle)
+                ry = height / 2 - sign * dx * math.sin(angle) + dy * math.cos(angle)
+                assert margin <= rx <= width - margin and margin <= ry <= height - margin, (x, y, rx, ry)
+
+
+@pytest.mark.parametrize("scan", ["clean", "low"])
+def test_degrade_rotates_inside_the_frame_with_the_scanner_lid_in_the_corners(scan):
+    import random
+
+    from PIL import Image
+
+    profile = invoices_gen.SCAN_PROFILES[scan]
+    page = Image.new("RGB", (400, 600), "white")
+    out = invoices_gen._degrade(page, [], profile, random.Random(1))
+    assert out.size == (400, 600)
+    lid = profile.border if profile.greyscale else (profile.border,) * 3
+    for corner in ((0, 0), (399, 0), (0, 599), (399, 599)):
+        assert out.getpixel(corner) == lid, corner  # uncovered by the rotated page
+    assert out.getpixel((200, 300)) != lid
 
 
 def test_ubl_file(v2_dir):
@@ -398,9 +529,9 @@ def test_email_body_file(v2_dir):
     assert b"\r\n" not in data
     text = data.decode("utf-8")
     assert text == spec.email_body
-    assert "2026/140" in text and "58,31 EUR" in text
-    assert ("anbei unsere Rechnung 2026/140 vom 06.11.2026 über 58,31 EUR (netto 49,00 EUR zzgl. 19 % MwSt. "
-            "9,31 EUR) für die Kaffeelieferung KW 45 an die Filiale Berlin 01.") in text
+    assert "2026/140" in text and "52,43 EUR" in text
+    assert ("anbei unsere Rechnung 2026/140 vom 06.11.2026 über 52,43 EUR (netto 49,00 EUR zzgl. 7 % MwSt. "
+            "3,43 EUR) für die Kaffeelieferung KW 45 an die Filiale Berlin 01.") in text
     assert f"IBAN {world.format_iban(world.PARTY_BY_ID['P-0009'].bank)} (Kaffee & Co)" in text
     assert text.startswith("Guten Tag,") and "Mit freundlichen Grüßen" in text and "Kaffee & Co OHG" in text
 

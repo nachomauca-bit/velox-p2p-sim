@@ -21,14 +21,20 @@ _INVOICE_LABEL = re.compile(r"^(?:OF\s+)?(?:INVOICE|RECHNUNG|FACTURE|FACTURA)\b\
 _PO_LABEL = re.compile(r"^\W*(?:(?:YOUR|OUR)\s+)?(?:PURCHASE\s*ORDER|P\s*O|ORDER)(?![A-Z])\W*")
 _NUMBER_LABEL = re.compile(r"^(?:(?:NUMBER|NUM|NO|NR)(?![A-Z])|N°|Nº|#)\W*")
 CURRENCY_SYMBOLS = {"€": "EUR", "$": "USD", "US$": "USD", "£": "GBP"}
-# A printed label in front of a VAT ID ('USt-IdNr.', 'USt-ID', 'VAT ID', 'VAT No.', 'TVA', 'N° TVA', 'NIF', 'CIF',
-# 'BTW', 'MwSt-Nr.', 'UID'), matched on the uppercased text. The label must end at a non-alphanumeric character, so
-# an ID is never cut (no VAT ID starts with these letters followed by a separator).
+# A printed label in front of a VAT ID ('USt-IdNr.', 'USt-ID', 'VAT ID', 'VAT-ID', 'VAT No.', 'TVA', 'N° TVA',
+# 'Numéro de TVA', 'NIF', 'N.I.F.', 'CIF', 'C.I.F.', 'NIF-IVA', 'IVA', 'Tax ID', 'BTW', 'MwSt-Nr.', 'UID'), matched on
+# the uppercased text. The label must end at a non-alphanumeric character, so an ID is never cut (no VAT ID starts
+# with these letters followed by a separator).
+_VAT_LABEL_WORD = (
+    r"(?:UST[\s.-]*ID(?:[\s.-]*NR)?|MWST[\s.-]*NR"
+    r"|VAT(?:[\s.-]*REG(?:ISTRATION)?\.?)?(?:[\s.-]*(?:ID|NO|NR|NUMBER))?"
+    r"|TAX[\s.-]*ID(?:[\s.-]*(?:NO|NR|NUMBER))?"
+    r"|TVA(?:\s*INTRACOM\w*)?|IVA"
+    r"|N\.?I\.?F\.?|C\.?I\.?F\.?|BTW(?:[\s.-]*(?:NR|NUMMER))?|UID(?:[\s.-]*NR)?)"
+)
 _VAT_LABEL = re.compile(
-    r"^\W*(?:N[°º]\s*)?"
-    r"(?:UST[\s.-]*ID(?:[\s.-]*NR)?|MWST[\s.-]*NR|VAT(?:\s*REG(?:ISTRATION)?\.?)?(?:\s*(?:ID|NO|NR|NUMBER))?"
-    r"|TVA(?:\s*INTRACOM\w*)?"
-    r"|NIF|CIF|BTW(?:[\s.-]*(?:NR|NUMMER))?|UID(?:[\s.-]*NR)?)"
+    r"^\W*(?:(?:N[°º]|NUM[EÉ]RO)\s*(?:DE\s+)?)?"
+    + _VAT_LABEL_WORD + r"(?:[\s./-]+" + _VAT_LABEL_WORD + r")?"  # a double label: 'NIF-IVA', 'N.I.F./C.I.F.'
     r"(?![A-Z0-9])[\s.:#-]*(?:(?:N[°º]|NO|NR)(?![A-Z0-9])[\s.:#-]*)?")
 
 
@@ -59,7 +65,7 @@ def normalise_vat(vat: Optional[str]) -> str:
     the Swiss 'MWST/TVA/IVA' suffix: 'DE 281 947 305' -> 'DE281947305'."""
     if not vat:
         return ""
-    s = _VAT_LABEL.sub("", vat.upper(), count=1)
+    s = _VAT_LABEL.sub("", unicodedata.normalize("NFC", vat).upper(), count=1)  # NFC: 'É' as one character
     s = re.sub(r"[^A-Z0-9]", "", s)
     if s.startswith("EIN"):
         s = s[3:]

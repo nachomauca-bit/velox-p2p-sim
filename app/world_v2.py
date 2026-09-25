@@ -3,6 +3,8 @@
 Source of truth for docs/TEST_SET_V2.md (the contract) and tests/golden_v2.yaml. It reuses the seed of
 app/world.py: same suppliers, accounts, POs, receipts and contracts. Only document 26 comes from a supplier
 that is NOT in world.PARTIES (UNKNOWN_SUPPLIERS), so the seed does not know it.
+v2 is a separate run on that seed, as if the 14 case documents (world.DOCUMENTS) had not been received: some v2
+invoices bill POs and services that a case document also bills, and no v2 document lists a case invoice.
 - invoices_gen.generate_all_v2 renders data/invoices_v2/: native and scanned PDFs, one Peppol UBL XML
   (document 11) and one email body (document 14);
 - tests/make_fixtures.py writes the ground-truth fixtures in tests/fixtures_v2/.
@@ -59,10 +61,15 @@ _UK_EXPORT = "Export of goods outside the UK: zero-rated."
 _FORWARD_COMMENT_8 = ("Bonjour, facture reçue au magasin la semaine dernière (affiches et flyers de la campagne "
                       "d'automne). Merci de la régler. Luc")
 
+# Kaffee & Co sells food only: coffee beans and milk take the reduced German VAT rate (7 %, Anlage 2 UStG), and the
+# delivery charge follows the main supply.
+_KAFFEE_VAT = {"tax_rate": 0.07, "tax_label": "MwSt. 7 %", "tax_note": None}
+_VOLLMILCH = "Vollmilch 3,5 %, 1 l, Karton à 12"
+
 # Document 14 is the email itself: the invoice is only in this text, there is no attachment.
 _EMAIL_BODY_14 = (
     "Guten Tag,\n\n"
-    "anbei unsere Rechnung 2026/140 vom 06.11.2026 über 58,31 EUR (netto 49,00 EUR zzgl. 19 % MwSt. 9,31 EUR) "
+    "anbei unsere Rechnung 2026/140 vom 06.11.2026 über 52,43 EUR (netto 49,00 EUR zzgl. 7 % MwSt. 3,43 EUR) "
     "für die Kaffeelieferung KW 45 an die Filiale Berlin 01.\n\n"
     f"Zahlbar innerhalb von 14 Tagen auf IBAN {format_iban(PARTY_BY_ID['P-0009'].bank)} (Kaffee & Co).\n\n"
     "Mit freundlichen Grüßen\n"
@@ -114,7 +121,7 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         printed_supplier_name="Nordwind Logistics GmbH", bill_to_entity="VDE",
         invoice_number="KA-2026-11", invoice_date=date(2026, 11, 5), payment_terms_days=None,
         currency="EUR",
-        lines=(InvoiceLineSpec("Rechnung NWL-2026-00913 vom 30.09.2026", 1, 27846.00),
+        lines=(InvoiceLineSpec("Rechnung NWL-2026-00871 vom 31.08.2026", 1, 27846.00),
                InvoiceLineSpec("Rechnung NWL-2026-01027 vom 31.10.2026", 1, 28679.00)),
         tax_rate=0.0, tax_label="", tax_note=None, heading=HEADINGS["de"]["other"],
         printed_notes=("Offene Posten zum 05.11.2026. Bitte gleichen Sie die Posten mit Ihrer Buchhaltung ab.",
@@ -255,9 +262,9 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         invoice_number="2026/139", invoice_date=date(2026, 10, 30), payment_terms_days=14,
         currency="EUR",
         lines=(InvoiceLineSpec("Kaffeebohnen Espresso 1 kg", 3, 18.50),
-               InvoiceLineSpec("Hafermilch 1 l, Karton à 12", 1, 14.98),
+               InvoiceLineSpec(_VOLLMILCH, 1, 14.98),
                InvoiceLineSpec("Lieferung", 1, 10.30)),
-        tax_rate=0.19, tax_label="MwSt. 19 %", tax_note=None, heading=HEADINGS["de"]["invoice"],
+        **_KAFFEE_VAT, heading=HEADINGS["de"]["invoice"],
         printed_notes=("Vielen Dank für Ihre Bestellung!",),
         layout="compact", language="de", scan="low", dataset="v2", **_STORE_B01,
         designed_to_show="Poor scan (3° skew, noise, smudged number and total): low confidence on the gross "
@@ -271,7 +278,7 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         printed_supplier_name="Kaffee & Co OHG", bill_to_entity="VDE",
         invoice_number="2026/140", invoice_date=date(2026, 11, 6), payment_terms_days=14,
         currency="EUR", lines=(InvoiceLineSpec("Kaffeelieferung KW 45", 1, 49.00),),
-        tax_rate=0.19, tax_label="MwSt. 19 %", tax_note=None, heading=HEADINGS["de"]["invoice"],
+        **_KAFFEE_VAT, heading=HEADINGS["de"]["invoice"],
         layout="compact", language="de", content="email_body", email_body=_EMAIL_BODY_14, dataset="v2",
         **_STORE_B01,
         designed_to_show="Invoice only in the email body, no attachment: registered as 'unknown' and routed to "
@@ -390,9 +397,9 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         invoice_number="2026/136", invoice_date=date(2026, 10, 30), payment_terms_days=14,
         currency="EUR",
         lines=(InvoiceLineSpec("Kaffeebohnen Espresso 1 kg", 8, 18.50),
-               InvoiceLineSpec("Hafermilch 1 l, Karton à 12", 2, 14.98),
+               InvoiceLineSpec(_VOLLMILCH, 2, 14.98),
                InvoiceLineSpec("Lieferung", 1, 10.30)),
-        tax_rate=0.19, tax_label="MwSt. 19 %", tax_note=None, heading=HEADINGS["de"]["invoice"],
+        **_KAFFEE_VAT, heading=HEADINGS["de"]["invoice"],
         printed_notes=("Vielen Dank für Ihre Bestellung!",),
         layout="compact", language="de", dataset="v2", **_STORE_B01,
         designed_to_show="Low-value non-PO invoice: DoA auto-approval by the store manager's threshold.",

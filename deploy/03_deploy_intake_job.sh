@@ -8,7 +8,14 @@
 #   (second mailbox, optional: IMAP2_USER=velox.store.demo@gmail.com; needs the IMAP2_PASSWORD secret)
 #
 # Options (environment): IMAP_HOST / IMAP2_HOST (default imap.gmail.com), IMAP_FOLDER / IMAP2_FOLDER (INBOX),
-#   INTAKE_SCENARIO (tobe | asis, default tobe), SCHEDULE (cron, default every minute).
+#   INTAKE_SCENARIO (tobe | asis, default tobe), SCHEDULE (cron, default every minute), and, passed to the job
+#   only when set: IMAP_SINCE / IMAP2_SINCE (YYYY-MM-DD: only messages received on or after that day) and
+#   IMAP_ALLOWED_SENDERS / IMAP2_ALLOWED_SENDERS (comma-separated addresses or @domains, e.g.
+#   "you@gmail.com,@velox.com": mail from anyone else is not fetched and stays unread).
+#
+# Before the first run, mark every message already in the mailboxes as read: the poller registers every UNREAD
+# message as a document. From then on nobody should open mail there: a message read before the poller sees it
+# is never ingested.
 #
 # Pause the polling between demos (a run every minute is billed):
 #   gcloud scheduler jobs pause  velox-intake-every-minute --location=<REGION>
@@ -43,13 +50,21 @@ env_vars=(
   "IMAP_HOST=${IMAP_HOST}" "IMAP_PORT=993" "IMAP_USER=${IMAP_USER}" "IMAP_FOLDER=${IMAP_FOLDER}"
   "IMAP_CHANNEL=ap_mailbox"
 )
+optional=(IMAP_SINCE IMAP_ALLOWED_SENDERS)
 secrets=("APP_PASSWORD=APP_PASSWORD:latest" "IMAP_PASSWORD=IMAP_PASSWORD:latest")
 if [ -n "${IMAP2_USER:-}" ]; then
   env_vars+=("IMAP2_HOST=${IMAP2_HOST}" "IMAP2_PORT=993" "IMAP2_USER=${IMAP2_USER}" "IMAP2_FOLDER=${IMAP2_FOLDER}"
              "IMAP2_CHANNEL=store_mailbox")
+  optional+=(IMAP2_SINCE IMAP2_ALLOWED_SENDERS)
   secrets+=("IMAP2_PASSWORD=IMAP2_PASSWORD:latest")
 fi
-env_list="$(IFS=,; echo "${env_vars[*]}")"
+for name in "${optional[@]}"; do
+  if [ -n "${!name:-}" ]; then
+    env_vars+=("${name}=${!name}")
+  fi
+done
+# '|' separates the variables (gcloud's ^|^ prefix): IMAP_ALLOWED_SENDERS contains commas.
+env_list="^|^$(IFS='|'; echo "${env_vars[*]}")"
 secret_list="$(IFS=,; echo "${secrets[*]}")"
 
 echo "== Cloud Run job ${JOB}: one IMAP pass per execution"
@@ -89,6 +104,7 @@ gcloud scheduler jobs "${action}" http "${SCHEDULER_JOB}" \
   --oauth-service-account-email="${SA_EMAIL}"
 
 echo
-echo "Done. Send an email with a PDF to ${IMAP_USER}; within about two minutes it is in the inbox of the app."
+echo "Done. The poller registers every UNREAD message of ${IMAP_USER} (mark older mail as read; nobody should"
+echo "open mail there). Send an email with a PDF to ${IMAP_USER}: within about two minutes it is in the app's inbox."
 echo "Job runs:  gcloud run jobs executions list --job=${JOB} --region=${REGION} --limit=5"
 echo "Job logs:  gcloud logging read 'resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${JOB}\"' --limit=50"

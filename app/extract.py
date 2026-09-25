@@ -41,6 +41,14 @@ from sqlalchemy.orm import Session
 from app import config, world
 from app.models import Extraction, InboundDocument
 
+try:  # google-auth comes with google-genai; guarded so that this module still imports without it
+    from google.auth import exceptions as google_auth_errors
+
+    # Vertex AI credentials: DefaultCredentialsError, RefreshError, TransportError, ... all derive from it.
+    _CREDENTIAL_ERRORS: tuple[type[Exception], ...] = (google_auth_errors.GoogleAuthError,)
+except ImportError:  # pragma: no cover
+    _CREDENTIAL_ERRORS = ()
+
 FIXTURE_MODEL = "fixture (ground truth, no API call)"
 
 
@@ -406,6 +414,13 @@ def _describe(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
+def _credentials_failed(exc: Exception) -> ExtractionFailed:
+    """Vertex AI: no Application Default Credentials, or the access token could not be obtained. The SDK loads
+    them at the first request, so this surfaces from generate_content / models.list, not from genai.Client().
+    An ExtractionFailed like any API error: a batch then degrades to cache-only instead of aborting."""
+    return ExtractionFailed(f"Vertex AI credentials: {_describe(exc)}")
+
+
 def _is_model_unavailable(exc: Exception) -> bool:
     """True when the API rejects the model itself (not found, no access, zero quota), not the request."""
     if not isinstance(exc, genai_errors.ClientError):
@@ -513,6 +528,8 @@ def _generate(client: Any, contents: list[Any],
     while True:
         try:
             response, latency_ms = _generate_once(client, model, contents, gen_config)
+        except _CREDENTIAL_ERRORS as exc:  # first: some of them are also ValueErrors (a malformed key file)
+            raise _credentials_failed(exc) from exc
         except httpx.HTTPError as exc:
             raise ExtractionFailed(f"network error calling {model}: {_describe(exc)}") from exc
         except genai_errors.APIError as exc:
@@ -583,16 +600,20 @@ def _token_counts(usage: Any) -> tuple[Optional[int], Optional[int], Optional[in
 def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
     """Call the configured Gemini model once for one PDF and return a validated result.
 
-    Raises ExtractionFailed (an ExtractionUnavailable) on API errors or an unusable response.
+    Raises ExtractionFailed (an ExtractionUnavailable) on API errors, missing or unusable Vertex AI credentials,
+    or an unusable response.
     """
-    client = _client()
     contents = [genai_types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"), USER_INSTRUCTION]
     gen_config = genai_types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
         response_mime_type="application/json",
         response_schema=InvoiceExtraction,  # the SDK converts the pydantic model to its Schema
     )  # temperature is set per model in _timed_generate
-    response, model, latency_ms = _generate(client, contents, gen_config)
+    try:
+        client = _client()
+        response, model, latency_ms = _generate(client, contents, gen_config)
+    except _CREDENTIAL_ERRORS as exc:  # from genai.Client() (ADC lookup) or models.list during a fallback
+        raise _credentials_failed(exc) from exc
     try:
         extraction = _parse_response(response)
     except ValueError as exc:  # includes pydantic.ValidationError and JSON decode errors

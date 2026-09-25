@@ -33,7 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import config, db, drafts, extract, gate, metrics, models, normalize, seed, sim, taxonomy, world
+from app import config, db, drafts, extract, gate, metrics, normalize, seed, sim, taxonomy, world
 from app.models import (
     Contract,
     GateDecision,
@@ -93,8 +93,7 @@ DATASET_NAMES = {**DATASET_CHOICES, seed.LIVE_DATASET: "Live intake (webhook)"}
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Create tables (never drop), add the columns an older database lacks, and seed the mock ERP if it is empty."""
-    db.init_db()
-    added = models.add_missing_columns(db.engine)
+    added = db.init_db()
     if added:
         print(f"[startup] database upgraded: added {', '.join(added)}")
     with db.SessionLocal() as session:
@@ -413,6 +412,7 @@ def reset(request: Request, scenario: Optional[str] = Form(None),
     pending = max(summary["unavailable"] - body_only, 0)
     print(f"[reset] scenario={scenario} dataset={dataset} ERP tables re-seeded, gate results cleared, {len(docs)} "
           f"documents reloaded, extracted={summary['extracted']} unavailable={summary['unavailable']}")
+    export_after_run(session, scenario, "reset")
     path = back_path(request)
     if path.startswith(DOCUMENT_PAGE_PREFIXES):
         path = "/inbox"
@@ -448,9 +448,11 @@ def run_gate(session: Session, scenario: str) -> tuple[Optional[Run], str]:
                  f"{s.get('touchless', 0)} touchless, {s.get('exceptions', 0)} exceptions.")
 
 
-def export_after_run(session: Session, scenario: str) -> None:
+def export_after_run(session: Session, scenario: str, event: str = "run") -> None:
     """With BQ_EXPORT on, export the decisions and mock tables (app/export_bq.py: NDJSON files, then BigQuery)
-    after a run. Imported lazily; a failure is logged and never fails the run."""
+    after anything that changes the gate results: a run, a reset, a re-run of one document, a document received
+    through the intake webhook (`event` names it in the log). Imported lazily; a failure is logged and never fails
+    the request."""
     if not config.BQ_EXPORT:
         return
     try:
@@ -458,10 +460,10 @@ def export_after_run(session: Session, scenario: str) -> None:
 
         tables = export_bq.export_all(session) or {}
         rows = sum(v if isinstance(v, int) else len(v) for v in tables.values())
-        print(f"[export] after the {scenario} run: {rows} rows in {len(tables)} tables")
+        print(f"[export] after the {scenario} {event}: {rows} rows in {len(tables)} tables")
     except Exception as exc:  # the export is optional: the demo keeps working without it
         session.rollback()
-        print(f"[export] after the {scenario} run FAILED: {exc!r}")
+        print(f"[export] after the {scenario} {event} FAILED: {exc!r}")
 
 
 def count_documents(session: Session, scenario: str) -> int:
@@ -641,8 +643,10 @@ def latest_run(session: Session, scenario: str) -> Optional[Run]:
 
 
 def registration_info(doc: InboundDocument) -> dict[str, Any]:
-    """Registered date, or the expected one with the reason (brief sections 6 and 10)."""
-    if doc.registered and doc.registered_on is not None:
+    """Registered date, or the expected one with the reason (brief sections 6 and 10). A document received live
+    (real dates) whose registration day is still ahead is shown as not registered yet, even once the gate ran."""
+    ahead = doc.dataset == seed.LIVE_DATASET and doc.registered_on is not None and doc.registered_on > datetime.now()
+    if doc.registered and doc.registered_on is not None and not ahead:
         days = sim.business_days_between(doc.received_on, doc.registered_on)
         if days == 0:
             note = "Registered on arrival"
@@ -883,7 +887,12 @@ def invoice_page(doc_id: str, request: Request, session: Session = Depends(db.ge
     return render(request, "invoice.html", ctx)
 
 
-FILE_TYPES = {".pdf": "application/pdf", ".xml": "application/xml", ".txt": "text/plain; charset=utf-8"}
+# A received file comes from any email sender, so it is never rendered as markup in the app's origin: a UBL
+# e-invoice may carry an XHTML <script>, so XML is served as plain text, like an email body, in a CSP sandbox with no
+# content sniffing. A PDF keeps the browser's viewer (a CSP sandbox breaks Chrome's viewer in the invoice-page frame).
+FILE_TYPES = {".pdf": "application/pdf", ".xml": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
+FILE_HEADERS = {"X-Content-Type-Options": "nosniff"}
+TEXT_FILE_HEADERS = {**FILE_HEADERS, "Content-Security-Policy": "default-src 'none'; sandbox"}
 
 
 def file_url(doc: InboundDocument) -> str:
@@ -942,6 +951,7 @@ def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_
     no decision yet (duplicate and credit-note checks look back), then this one. HTMX gets the gate panel
     partial; without JS, a redirect."""
     doc = get_document(session, doc_id)
+    scenario = doc.scenario
     with _gate_lock:
         try:
             before = processed_doc_ids(session, doc.scenario)
@@ -953,6 +963,7 @@ def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_
             session.rollback()
             print(f"[rerun] doc={doc_id} FAILED: {exc!r}")
             message = ("error", f"The gate could not process {doc_id}; see the server log.")
+    export_after_run(session, scenario, f"re-run of {doc_id}")
     session.expire_all()
     doc = get_document(session, doc_id)
     if request.headers.get("HX-Request"):
@@ -1009,8 +1020,24 @@ def run_extraction(session: Session, doc: InboundDocument, force: bool) -> tuple
         return ("warn", "Extraction unavailable: nothing was extracted (see the reason below).")
     if extract.is_fixture_model(row.model):
         return ("info", "Loaded the ground-truth fixture (no API call; not a Gemini output).")
-    source = "from cache" if row.from_cache else f"via the Gemini API in {row.latency_ms} ms"
+    if is_ubl_model(row.model):
+        return ("info", "Parsed the UBL e-invoice (structured XML, no model call).")
+    if row.from_cache:
+        source = "from cache"
+    elif row.latency_ms is not None:
+        source = f"via the Gemini API in {row.latency_ms} ms"
+    else:
+        source = "via the Gemini API"
     return ("info", f"Extracted with {row.model} ({source}).")
+
+
+def is_ubl_model(model: Optional[str]) -> bool:
+    """The extraction came from the UBL parser (app/ubl.py, imported lazily), not from a model."""
+    try:
+        from app import ubl
+    except ImportError:
+        return False
+    return model == ubl.UBL_MODEL
 
 
 @app.post("/invoice/{doc_id}/extract")
@@ -1038,7 +1065,7 @@ def resolve_document_file(stored: str) -> Optional[Path]:
 @app.get("/files/{name}")
 def document_file(name: str, session: Session = Depends(db.get_session)) -> FileResponse:
     """The received file of a document: /files/B-01.pdf, /files/B2-11.xml, /files/B2-14.txt (or without the
-    extension). Only files under DATA_DIR or INBOUND_DIR are served."""
+    extension). Only files under DATA_DIR or INBOUND_DIR are served; XML and email text as sandboxed plain text."""
     stem, suffix = (name[: -len(ext)], ext) if (ext := Path(name).suffix.lower()) in FILE_TYPES else (name, "")
     doc = get_document(session, stem)
     path = resolve_document_file(doc.file_path)
@@ -1046,7 +1073,8 @@ def document_file(name: str, session: Session = Depends(db.get_session)) -> File
     if path is None or actual not in FILE_TYPES or (suffix and suffix != actual):
         raise HTTPException(status_code=404, detail="File not available")
     return FileResponse(path, media_type=FILE_TYPES[actual], filename=f"{doc.doc_id}{actual}",
-                        content_disposition_type="inline")
+                        content_disposition_type="inline",
+                        headers=FILE_HEADERS if actual == ".pdf" else TEXT_FILE_HEADERS)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1315,8 +1343,12 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
     routing = bool(gate.SCENARIOS[scenario]["exception_routing"])
     plain = [gate_view(decisions[i], d) for i, d in docs.items() if i in decisions]
     queued = [v["doc_id"] for v in plain if (blocking_exception(v) if routing else v["is_email_loop"])]
-    as_of = sim.cockpit_as_of(docs[i].registered_on or docs[i].received_on for i in queued)
-    views = [gate_view(decisions[i], d, as_of) for i, d in docs.items() if i in decisions]
+    live = {i for i, d in docs.items() if d.dataset == seed.LIVE_DATASET}
+    # Sample documents live in the simulated calendar: aged to the snapshot of their run. Documents received live
+    # through the intake webhook carry real dates: aged to today, and never counted in the snapshot.
+    as_of = sim.cockpit_as_of(docs[i].registered_on or docs[i].received_on for i in queued if i not in live)
+    now = datetime.now()
+    views = [gate_view(decisions[i], d, now if i in live else as_of) for i, d in docs.items() if i in decisions]
     queue = [v for v in views if blocking_exception(v)]
     info = [{"view": v, "flag": f} for v in views for f in v["flags"] if isinstance(f, dict)]
     owners = owner_counts(queue, info)
@@ -1325,14 +1357,19 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
         queue = [v for v in queue if owner in (v["owner_name"], v.get("next_owner_name"))]
         info = [item for item in info if item["flag"].get("owner_name") == owner]
     loop = [v for v in views if v["is_email_loop"]]
+    loop_sample = [v for v in loop if v["doc_id"] not in live]
     return render(request, "exceptions.html", {
         "page_title": "Exception cockpit", "has_run": bool(decisions),
         "routing": routing,
         "groups": group_by_type(queue), "queue_count": len(queue), "info": info,
-        # as-is: every document of the run that went through the loop; the snapshot tells which were still in it
-        "loop": loop, "loop_open": sum(1 for v in loop if not v["posted_by_snapshot"]),
+        # as-is: every document that went through the loop; the snapshot tells which sample documents were still in
+        # it (live documents are reported apart)
+        "loop": loop, "loop_sample": len(loop_sample),
+        "loop_open": sum(1 for v in loop_sample if not v["posted_by_snapshot"]),
+        "loop_live": len(loop) - len(loop_sample),
         "blocked": [v for v in views if v["outcome"] == "blocked_duplicate"],
         "owners": owners, "owner": owner, "as_of": as_of, "ap_specialist": world.AP_SPECIALIST.name,
+        "has_live": any(i in live for i in queued),
     })
 
 
@@ -1594,10 +1631,22 @@ def webhook_result(doc: InboundDocument, decision: Optional[GateDecision], regis
 
 
 def gate_one_document(session: Session, doc: InboundDocument) -> Optional[GateDecision]:
-    """Run the gate on a newly received document (after those already processed). Never raises."""
+    """Run the gate on a newly received document, as "Re-run gate" does: every earlier document of the scenario
+    without a decision (e.g. a sample set loaded but not run yet) is processed first, in processing order, so the
+    duplicate, credit-note and contract checks see them. Never raises.
+
+    After a failed model call on this document the earlier ones use the cache only (one failed call is enough)."""
+    allow_api = config.gemini_configured() and (doc.extraction is not None or doc.content_type == "email_body")
     with _gate_lock:
         try:
-            return gate.process(session, doc)
+            before = processed_doc_ids(session, doc.scenario)
+            decision = gate.rerun_document(session, doc, allow_api=allow_api)
+            first = [d.doc_id for d in scenario_documents(session, doc.scenario)
+                     if d.doc_id not in before and d.doc_id != doc.doc_id]
+            if first:
+                print(f"[intake] {plural(len(first), 'earlier document')} not processed yet went first, in processing "
+                      f"order: {', '.join(first)}")
+            return decision
         except Exception as exc:  # the document is stored; Run scenario or Re-run gate can process it later
             session.rollback()
             print(f"[intake] gate on {doc.doc_id} FAILED: {exc!r}")
@@ -1667,7 +1716,9 @@ def intake_webhook(
     print(f"[intake] webhook doc={doc.doc_id} scenario={scenario} channel={channel} content={kind} "
           f"registered={registered} extracted={doc.extraction is not None} ({extraction}) "
           f"outcome={decision.outcome if decision else 'not processed'}")
-    return JSONResponse(webhook_result(doc, decision, registered), status_code=201)
+    result = webhook_result(doc, decision, registered)
+    export_after_run(session, scenario, f"intake of {doc.doc_id}")
+    return JSONResponse(result, status_code=201)
 
 
 # --------------------------------------------------------------------------------------------

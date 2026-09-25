@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Phase 3, step 4 (optional): KPIs outside the app. Creates the BigQuery dataset and switches the service's
-# export on: after every scenario run the app writes NDJSON to the bucket and loads each table into
-# ${BQ_DATASET} (WRITE_TRUNCATE: the tables always mirror the app). Looker Studio reads those tables
-# (docs/DEPLOY_GCP.md, "Looker Studio").
+# export on: after every scenario run, every document received through the intake webhook, a re-run of one
+# document and a reset, the app writes NDJSON to the bucket and loads each table into ${BQ_DATASET}
+# (WRITE_TRUNCATE: each export replaces the tables). Loading a set alone does not export. Looker Studio reads
+# those tables (docs/DEPLOY_GCP.md, "Looker Studio"). The setting survives later runs of 02_deploy_app.sh
+# (BQ_EXPORT=0 there switches it off again).
 #
 #   PROJECT_ID=velox-demo-123 bash deploy/04_bigquery.sh
 #

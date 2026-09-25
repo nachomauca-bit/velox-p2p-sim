@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from google import genai
 from google.genai import errors as genai_errors
+from google.auth import exceptions as google_auth_errors
 from google.genai import types as genai_types
 from google.oauth2.credentials import Credentials
 
@@ -301,6 +302,123 @@ def test_vertex_fallback_through_the_installed_sdk_on_a_mock_transport(monkeypat
     assert all(r.headers["authorization"] == "Bearer test-token" for r in requests)
     assert all("x-goog-api-key" not in r.headers for r in requests)
     assert "backend=vertex" in capsys.readouterr().out
+
+
+# Vertex AI credentials (Application Default Credentials) are loaded by the SDK at the first request: their
+# errors come from google-auth, not from the API, and must still end as ExtractionFailed.
+
+
+@pytest.fixture()
+def vertex_sdk(monkeypatch):
+    """extract._client() returns the real SDK client in Vertex AI mode on a mock transport that records
+    requests. Returns (use, requests): use(credentials=None) installs it; credentials=None means ADC."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500, json={"error": {"code": 500, "status": "INTERNAL", "message": "unexpected"}})
+
+    def use(credentials=None) -> None:
+        http = httpx.Client(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(extract, "_client", lambda: genai.Client(
+            vertexai=True, project="velox-demo", location="global", credentials=credentials,
+            http_options=genai_types.HttpOptions(httpx_client=http)))
+
+    monkeypatch.setattr(extract, "_resolved_model", None)
+    monkeypatch.setattr(config, "GEMINI_BACKEND", "vertex")
+    monkeypatch.setattr(config, "GOOGLE_CLOUD_PROJECT", "velox-demo")
+    return use, requests
+
+
+def test_missing_vertex_credentials_are_an_extraction_failure(monkeypatch, tmp_path, vertex_sdk):
+    """No ADC (GOOGLE_APPLICATION_CREDENTIALS names a missing file, as on a machine without
+    `gcloud auth application-default login`): google-auth's DefaultCredentialsError becomes ExtractionFailed."""
+    use, requests = vertex_sdk
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(tmp_path / "missing-adc.json"))
+    use()
+    with pytest.raises(extract.ExtractionFailed, match=r"^Vertex AI credentials: DefaultCredentialsError: ") as info:
+        extract.call_gemini(b"%PDF-1.4 fake", "x.pdf")
+    assert isinstance(info.value.__cause__, google_auth_errors.DefaultCredentialsError)
+    assert "missing-adc.json" in str(info.value)
+    assert requests == []  # nothing was sent
+
+
+def test_a_token_that_cannot_be_refreshed_is_an_extraction_failure(vertex_sdk):
+    """Credentials without a token or a refresh token: the SDK's refresh raises RefreshError (on Cloud Run, a
+    metadata-server failure takes the same path)."""
+    use, requests = vertex_sdk
+    use(credentials=Credentials(token=None))
+    with pytest.raises(extract.ExtractionFailed, match=r"^Vertex AI credentials: RefreshError: ") as info:
+        extract.call_gemini(b"%PDF-1.4 fake", "x.pdf")
+    assert isinstance(info.value.__cause__, google_auth_errors.RefreshError)
+    assert requests == []
+
+
+class ScriptedClient:
+    """A fake SDK client whose generate_content and models.list raise the given errors."""
+
+    def __init__(self, generate_error: Exception, list_error: Exception | None = None):
+        def generate_content(**kwargs):
+            raise generate_error
+
+        def list_models():
+            if list_error:
+                raise list_error
+            return iter(vertex_models("gemini-3.5-flash"))
+
+        self.models = SimpleNamespace(generate_content=generate_content, list=list_models)
+
+
+def test_a_malformed_key_file_is_reported_as_credentials_not_as_a_bad_response(monkeypatch):
+    """MalformedError is also a ValueError: it must not be read as an unusable model response."""
+    monkeypatch.setattr(extract, "_resolved_model", None)
+    monkeypatch.setattr(extract, "_client", lambda: ScriptedClient(google_auth_errors.MalformedError("bad key file")))
+    with pytest.raises(extract.ExtractionFailed) as info:
+        extract.call_gemini(b"%PDF-1.4 fake", "x.pdf")
+    assert str(info.value) == "Vertex AI credentials: MalformedError: bad key file"
+
+
+def test_a_credentials_error_while_listing_fallback_models_is_an_extraction_failure(monkeypatch):
+    monkeypatch.setattr(extract, "_resolved_model", None)
+    monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-9.9-flash")
+    monkeypatch.setattr(extract, "_client", lambda: ScriptedClient(
+        vertex_error(404, "NOT_FOUND", "Publisher Model gemini-9.9-flash was not found"),
+        list_error=google_auth_errors.RefreshError("token expired")))
+    with pytest.raises(extract.ExtractionFailed) as info:
+        extract.call_gemini(b"%PDF-1.4 fake", "x.pdf")
+    assert str(info.value) == "Vertex AI credentials: RefreshError: token expired"
+
+
+def test_a_credentials_error_in_the_client_constructor_is_an_extraction_failure(monkeypatch):
+    def no_adc():
+        raise google_auth_errors.DefaultCredentialsError("Your default credentials were not found.")
+
+    monkeypatch.setattr(extract, "_client", no_adc)
+    with pytest.raises(extract.ExtractionFailed, match="^Vertex AI credentials: DefaultCredentialsError: "):
+        extract.call_gemini(b"%PDF-1.4 fake", "x.pdf")
+
+
+def test_a_batch_without_vertex_credentials_degrades_to_the_cache(session, monkeypatch, tmp_path, tmp_cache_dir,
+                                                                   vertex_sdk):
+    """extract_documents reports the credentials error once and serves the rest from the cache; it never
+    raises (a Run or a Load must not abort because of it)."""
+    use, requests = vertex_sdk
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(tmp_path / "missing-adc.json"))
+    use()
+    monkeypatch.setattr(config, "EXTRACTOR", "gemini")
+    uncached, cached = tmp_path / "new.pdf", tmp_path / "known.pdf"
+    uncached.write_bytes(b"%PDF-1.4 not in the cache")
+    cached.write_bytes(b"%PDF-1.4 in the cache")
+    known = extract._result_from_record(fixture_record(), from_cache=False, source="gemini")
+    extract.write_cache(extract.file_sha256(cached), known, cached.name)
+    docs = [make_doc(session, str(uncached), "B-W01", "1" * 64), make_doc(session, str(cached), "B-W02", "2" * 64)]
+
+    summary = extract.extract_documents(session, docs)
+
+    assert (summary["failed"], summary["extracted"], summary["from_cache"]) == (1, 1, 1)
+    assert summary["error"].startswith("Vertex AI credentials: DefaultCredentialsError: ")
+    assert docs[0].extraction is None and docs[1].extraction is not None
+    assert requests == []
 
 
 # --------------------------------------------------------------------------------------------

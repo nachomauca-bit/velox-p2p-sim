@@ -15,6 +15,8 @@ Every simulated number in the demo, with one line of reasoning and the place in 
 
 - Business days are Monday to Friday, with no public holidays (`sim.add_business_days`, `sim.business_days_between`). Three countries' holiday calendars would add complexity without changing the message.
 - Document dates run from 28 Sep to 15 Oct 2026: invoice dates 28 Sep – 2 Oct, arrival in the mailboxes 1 – 15 Oct (the Nordwind reminder arrives on 15 Oct).
+- Test set v2 (phase 3) is a separate run of the same seed: invoice dates late October – early November 2026, arrival 2 – 10 Nov 2026 (docs/TEST_SET_V2.md).
+- Documents received **live** through the intake webhook (phase 3) carry the real date and time of arrival. They are processed after the loaded sample set, whatever their date (section 8), and the exception cockpit ages them to today.
 - Purchase orders are dated 15 Jun – 21 Sep 2026 and receipts 14 Aug – 1 Oct 2026, so commitments exist before the invoices arrive. These are the to-be dates; in as-is, rule D6 removes the POs that were never keyed in the ERP.
 
 ## 3. Seed — clean world (scenario B, to-be)
@@ -183,7 +185,7 @@ The requester gave the supplier a PO number, but for most POs the order was neve
 
 ## 5. Intake and registration
 
-- Two simulated mailboxes (`world.AP_MAILBOX`, `world.STORE_MAILBOX`): **ap@velox.com** (channel `ap_mailbox`, documents 1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14) and **store.berlin01@velox.com** (channel `store_mailbox`, documents 2, 8, 10). Real email intake is out of scope; `POST /intake/webhook` is the hook for it.
+- Two simulated mailboxes (`world.AP_MAILBOX`, `world.STORE_MAILBOX`): **ap@velox.com** (channel `ap_mailbox`, documents 1, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14) and **store.berlin01@velox.com** (channel `store_mailbox`, documents 2, 8, 10). Real email intake (phase 3): `app/intake_imap.py` reads new messages from one or two IMAP mailboxes and posts them to `POST /intake/webhook`, which registers the document under the scenario's rule, extracts it and runs the gate at once (documents "B-W01", "B-W02" …, dataset `live`). A PDF or a Peppol UBL e-invoice is the document; an email with the invoice only in its body is registered as unknown and routed to human review. Loading a sample set or Reset replaces the live documents of that scenario.
 - **To-be**: every document is registered on arrival (`registered_on = received_on`, delay 0): both mailboxes feed one intake step and the gate registers documents itself, including those sent to the store.
 - **As-is**: ap@ documents are registered when AP opens and keys them, **+1 business day**; store-mailbox documents after the store forwards them, **+7 business days** (`sim.registration_delay_days`, values from `sim.DURATIONS`). In the app, as-is documents show "Not registered yet" with the expected date from `sim.registration_date`.
 
@@ -254,7 +256,8 @@ Lookup table `sim.DURATIONS` (business days). The as-is values are calibrated so
 | Delegation of authority | Non-PO invoice under 500 (gross, invoice currency) from a known vendor is auto-approved; the requester is informed | brief section 8; `gate.SCENARIOS` (`doa_auto_approve_limit`) | Low-value spend; document 10 is 180.00 gross (151.26 net). Gross, because it is the amount that will be paid |
 | Non-PO requester | Kaffee & Co (VDE) -> Paul Neumann, manager of store Berlin 01 and owner of its cost centre DE-STR-B01 | `world.NON_PO_REQUESTERS` | The brief gives no requester for non-PO spend; the store that orders the coffee owns it |
 | Bill-to entity | VAT ID of the bill-to block, else the bill-to name compared with the legal suffix kept (GmbH / SAS / Inc.) | `app/gate.py` | Stripping the suffix would make the three Velox entities identical |
-| Processing order | By registration time, then document ID; duplicates and credit notes are checked against documents processed earlier in the same run | `gate.run_scenario` | Mirrors arrival order: document 1 is registered before its resend (document 2), document 3 before its credit note (document 4) |
+| Processing order | The loaded sample set first, then documents received live (phase 3); within each, by registration time, then document ID. Duplicates, credit notes and contract periods are checked against documents processed earlier | `gate.order_key`, `gate.run_scenario` | Mirrors arrival order: document 1 is registered before its resend (document 2), document 3 before its credit note (document 4). Live documents carry real dates, earlier than the simulated ones, so they are put last: a resent sample invoice arriving by email is still caught as a duplicate |
+| Several POs on one invoice (phase 3) | Every quoted PO that exists and belongs to the supplier and the billed entity is used; each invoice line is matched against the lines of all of them, and an issue is routed to the requester, buyer or receiver of the PO concerned | `gate._match_po` | Test set v2 document 16 (SecureNet, POs 4500128 and 4500130) |
 | Payment terms | To-be takes terms from the master; different terms on the invoice raise the info flag `terms_variance` | brief section 8 | Documents 1, 2 and 6 print terms different from the agreed terms |
 | Confidence threshold | 0.80 on critical fields | `config.CONFIDENCE_THRESHOLD` | See section 7 |
 
@@ -295,7 +298,7 @@ Exception types, owners and SLAs (brief section 9; single source of truth `app/t
 
 ## 9. KPIs (`app/metrics.py`)
 
-The same definitions as the case deck (brief section 12). Each KPI shows its formula on hover and in a footnote.
+The same definitions as the case deck (brief section 12). Each KPI shows its formula on hover and in a footnote. The KPIs page counts every processed document of the scenario, including documents received live; the Compare page uses the sample documents only (the same 14 or 26 in both scenarios).
 
 | KPI | Formula | Group |
 |---|---|---|
@@ -380,7 +383,8 @@ Illustrative, chosen to vary the tax blocks the extractor has to read; not tax a
 ## 12. Phase 3 (cloud-ready build, offline)
 
 - **Test set v2** (26 documents, four languages, scans, a Peppol UBL e-invoice, an email-body invoice, a statement): defined in `docs/TEST_SET_V2.md`, expected results in `tests/golden_v2.yaml`. It reuses the seed of the case documents; document 26 comes from a supplier that is not in the vendor master. The two scans carry **simulated** confidences in their fixtures (12: 0.93; 13: 0.62 on the gross total and 0.71 on the invoice number) to exercise the human-review path; with a key, the values come from Gemini.
-- **Structured e-invoices** (UBL XML) are read by `app/ubl.py` without any model call; the UI says so.
+- **Structured e-invoices** (UBL XML) are read by `app/ubl.py` without any model call; the UI says so. Payment terms come from the due date minus the issue date; the terms note is only a fallback (cash-discount clauses such as Skonto are ignored).
+- **Test set v2 details**: the Kaffee & Co documents use the reduced German VAT rate of 7 % (food); French suppliers writing in French group thousands with a space; the two scans are full A4 pages at exactly 300 dpi.
 - **Email-body invoices** (no attachment) are registered as `unknown` and routed to human review (brief section 17). As-is has no extraction for them, so the simulator does not post them.
 - **Statements** (doc_type `other`): to-be routes them as `not_an_invoice`; as-is has no document-type check and posts them as invoices, which counts as cash leakage.
 - **Model access**: `GEMINI_BACKEND=vertex` switches the same SDK to Vertex AI (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`); the extraction code does not change.

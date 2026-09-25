@@ -143,6 +143,24 @@ def test_names_match_threshold_is_a_parameter() -> None:
     ("UID-Nr. CHE-419.287.563 MWST", "CHE419287563"),
     ("DE 305 118 442", "DE305118442"),
     ("USTIDNRDE281947305", "USTIDNRDE281947305"),  # no separator after the label: never cut into the ID
+    # More printed labels: hyphenated, dotted acronyms, Spanish / French / US wording, double labels
+    ("VAT-ID: DE281947305", "DE281947305"),
+    ("VAT-Nr. DE281947305", "DE281947305"),
+    ("N.I.F.: ESB86419273", "ESB86419273"),
+    ("C.I.F. B86419273", "B86419273"),
+    ("NIF-IVA: ESB86419273", "ESB86419273"),
+    ("N.I.F./C.I.F.: ES-B86419273", "ESB86419273"),
+    ("IVA: ESB86419273", "ESB86419273"),
+    ("IVA: DE 298 765 431", "DE298765431"),  # as the Spanish test set v2 invoices print it
+    ("Tax ID 47-3829105", "473829105"),
+    ("TAX ID: 47-3829105", "473829105"),
+    ("Tax ID (EIN): 47-3829105", "473829105"),
+    ("Numéro de TVA: FR62512345678", "FR62512345678"),
+    ("NUMERO DE TVA FR 62 512 345 678", "FR62512345678"),
+    ("Nume\u0301ro de TVA : FR62512345678", "FR62512345678"),  # decomposed accent
+    ("N° de TVA intracommunautaire : FR62512345678", "FR62512345678"),
+    ("NIFB86419273", "NIFB86419273"),  # no separator: never cut
+    ("IT12345678901", "IT12345678901"),
 ])
 def test_normalise_vat(raw, expected: str) -> None:
     assert normalise_vat(raw) == expected

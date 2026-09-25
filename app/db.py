@@ -27,14 +27,15 @@ def _sqlite_pragmas(dbapi_connection, _record):  # pragma: no cover - trivial
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def init_db(drop: bool = False) -> None:
-    """Create all tables (optionally dropping them first)."""
+def init_db(drop: bool = False) -> list[str]:
+    """Create all tables (optionally dropping them first). An existing database gets the columns added since it
+    was created: returns them as "table.column" (empty when nothing was missing)."""
     from app import models  # noqa: F401  (register models)
 
     if drop:
         models.Base.metadata.drop_all(engine)
     models.Base.metadata.create_all(engine)
-    models.add_missing_columns(engine)  # an existing database gets the columns added since it was created
+    return models.add_missing_columns(engine)
 
 
 def get_session() -> Iterator[Session]:

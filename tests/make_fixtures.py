@@ -129,7 +129,8 @@ def write_fixtures(dataset: str, out_dir: Optional[Path] = None) -> list[Path]:
         if not has_fixture(spec):
             continue
         path = out_dir / f"{Path(spec.filename).stem}.json"
-        path.write_text(json.dumps(ground_truth(spec), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(ground_truth(spec), indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+                        newline="\n")  # LF on every OS, as in git
         paths.append(path)
     return paths
 
