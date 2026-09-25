@@ -53,6 +53,7 @@ Set `EXTRACTOR=fixture` in `.env` to use the ground-truth JSON in `tests/fixture
 - **Compare**: A vs B for the same sample documents (14 case documents or the 26 of test set v2; documents received live by email are left out). **Run both scenarios** fills it in one click.
 - Every invoice page shows the received document (PDF, UBL XML or email text), the extracted fields with confidence, the gate trace, the outcome and (to-be exceptions, with a key) a two-sentence message to the owner drafted by Gemini.
 - Any page accepts `?scenario=asis` or `?scenario=tobe`, handy for links and screenshots.
+- To let someone else click through the demo, open a Cloudflare Tunnel to your machine behind the app password: [docs/SHARE_DEMO.md](docs/SHARE_DEMO.md).
 - The 3-minute demo script is in [docs/DEMO.md](docs/DEMO.md); screenshots are in [docs/img](docs/img) (taken with `EXTRACTOR=fixture`, because no Gemini key was available: the invoice page labels the fields as fixture data).
 
 ## Phase 3: real intake and Google Cloud
