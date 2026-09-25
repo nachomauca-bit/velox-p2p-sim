@@ -1,0 +1,106 @@
+{
+  "file_name": "12_lumen_lighting_invoice.pdf",
+  "file_sha256": "89e8f74405817e1d9424b3ca230ed5de59c20e53e0d1bdb7a292ca8de4d8a999",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:55",
+  "latency_ms": 5210,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1259,
+    "thinking_tokens": 495
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Lumen Store Lighting Ltd",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "GB618273940",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "GB07LOYD30963412345678",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "GB",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "LSL-INV-5521",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-09-30",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-30",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 5200.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 5200.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500112"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "LED track spotlight 30W",
+          "quantity": 80.0,
+          "unit_price": 40.0,
+          "amount": 3200.0
+        },
+        {
+          "description": "LED panel 600x600 40W",
+          "quantity": 40.0,
+          "unit_price": 50.0,
+          "amount": 2000.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Export of goods outside the UK: zero-rated.",
+      "confidence": 0.95
+    }
+  }
+}

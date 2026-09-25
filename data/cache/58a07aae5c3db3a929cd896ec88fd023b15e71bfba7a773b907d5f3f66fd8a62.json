@@ -1,0 +1,100 @@
+{
+  "file_name": "24_lumen_unknown_po.pdf",
+  "file_sha256": "58a07aae5c3db3a929cd896ec88fd023b15e71bfba7a773b907d5f3f66fd8a62",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:05:15",
+  "latency_ms": 3228,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 698,
+    "thinking_tokens": null
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Lumen Store Lighting Ltd",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "GB618273940",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "GB07LOYD30963412345678",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "GB",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "LSL-INV-5611",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-02",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-12-02",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 660.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 660.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500999"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "LED strip 5m, warm white",
+          "quantity": 30.0,
+          "unit_price": 22.0,
+          "amount": 660.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Export of goods outside the UK: zero-rated.",
+      "confidence": 1.0
+    }
+  }
+}

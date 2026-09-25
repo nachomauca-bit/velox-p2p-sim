@@ -94,7 +94,7 @@ def ground_truth(spec: world.DocumentSpec) -> dict:
         "due_date": spec.due_date.isoformat() if spec.due_date else None,
         "payment_terms_days": spec.payment_terms_days,
         "currency": spec.currency,
-        "net_total": spec.net_total,
+        "net_total": None if statement else spec.net_total,  # a statement prints a balance only (no net, no VAT)
         "tax_total": None if statement else (spec.tax_total or 0.0),  # never -0.0
         "gross_total": spec.gross_total,
         "po_numbers": list(spec.po_numbers),

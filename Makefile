@@ -13,7 +13,7 @@ DATASET ?= v1
 IMAGE ?= velox-p2p-sim
 DOCKER_PORT ?= 8080
 
-.PHONY: setup seed pdfs extract run test intake export docker-build docker-run
+.PHONY: setup seed pdfs extract validate run test intake export docker-build docker-run
 
 setup:           ## create the virtualenv and install dependencies (Python 3.11+)
 	$(PY_BOOT) -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 'Python 3.11+ required')"
@@ -41,6 +41,9 @@ intake:          ## one pass over the IMAP mailboxes, posting new messages to th
 
 export:          ## write the KPI export (NDJSON in data/export/); loads BigQuery too when BQ_EXPORT=1
 	$(VENV_PY) -m app.export_bq
+
+validate:        ## compare the cached Gemini extractions with the ground truth and the goldens (docs/LIVE_VALIDATION.md)
+	$(VENV_PY) -m app.validate_live
 
 docker-build:    ## build the container image (run make pdfs first if data/invoices_v2 is missing)
 	docker build -t $(IMAGE) .

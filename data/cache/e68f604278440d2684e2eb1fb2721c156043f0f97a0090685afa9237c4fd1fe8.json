@@ -1,13 +1,18 @@
 {
-  "file_name": "03_nordwind_kontoauszug.pdf",
-  "file_sha256": null,
-  "model": "fixture (ground truth, no API call)",
-  "created_on": "2026-11-02T00:00:00",
-  "latency_ms": null,
-  "usage": null,
+  "file_name": "02_nordwind_rechnung_kopie.pdf",
+  "file_sha256": "e68f604278440d2684e2eb1fb2721c156043f0f97a0090685afa9237c4fd1fe8",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:03:37",
+  "latency_ms": 4834,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1284,
+    "thinking_tokens": 451
+  },
   "extraction": {
     "doc_type": {
-      "value": "other",
+      "value": "invoice",
       "confidence": 0.99
     },
     "supplier_name": {
@@ -35,35 +40,35 @@
       "confidence": 0.99
     },
     "invoice_number": {
-      "value": "KA-2026-11",
+      "value": "NWL-2026-01027",
       "confidence": 0.99
     },
     "invoice_date": {
-      "value": "2026-11-05",
+      "value": "2026-10-31",
       "confidence": 0.99
     },
     "due_date": {
-      "value": null,
-      "confidence": 0.0
+      "value": "2026-11-30",
+      "confidence": 0.99
     },
     "payment_terms_days": {
-      "value": null,
-      "confidence": 0.0
+      "value": 30,
+      "confidence": 0.99
     },
     "currency": {
       "value": "EUR",
       "confidence": 0.99
     },
     "net_total": {
-      "value": null,
-      "confidence": 0.0
+      "value": 24100.0,
+      "confidence": 0.99
     },
     "tax_total": {
-      "value": null,
-      "confidence": 0.0
+      "value": 4579.0,
+      "confidence": 0.99
     },
     "gross_total": {
-      "value": 56525.0,
+      "value": 28679.0,
       "confidence": 0.99
     },
     "po_numbers": {
@@ -77,23 +82,23 @@
     "lines": {
       "value": [
         {
-          "description": "Rechnung NWL-2026-00871 vom 31.08.2026",
-          "quantity": null,
-          "unit_price": null,
-          "amount": 27846.0
+          "description": "Lager und Fulfilment, Berlin DC — Oktober 2026",
+          "quantity": 1.0,
+          "unit_price": 14600.0,
+          "amount": 14600.0
         },
         {
-          "description": "Rechnung NWL-2026-01027 vom 31.10.2026",
-          "quantity": null,
-          "unit_price": null,
-          "amount": 28679.0
+          "description": "Filialbelieferung Deutschland — Oktober 2026",
+          "quantity": 1.0,
+          "unit_price": 9500.0,
+          "amount": 9500.0
         }
       ],
       "confidence": 0.99
     },
     "notes": {
-      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00871 vom 31.08.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
-      "confidence": 0.99
+      "value": "Kopie. Vertragsnr. CT-2025-001. Kopie unserer Rechnung NWL-2026-01027 vom 31.10.2026.",
+      "confidence": 0.95
     }
   }
 }

@@ -1,0 +1,100 @@
+{
+  "file_name": "03_bright_agency_invoice.pdf",
+  "file_sha256": "6c337c74a823e65093a8c1843f68c4e81cf80d7a17de79dcdf8a033366d26ca7",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:00",
+  "latency_ms": 5330,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1198,
+    "thinking_tokens": 480
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Bright Agency SARL",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "FR62512345678",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "FR8430004005500001234567890",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "INV-2026-0457",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-09-29",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-11-13",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 45,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 12000.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 2400.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 14400.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500117"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Autumn campaign 2026 — creative concept, production and media planning",
+          "quantity": 1.0,
+          "unit_price": 12000.0,
+          "amount": 12000.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

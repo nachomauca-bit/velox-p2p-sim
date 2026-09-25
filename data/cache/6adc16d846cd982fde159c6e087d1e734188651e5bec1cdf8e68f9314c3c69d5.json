@@ -1,14 +1,19 @@
 {
-  "file_name": "03_nordwind_kontoauszug.pdf",
-  "file_sha256": null,
-  "model": "fixture (ground truth, no API call)",
-  "created_on": "2026-11-02T00:00:00",
-  "latency_ms": null,
-  "usage": null,
+  "file_name": "23_nordwind_sondertransporte.pdf",
+  "file_sha256": "6adc16d846cd982fde159c6e087d1e734188651e5bec1cdf8e68f9314c3c69d5",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:05:11",
+  "latency_ms": 3070,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 430,
+    "thinking_tokens": null
+  },
   "extraction": {
     "doc_type": {
-      "value": "other",
-      "confidence": 0.99
+      "value": "invoice",
+      "confidence": 1.0
     },
     "supplier_name": {
       "value": "Nordwind Logistics GmbH",
@@ -35,35 +40,35 @@
       "confidence": 0.99
     },
     "invoice_number": {
-      "value": "KA-2026-11",
+      "value": "NWL-2026-01064",
       "confidence": 0.99
     },
     "invoice_date": {
-      "value": "2026-11-05",
+      "value": "2026-11-06",
       "confidence": 0.99
     },
     "due_date": {
-      "value": null,
-      "confidence": 0.0
+      "value": "2026-12-06",
+      "confidence": 0.99
     },
     "payment_terms_days": {
-      "value": null,
-      "confidence": 0.0
+      "value": 30,
+      "confidence": 0.99
     },
     "currency": {
       "value": "EUR",
       "confidence": 0.99
     },
     "net_total": {
-      "value": null,
-      "confidence": 0.0
+      "value": 7400.0,
+      "confidence": 0.99
     },
     "tax_total": {
-      "value": null,
-      "confidence": 0.0
+      "value": 1406.0,
+      "confidence": 0.99
     },
     "gross_total": {
-      "value": 56525.0,
+      "value": 8806.0,
       "confidence": 0.99
     },
     "po_numbers": {
@@ -77,23 +82,17 @@
     "lines": {
       "value": [
         {
-          "description": "Rechnung NWL-2026-00871 vom 31.08.2026",
-          "quantity": null,
-          "unit_price": null,
-          "amount": 27846.0
-        },
-        {
-          "description": "Rechnung NWL-2026-01027 vom 31.10.2026",
-          "quantity": null,
-          "unit_price": null,
-          "amount": 28679.0
+          "description": "Sondertransporte Weihnachtsgeschäft — Vorlauf",
+          "quantity": 1.0,
+          "unit_price": 7400.0,
+          "amount": 7400.0
         }
       ],
       "confidence": 0.99
     },
     "notes": {
-      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00871 vom 31.08.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
-      "confidence": 0.99
+      "value": "Vertragsnr. CT-2025-001",
+      "confidence": 0.9
     }
   }
 }

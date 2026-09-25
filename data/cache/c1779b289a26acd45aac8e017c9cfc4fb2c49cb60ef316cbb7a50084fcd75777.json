@@ -1,0 +1,98 @@
+{
+  "file_name": "19_harbor_freight_credit_note.pdf",
+  "file_sha256": "c1779b289a26acd45aac8e017c9cfc4fb2c49cb60ef316cbb7a50084fcd75777",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:04:49",
+  "latency_ms": 6142,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1682,
+    "thinking_tokens": 944
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "credit_note",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Harbor Freight Forwarders Inc.",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "36-4817290",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "ABA 021000021 ACCT 7730045918",
+      "confidence": 0.95
+    },
+    "supplier_country": {
+      "value": "US",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail Inc.",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "84-2716453",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "HFF-CN-2026-017",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-06",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "payment_terms_days": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "currency": {
+      "value": "USD",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": -450.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": -450.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": "HFF-2026-1031",
+      "confidence": 1.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Credit: demurrage charge waived — October 2026",
+          "quantity": 1.0,
+          "unit_price": -450.0,
+          "amount": -450.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Credit note relating to invoice HFF-2026-1031 of Oct 31, 2026. Demurrage charge waived as agreed. The amount is credited to your account.",
+      "confidence": 0.95
+    }
+  }
+}

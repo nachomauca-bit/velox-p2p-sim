@@ -1,0 +1,98 @@
+{
+  "file_name": "07_quickprint_avoir.pdf",
+  "file_sha256": "32f607f2f69fc07cb770f8cd1734ae587a7b36b177216648955d91535a064ed0",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:03:59",
+  "latency_ms": 4596,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1146,
+    "thinking_tokens": 450
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "credit_note",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "QuickPrint SAS",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "FR73491234567",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "FR8210107001180009876543221",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "AV-26-0088",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-04",
+      "confidence": 0.98
+    },
+    "due_date": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "payment_terms_days": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": -200.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": -40.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": -240.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Remise commerciale — volume 2026",
+          "quantity": 1.0,
+          "unit_price": -200.0,
+          "amount": -200.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Remise commerciale accordée sur votre volume d'achats 2026.",
+      "confidence": 0.95
+    }
+  }
+}

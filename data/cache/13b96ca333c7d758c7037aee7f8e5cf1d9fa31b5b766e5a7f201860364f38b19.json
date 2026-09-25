@@ -1,0 +1,100 @@
+{
+  "file_name": "20_shopsys_invoice_vde.pdf",
+  "file_sha256": "13b96ca333c7d758c7037aee7f8e5cf1d9fa31b5b766e5a7f201860364f38b19",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:04:57",
+  "latency_ms": 7261,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1844,
+    "thinking_tokens": 1146
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Shopsys Software Inc.",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "47-3829105",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "ABA 121000248 ACCT 4839201756",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "US",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "SS-100522",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-02",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-12-02",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 2400.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 2400.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500107"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "POS integration add-on — annual licence (Germany)",
+          "quantity": 1.0,
+          "unit_price": 2400.0,
+          "amount": 2400.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

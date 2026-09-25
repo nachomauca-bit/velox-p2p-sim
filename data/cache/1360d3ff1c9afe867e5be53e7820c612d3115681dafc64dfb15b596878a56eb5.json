@@ -1,0 +1,104 @@
+{
+  "file_name": "02_nordwind_reminder_copy.pdf",
+  "file_sha256": "1360d3ff1c9afe867e5be53e7820c612d3115681dafc64dfb15b596878a56eb5",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:01:54",
+  "latency_ms": 5078,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1317,
+    "thinking_tokens": 825
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.95
+    },
+    "supplier_name": {
+      "value": "NORDWIND LOGISTICS",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "DE281947305",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "DE44500105175407324931",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "NWL-2026-00913",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-09-30",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-10-14",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 14,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 23400.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 4446.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 27846.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Warehousing and fulfilment, Berlin DC — September 2026",
+          "quantity": 1.0,
+          "unit_price": 14200.0,
+          "amount": 14200.0
+        },
+        {
+          "description": "Store replenishment transport, Germany — September 2026",
+          "quantity": 1.0,
+          "unit_price": 9200.0,
+          "amount": 9200.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "Payment reminder and copy of invoice with COPY watermark. Contract ref: CT-2025-001.",
+      "confidence": 0.95
+    }
+  }
+}

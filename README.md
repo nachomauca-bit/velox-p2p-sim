@@ -10,6 +10,7 @@ Requires Python 3.11+ and, optionally, GNU make. On Windows, `make setup` uses t
 make setup      # create .venv and install requirements.txt
 make seed       # generate the sample documents, (re)create the DB, seed both scenarios, load both inboxes
 make extract    # Gemini extraction of the 14 PDFs (cached; needs a key, see below; DATASET=v2 for test set v2)
+make validate   # compare the cached Gemini extractions with the ground truth and the goldens (no API call)
 make run        # serve the app on http://127.0.0.1:8010
 make test       # unit tests; never call the Gemini API
 ```
@@ -37,7 +38,7 @@ On Linux or macOS, use `python3 -m venv .venv` and `.venv/bin/python` instead.
 3. `GEMINI_MODEL` defaults to `gemini-2.5-flash`. Google now limits 2.5 Flash to existing users. If the configured model is unavailable, extraction automatically falls back to the newest GA (non-preview) Flash model your key can use, and logs which one it used. To pin another GA Flash model, change that one line.
 4. Run `make extract` (or `python -m app.extract`). It extracts every PDF not yet in the cache and copies the results into both inboxes. `make extract FORCE=1` (`--force-extract`) calls the API again for every PDF. `--only 1,5,12` limits the run to some documents.
 
-Results are cached in `data/cache/<sha256 of the PDF>.json`. `make seed` and re-runs read the cache and never call the API, so the demo works offline after the first extraction. "Load sample documents" calls the API only for PDFs not yet in the cache (and only when `GEMINI_API_KEY` or the Vertex backend is configured); "Force re-extract" on an invoice page always calls it. Latency and token usage are printed per call. The app reads `.env` at start-up: restart `make run` after adding the key.
+Results are cached in `data/cache/<sha256 of the PDF>.json`. The repository ships the real Gemini extractions of all 38 sample PDFs and the drafts of the four to-be owner messages, so the demo runs with real model output and without a key. `make seed` and re-runs read the cache and never call the API, so the demo works offline after the first extraction. "Load sample documents" calls the API only for PDFs not yet in the cache (and only when `GEMINI_API_KEY` or the Vertex backend is configured); "Force re-extract" on an invoice page always calls it. Latency and token usage are printed per call. The app reads `.env` at start-up: restart `make run` after adding the key.
 
 ### Without an API key: `EXTRACTOR=fixture`
 
@@ -123,7 +124,9 @@ velox-p2p-sim/
 - Test set v2 (`tests/golden_v2.yaml`): touchless 23.1% (A) vs 53.8% (B); 19 untracked email-loop documents vs 12 exceptions or human reviews with an owner and an SLA; 4 wrong-entity postings vs 0; a statement posted as an invoice vs routed as "not an invoice"; cash leakage 56,765.00 EUR vs 0.00. It is a stress set: most documents are designed to hit a rule.
 - Unit, golden and UI tests that never call the API or Google Cloud.
 
-**Not yet run against the live Gemini API or Google Cloud**: no key and no project were available while building, so `data/cache/` is empty. Add `GEMINI_API_KEY` to `.env` and run `make extract` (and `make extract DATASET=v2`), or use `EXTRACTOR=fixture`. The low-quality scan of the brief's optional 13th document is part of test set v2 (document 13).
+**Validated against the live Gemini API on 25 Sep 2026** ([docs/LIVE_VALIDATION.md](docs/LIVE_VALIDATION.md), `make validate`): gemini-3.8-flash read all 38 sample PDFs (German, French, Spanish and English, two scans included) with **684 of 684 fields correct**, no critical field below the 0.80 confidence threshold, a median of 5 s per document and a total cost of about 0.20 USD. Run on these real extractions, the control gate gives the expected result for all 28 case-document results and for 51 of the 52 test-set-v2 results; the one difference is explained in the report (the degraded scan, document 13, was read correctly and confidently, so to-be posts it instead of sending it to human review). `tests/test_validate_live.py` re-checks this on every test run, from the cache. The Gemini owner-message drafts were also checked live (B-05, B-06, B-08, B-12).
+
+**Not yet run on Google Cloud** (no project yet): Vertex AI, Cloud Run, Cloud Storage, BigQuery and real mailboxes are covered by unit tests with fakes; `docs/DEPLOY_GCP.md` lists the steps and the acceptance test.
 
 ## Disclaimer
 

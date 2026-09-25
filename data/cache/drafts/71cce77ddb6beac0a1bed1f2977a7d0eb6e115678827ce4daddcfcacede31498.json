@@ -1,0 +1,9 @@
+{
+  "doc_id": "B-12",
+  "exception_type": "price_qty_mismatch",
+  "model": "gemini-3.8-flash",
+  "created_on": "2026-09-25T18:09:49",
+  "latency_ms": 42154,
+  "prompt": "Facts:\n- Document type: invoice\n- Supplier: Lumen Store Lighting Ltd\n- Invoice number: LSL-INV-5521\n- Amount: 5,200 EUR\n- Purchase order: 4500112\n- Exception: Price or quantity outside tolerance\n- Gate finding: Line 2: 40 invoiced but only 20 received on PO 4500112: quantity mismatch, routed to the receiver Tim Koch, then the buyer Sofia Brandt.\n- Owner: Tim Koch (Receiver)\n- Owner first name: Tim\n- Standard resolution (owner, then next owner): Agree correction with supplier or approve variance\n- Due by: Wednesday 7 October 2026 (SLA 2 business days from registration)\n- Next owner after this step: Sofia Brandt (Buyer)",
+  "text": "Tim, invoice LSL-INV-5521 from Lumen Store Lighting Ltd for 5,200 EUR references PO 4500112, but line 2 has a quantity mismatch with 40 invoiced and only 20 received. Please agree a correction with the supplier for this quantity mismatch by Wednesday 7 October 2026, after which Sofia Brandt will take over."
+}

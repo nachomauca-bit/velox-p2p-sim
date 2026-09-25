@@ -1,0 +1,100 @@
+{
+  "file_name": "12_fitout_partners_scan.pdf",
+  "file_sha256": "68e805d073909dcd2b38305093aab6e7ed74551171d6d646def2cdb6f03027b8",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:04:15",
+  "latency_ms": 5310,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1167,
+    "thinking_tokens": 441
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "FitOut Partners Ltd",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "GB293847561",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "GB92BARC20038412345678",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "GB",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "2026-104",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-10-30",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-11-29",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 40000.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 40000.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500101"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Store fit-out Hamburg — milestone 1: demolition and electrical works",
+          "quantity": 1.0,
+          "unit_price": 40000.0,
+          "amount": 40000.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Reverse charge: customer to account for VAT (Article 196, Directive 2006/112/EC).",
+      "confidence": 0.95
+    }
+  }
+}

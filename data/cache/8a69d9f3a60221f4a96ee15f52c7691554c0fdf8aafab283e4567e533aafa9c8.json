@@ -1,0 +1,110 @@
+{
+  "file_name": "10_kaffee_und_co_invoice.pdf",
+  "file_sha256": "8a69d9f3a60221f4a96ee15f52c7691554c0fdf8aafab283e4567e533aafa9c8",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:42",
+  "latency_ms": 4195,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 889,
+    "thinking_tokens": 442
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Kaffee & Co OHG",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "DE274619385",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "DE75120300001020304050",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "invoice_number": {
+      "value": "2026/117",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-09-30",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-14",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 14,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 151.26,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 28.74,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 180.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Coffee beans, espresso blend 1 kg",
+          "quantity": 6.0,
+          "unit_price": 18.5,
+          "amount": 111.0
+        },
+        {
+          "description": "Oat milk 1 l, carton of 12",
+          "quantity": 2.0,
+          "unit_price": 14.98,
+          "amount": 29.96
+        },
+        {
+          "description": "Delivery",
+          "quantity": 1.0,
+          "unit_price": 10.3,
+          "amount": 10.3
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

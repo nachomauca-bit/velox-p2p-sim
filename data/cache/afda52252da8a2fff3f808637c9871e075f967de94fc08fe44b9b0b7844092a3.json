@@ -1,46 +1,51 @@
 {
   "file_name": "03_nordwind_kontoauszug.pdf",
-  "file_sha256": null,
-  "model": "fixture (ground truth, no API call)",
-  "created_on": "2026-11-02T00:00:00",
-  "latency_ms": null,
-  "usage": null,
+  "file_sha256": "afda52252da8a2fff3f808637c9871e075f967de94fc08fe44b9b0b7844092a3",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:03:42",
+  "latency_ms": 4025,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1005,
+    "thinking_tokens": 555
+  },
   "extraction": {
     "doc_type": {
       "value": "other",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "supplier_name": {
       "value": "Nordwind Logistics GmbH",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "supplier_vat_id": {
       "value": "DE281947305",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "supplier_iban": {
       "value": "DE44500105175407324931",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "supplier_country": {
       "value": "DE",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "bill_to_name": {
       "value": "Velox Retail GmbH",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "bill_to_vat_id": {
       "value": "DE298765431",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "invoice_number": {
       "value": "KA-2026-11",
-      "confidence": 0.99
+      "confidence": 0.95
     },
     "invoice_date": {
       "value": "2026-11-05",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "due_date": {
       "value": null,
@@ -52,7 +57,7 @@
     },
     "currency": {
       "value": "EUR",
-      "confidence": 0.99
+      "confidence": 1.0
     },
     "net_total": {
       "value": null,
@@ -64,7 +69,7 @@
     },
     "gross_total": {
       "value": 56525.0,
-      "confidence": 0.99
+      "confidence": 0.95
     },
     "po_numbers": {
       "value": null,
@@ -89,11 +94,11 @@
           "amount": 28679.0
         }
       ],
-      "confidence": 0.99
+      "confidence": 0.95
     },
     "notes": {
-      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00871 vom 31.08.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
-      "confidence": 0.99
+      "value": "Dieser Kontoauszug ist keine Rechnung.",
+      "confidence": 0.95
     }
   }
 }

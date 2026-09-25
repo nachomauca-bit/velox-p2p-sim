@@ -1,0 +1,98 @@
+{
+  "file_name": "26_berliner_blumen_rechnung.pdf",
+  "file_sha256": "7d0c19cd858cc041e6f2214aa8c85e4b2ef1fa0ec4e45ca546d368955c3a3a46",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:05:28",
+  "latency_ms": 6997,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1027,
+    "thinking_tokens": 354
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Berliner Blumen GmbH",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "DE305118442",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "DE05100500000190123456",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "invoice_number": {
+      "value": "BB-26-318",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-05",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-11-19",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 14,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 268.91,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 18.82,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 287.73,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Blumendekoration Schaufenster — November",
+          "quantity": 1.0,
+          "unit_price": 268.91,
+          "amount": 268.91
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

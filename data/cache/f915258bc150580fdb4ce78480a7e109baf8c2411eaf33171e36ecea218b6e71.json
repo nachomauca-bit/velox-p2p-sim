@@ -1,0 +1,100 @@
+{
+  "file_name": "08_metro_media_invoice.pdf",
+  "file_sha256": "f915258bc150580fdb4ce78480a7e109baf8c2411eaf33171e36ecea218b6e71",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:32",
+  "latency_ms": 5534,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1326,
+    "thinking_tokens": 626
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Metro Media GmbH",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "DE318273645",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "DE42100700240912345678",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "MM-2026-212",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-09-30",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-30",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 7500.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 7500.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500126"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Berlin out-of-home campaign September 2026 — 40 billboard sites",
+          "quantity": 1.0,
+          "unit_price": 7500.0,
+          "amount": 7500.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "file_name": "13_securenet_invoice.pdf",
+  "file_sha256": "5de193986b7fa927b9a54d26e58aab0405a21a7cf61a1effb27610aeffd6fb24",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:03:00",
+  "latency_ms": 4940,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1082,
+    "thinking_tokens": 661
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "SecureNet AG",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "CHE-419.287.563",
+      "confidence": 0.95
+    },
+    "supplier_iban": {
+      "value": "CH5400700110008765432",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "CH",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "SN-2026-3307",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-10-01",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-31",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 4800.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 4800.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500128"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Managed firewall service Q3 2026",
+          "quantity": 1.0,
+          "unit_price": 4800.0,
+          "amount": 4800.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Reverse charge: VAT to be accounted for by the recipient (services supplied from Switzerland).",
+      "confidence": 0.95
+    }
+  }
+}

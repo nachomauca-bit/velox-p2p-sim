@@ -1,0 +1,100 @@
+{
+  "file_name": "09_atlas_displays_factura_vfr.pdf",
+  "file_sha256": "62c251cb8a03ebe40ae574884502d33b6a1dd7342bc3b63391d47579dcabf7f5",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T15:28:05",
+  "latency_ms": 4989,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1021,
+    "thinking_tokens": 548
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Atlas Displays SL",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "ES-B86419273",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "ES1720852066623456789011",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "ES",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "AD-2026/0861",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-27",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-12-26",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 60,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 3360.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 3360.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500105"
+      ],
+      "confidence": 0.95
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Expositor mural WD-120, acabado roble",
+          "quantity": 80.0,
+          "unit_price": 42.0,
+          "amount": 3360.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "Entrega intracomunitaria exenta de IVA (artículo 25 de la Ley 37/1992; artículo 138 de la Directiva 2006/112/CE).",
+      "confidence": 0.95
+    }
+  }
+}

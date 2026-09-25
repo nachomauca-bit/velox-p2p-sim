@@ -1,0 +1,106 @@
+{
+  "file_name": "09_quickprint_invoice.pdf",
+  "file_sha256": "68f152dfdca347b9ddeba13acaa05e72216c6d043a134b873e1a8bc4f3e9295d",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:37",
+  "latency_ms": 4703,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 947,
+    "thinking_tokens": 500
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "QuickPrint SAS",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "FR73491234567",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "FR8210107001180009876543221",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "QP-26-1043",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-09-29",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-29",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 2400.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 480.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 2880.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500114"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "A2 in-store posters, 4-colour",
+          "quantity": 400.0,
+          "unit_price": 3.5,
+          "amount": 1400.0
+        },
+        {
+          "description": "A5 leaflets, double-sided",
+          "quantity": 10000.0,
+          "unit_price": 0.1,
+          "amount": 1000.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

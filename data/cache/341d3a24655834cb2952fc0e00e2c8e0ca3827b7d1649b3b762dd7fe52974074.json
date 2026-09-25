@@ -1,0 +1,100 @@
+{
+  "file_name": "25_quickprint_invoice_vde.pdf",
+  "file_sha256": "341d3a24655834cb2952fc0e00e2c8e0ca3827b7d1649b3b762dd7fe52974074",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:05:20",
+  "latency_ms": 4318,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 937,
+    "thinking_tokens": 508
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "QuickPrint SAS",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "FR73491234567",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "FR8210107001180009876543221",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "QP-26-1119",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-11-04",
+      "confidence": 0.98
+    },
+    "due_date": {
+      "value": "2026-12-04",
+      "confidence": 0.98
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 1100.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 1100.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500119"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Window stickers, die-cut",
+          "quantity": 500.0,
+          "unit_price": 2.2,
+          "amount": 1100.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": "Intra-Community supply, exempt under Article 138, Directive 2006/112/EC.",
+      "confidence": 1.0
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "file_name": "07_shopsys_invoice.pdf",
+  "file_sha256": "07f3788c93a66fdd788e46f645cf092c715d9d62c5f1c6b4a0bff747a6a6e0e6",
+  "model": "gemini-3.8-flash",
+  "backend": "aistudio",
+  "created_on": "2026-09-25T18:02:26",
+  "latency_ms": 5742,
+  "usage": {
+    "input_tokens": 1495,
+    "output_tokens": 1445,
+    "thinking_tokens": 741
+  },
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 1.0
+    },
+    "supplier_name": {
+      "value": "Shopsys Software Inc.",
+      "confidence": 1.0
+    },
+    "supplier_vat_id": {
+      "value": "47-3829105",
+      "confidence": 1.0
+    },
+    "supplier_iban": {
+      "value": "ABA 121000248 ACCT 4839201756",
+      "confidence": 1.0
+    },
+    "supplier_country": {
+      "value": "US",
+      "confidence": 1.0
+    },
+    "bill_to_name": {
+      "value": "Velox Retail Inc.",
+      "confidence": 1.0
+    },
+    "bill_to_vat_id": {
+      "value": "84-2716453",
+      "confidence": 1.0
+    },
+    "invoice_number": {
+      "value": "SS-100482",
+      "confidence": 1.0
+    },
+    "invoice_date": {
+      "value": "2026-10-01",
+      "confidence": 1.0
+    },
+    "due_date": {
+      "value": "2026-10-31",
+      "confidence": 1.0
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 1.0
+    },
+    "currency": {
+      "value": "USD",
+      "confidence": 1.0
+    },
+    "net_total": {
+      "value": 9600.0,
+      "confidence": 1.0
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 1.0
+    },
+    "gross_total": {
+      "value": 9600.0,
+      "confidence": 1.0
+    },
+    "po_numbers": {
+      "value": [
+        "4500131"
+      ],
+      "confidence": 1.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Shopsys Commerce Cloud — annual subscription (Oct 2026 – Sep 2027)",
+          "quantity": 1.0,
+          "unit_price": 9600.0,
+          "amount": 9600.0
+        }
+      ],
+      "confidence": 1.0
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "doc_id": "B-08",
+  "exception_type": "wrong_legal_entity",
+  "model": "gemini-3.8-flash",
+  "created_on": "2026-09-25T18:09:06",
+  "latency_ms": 5340,
+  "prompt": "Facts:\n- Document type: invoice\n- Supplier: Metro Media GmbH\n- Invoice number: MM-2026-212\n- Amount: 7,500 EUR\n- Purchase order: 4500126\n- Exception: Billed to the wrong Velox entity\n- Gate finding: Billed to Velox Retail SAS (VFR), but Metro Media GmbH has no vendor account there (its account V-000107 is in VDE) and PO 4500126 belongs to VDE: routed to the AP specialist Marco Ruiz to ask the supplier to re-issue it or re-assign it.\n- Owner: Marco Ruiz (AP specialist)\n- Owner first name: Marco\n- Requested action: Ask supplier to re-issue, or re-assign\n- Due by: Monday 5 October 2026 (SLA 1 business day from registration)",
+  "text": "Marco, invoice MM-2026-212 from Metro Media GmbH (7,500 EUR) references PO 4500126, but it was billed to the wrong Velox entity, Velox Retail SAS (VFR), rather than VDE. Please ask the supplier to re-issue it or re-assign it by Monday 5 October 2026."
+}
