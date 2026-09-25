@@ -1,14 +1,19 @@
 """Document understanding: a Gemini model with structured output and per-field confidence.
 
+- Routed by file suffix: ".xml" is a UBL e-invoice, parsed directly by app/ubl.py (no model call, no cache,
+  also in fixture mode; labelled ubl.UBL_MODEL); ".txt" is an email body without attachment (nothing to
+  extract: ExtractionUnavailable); anything else is a PDF for the model.
 - One call per PDF (document part + system instruction), JSON schema = InvoiceExtraction.
-- Cached on disk as data/cache/<sha256>.json; re-runs never re-call the API unless forced. Cache files are
+- Cached on disk as <CACHE_DIR>/<sha256>.json; re-runs never re-call the API unless forced. Cache files are
   written atomically; a corrupt one is logged and treated as a miss.
-- EXTRACTOR=fixture reads ground-truth JSON from tests/fixtures/ instead (tests / offline UI work);
-  such results are labelled FIXTURE_MODEL so they can never be mistaken for Gemini output.
+- EXTRACTOR=fixture reads ground-truth JSON from tests/fixtures/ (tests/fixtures_v2/ for test set v2) instead
+  (tests / offline UI work); such results are labelled FIXTURE_MODEL so they can never be mistaken for Gemini output.
+- Backend: GEMINI_BACKEND=aistudio (API key) or vertex (Vertex AI project + location, service account
+  credentials). Only _client() differs; the request, schema, cache and fallback are the same.
 - Model: GEMINI_MODEL (default gemini-2.5-flash). If the API rejects it as unavailable, the newest GA
-  Flash model the key can use (found with models.list, never hard-coded) is used for the rest of the process.
+  Flash model the backend offers (found with models.list, never hard-coded) is used for the rest of the process.
 
-CLI:  python -m app.extract [--force-extract] [--only 1,5,12] [--no-db]
+CLI:  python -m app.extract [--dataset v1|v2] [--force-extract] [--only 1,5,12] [--no-db]
 """
 from __future__ import annotations
 
@@ -37,6 +42,11 @@ from app import config, world
 from app.models import Extraction, InboundDocument
 
 FIXTURE_MODEL = "fixture (ground truth, no API call)"
+
+
+def is_fixture_model(model: Optional[str]) -> bool:
+    """Every fixture label starts with "fixture" (incl. the scans' simulated-confidence label): never Gemini output."""
+    return bool(model) and model.startswith("fixture")
 
 
 # --------------------------------------------------------------------------------------------
@@ -151,7 +161,7 @@ CRITICAL_FIELDS = SUPPLIER_IDENTITY_FIELDS + ("invoice_number", "gross_total", "
 
 
 class ExtractionUnavailable(RuntimeError):
-    """No extraction can be produced now (no cache entry and no API access, no fixture, or no PDF)."""
+    """No extraction can be produced now (no cache entry and no API access, no fixture, no file, no attachment)."""
 
 
 class ExtractionFailed(ExtractionUnavailable):
@@ -172,16 +182,21 @@ class ExtractionResult:
     model: str
     data: dict[str, Any]  # InvoiceExtraction.model_dump(mode="json")
     from_cache: bool
-    source: str  # "gemini" | "cache" | "fixture"
+    source: str  # "gemini" | "cache" | "fixture" | "ubl"
     created_on: datetime
     latency_ms: Optional[int] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None  # includes the thinking tokens (billed as output)
     thinking_tokens: Optional[int] = None
+    backend: Optional[str] = None  # "aistudio" | "vertex" for a model call (None: unknown, fixture or UBL)
 
     @property
     def is_fixture(self) -> bool:
-        return self.model == FIXTURE_MODEL
+        return is_fixture_model(self.model)
+
+    @property
+    def is_ubl(self) -> bool:
+        return self.source == "ubl"
 
 
 def file_sha256(path: Path) -> str:
@@ -205,6 +220,7 @@ def _result_from_record(record: dict[str, Any], *, from_cache: bool, source: str
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
         thinking_tokens=usage.get("thinking_tokens"),  # absent in records written before it was stored
+        backend=record.get("backend"),  # absent in records written before phase 3
     )
 
 
@@ -230,6 +246,7 @@ def write_cache(sha256: str, result: ExtractionResult, file_name: str) -> Path:
         "file_name": file_name,
         "file_sha256": sha256,
         "model": result.model,
+        "backend": result.backend,
         "created_on": result.created_on.isoformat(timespec="seconds"),
         "latency_ms": result.latency_ms,
         "usage": {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
@@ -247,8 +264,17 @@ def write_cache(sha256: str, result: ExtractionResult, file_name: str) -> Path:
     return path
 
 
+def _is_under(path: Path, folder: Path) -> bool:
+    """True when path lies inside folder (a relative path is taken from the project root, like doc.file_path)."""
+    path = path if path.is_absolute() else config.BASE_DIR / path
+    return path.resolve().is_relative_to(Path(folder).resolve())
+
+
 def fixture_path(pdf_path: Path) -> Path:
-    return config.FIXTURES_DIR / f"{Path(pdf_path).stem}.json"
+    """Ground-truth JSON of a sample file: tests/fixtures_v2/ for test set v2, else tests/fixtures/."""
+    pdf_path = Path(pdf_path)
+    folder = config.FIXTURES_V2_DIR if _is_under(pdf_path, config.INVOICES_V2_DIR) else config.FIXTURES_DIR
+    return folder / f"{pdf_path.stem}.json"
 
 
 def extract_from_fixture(pdf_path: Path) -> ExtractionResult:
@@ -257,6 +283,35 @@ def extract_from_fixture(pdf_path: Path) -> ExtractionResult:
         raise ExtractionUnavailable(f"no fixture for {Path(pdf_path).name} (EXTRACTOR=fixture)")
     record = json.loads(path.read_text(encoding="utf-8"))
     return _result_from_record(record, from_cache=False, source="fixture")
+
+
+# --------------------------------------------------------------------------------------------
+# Files that never go to the model: UBL e-invoices and email bodies
+# --------------------------------------------------------------------------------------------
+
+EMAIL_BODY_ONLY = "no document attached: the invoice is only in the email body"
+
+
+def _ubl_module() -> Any:
+    """app.ubl, imported on first use (a seam for tests)."""
+    from app import ubl
+
+    return ubl
+
+
+def extract_ubl(path: Path) -> ExtractionResult:
+    """Parse a UBL e-invoice directly: no model call and no cache (parsing is instant and deterministic)."""
+    path = Path(path)
+    if not path.is_file():
+        raise ExtractionUnavailable(f"{path.name} not found at {path}")
+    ubl = _ubl_module()
+    try:
+        data = _postprocess(InvoiceExtraction.model_validate(ubl.parse_ubl(path.read_bytes())))
+    except (ValueError, SyntaxError) as exc:  # ValidationError, a malformed XML (ParseError is a SyntaxError)
+        raise ExtractionUnavailable(f"{path.name} is not a readable UBL e-invoice: {_short_error(exc)}") from exc
+    print(f"[extract] file={path.name} parsed as a UBL e-invoice (no model call)")
+    return ExtractionResult(model=ubl.UBL_MODEL, data=data, from_cache=False, source="ubl",
+                            created_on=datetime.now().replace(microsecond=0))
 
 
 # --------------------------------------------------------------------------------------------
@@ -327,9 +382,20 @@ _resolved_model: Optional[str] = None
 
 
 def _client() -> genai.Client:
-    """Create the SDK client. Tests replace this seam with a fake, so they never touch the network."""
-    return genai.Client(api_key=config.GEMINI_API_KEY,
-                        http_options=genai_types.HttpOptions(timeout=REQUEST_TIMEOUT_MS))
+    """Create the SDK client for the configured backend. Tests replace this seam with a fake, so they never
+    touch the network.
+
+    vertex: Vertex AI in GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION with Application Default Credentials
+    (on Cloud Run, the service account; locally, `gcloud auth application-default login`). Without a project
+    but with a key: Vertex AI express mode. aistudio: the Gemini Developer API with GEMINI_API_KEY.
+    """
+    http_options = genai_types.HttpOptions(timeout=REQUEST_TIMEOUT_MS)
+    if config.GEMINI_BACKEND == "vertex":
+        if config.GOOGLE_CLOUD_PROJECT:
+            return genai.Client(vertexai=True, project=config.GOOGLE_CLOUD_PROJECT,
+                                location=config.GOOGLE_CLOUD_LOCATION, http_options=http_options)
+        return genai.Client(vertexai=True, api_key=config.GEMINI_API_KEY, http_options=http_options)
+    return genai.Client(api_key=config.GEMINI_API_KEY, http_options=http_options)
 
 
 def _describe(exc: Exception) -> str:
@@ -347,6 +413,8 @@ def _is_model_unavailable(exc: Exception) -> bool:
     message = (exc.message or str(exc)).lower()
     if exc.code == 404:
         return True
+    if exc.code == 403 and "aiplatform." in message:
+        return False  # Vertex AI: a missing IAM role or a disabled API, not a model problem; falling back won't help
     if exc.code in (400, 403):
         return "model" in message
     if exc.code == 429:
@@ -413,19 +481,26 @@ def _generate_once(client: Any, model: str, contents: list[Any],
     return _timed_generate(client, model, contents, gen_config)
 
 
+def _supports_generate(model: Any) -> bool:
+    """AI Studio lists each model's actions; Vertex AI publisher models carry none (None): accept those."""
+    actions = getattr(model, "supported_actions", None)
+    return actions is None or "generateContent" in actions
+
+
 def _discover_flash_models(client: Any) -> list[str]:
-    """GA Flash models this key can use for generateContent, newest version first."""
+    """GA Flash models this key or project can use for generateContent, newest version first."""
     try:
         listed = list(client.models.list())
     except (genai_errors.APIError, httpx.HTTPError) as exc:
         raise ExtractionFailed(f"could not list the available Gemini models: {_describe(exc)}") from exc
-    found = []
+    found = {}
     for m in listed:
-        name = (m.name or "").rsplit("/", 1)[-1]  # "models/gemini-3.8-flash" -> "gemini-3.8-flash"
+        # "models/gemini-3.8-flash" (AI Studio) or "publishers/google/models/gemini-3.8-flash" (Vertex AI)
+        name = (m.name or "").rsplit("/", 1)[-1]
         match = GA_FLASH_PATTERN.match(name)
-        if match and "generateContent" in (m.supported_actions or []):
-            found.append(((int(match.group(1)), int(match.group(2) or 0)), name))
-    return [name for _, name in sorted(found, reverse=True)]
+        if match and _supports_generate(m):
+            found[name] = (int(match.group(1)), int(match.group(2) or 0))
+    return sorted(found, key=lambda name: (found[name], name), reverse=True)
 
 
 def _generate(client: Any, contents: list[Any],
@@ -525,7 +600,8 @@ def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
                                f"{_short_error(exc)}") from exc
     tokens_in, tokens_out, thinking = _token_counts(getattr(response, "usage_metadata", None))
     print(f"[extract] file={file_name} model={model} latency_ms={latency_ms} "
-          f"tokens_in={tokens_in} tokens_out={tokens_out} (thinking={thinking}) cache=miss")
+          f"tokens_in={tokens_in} tokens_out={tokens_out} (thinking={thinking}) cache=miss "
+          f"backend={config.GEMINI_BACKEND}")
     return ExtractionResult(
         model=model,
         data=_postprocess(extraction),
@@ -536,6 +612,7 @@ def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
         input_tokens=tokens_in,
         output_tokens=tokens_out,
         thinking_tokens=thinking,
+        backend=config.GEMINI_BACKEND,
     )
 
 
@@ -544,9 +621,25 @@ def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
 # --------------------------------------------------------------------------------------------
 
 
+def not_configured_message() -> str:
+    """Why the API cannot be called (config.gemini_configured() is False), with the variable to set."""
+    where = " (GEMINI_BACKEND=vertex)" if config.GEMINI_BACKEND == "vertex" else ""
+    return f"{config.gemini_missing_setting()} is not set{where}: add it to .env (see .env.example)"
+
+
 def extract_file(pdf_path: Path, *, force: bool = False, allow_api: bool = True) -> ExtractionResult:
-    """Extract one PDF: fixture mode, else cache (unless force), else the Gemini API (if allowed)."""
+    """Extract one document file, routed by its suffix.
+
+    .xml   UBL e-invoice: parsed directly (no model call, no cache; also in fixture mode).
+    .txt   email body without attachment: always ExtractionUnavailable (nothing to extract).
+    other  a PDF: fixture mode, else cache (unless force), else the Gemini API (if allowed and configured).
+    """
     pdf_path = Path(pdf_path)
+    suffix = pdf_path.suffix.lower()
+    if suffix == ".txt":
+        raise ExtractionUnavailable(EMAIL_BODY_ONLY)
+    if suffix == ".xml":
+        return extract_ubl(pdf_path)
     if config.EXTRACTOR == "fixture":
         return extract_from_fixture(pdf_path)
     if not pdf_path.is_file():
@@ -559,8 +652,8 @@ def extract_file(pdf_path: Path, *, force: bool = False, allow_api: bool = True)
             return cached
     if not allow_api:
         raise ExtractionUnavailable(f"{pdf_path.name} is not in the cache and API calls are disabled here")
-    if not config.GEMINI_API_KEY:
-        raise ExtractionUnavailable("GEMINI_API_KEY is not set: add it to .env (see .env.example)")
+    if not config.gemini_configured():
+        raise ExtractionUnavailable(not_configured_message())
     result = call_gemini(pdf_path.read_bytes(), pdf_path.name)
     try:
         write_cache(sha, result, pdf_path.name)
@@ -607,7 +700,8 @@ def extract_document(session: Session, doc: InboundDocument, *, force: bool = Fa
                      allow_api: bool = True) -> Optional[Extraction]:
     """Extract one inbound document and upsert its Extraction row.
 
-    Returns None when no extraction is available (no key, not cached, API disabled, no fixture, no PDF).
+    Returns None when no extraction is available (no model access, not cached, API disabled, no fixture, no file,
+    or an email body without attachment).
     Raises ExtractionFailed when the API was called and failed; the existing row is then left unchanged.
     After a fresh API result, the other inbound documents with the same file are refreshed from the cache.
     """
@@ -658,15 +752,38 @@ def extract_documents(session: Session, docs: list[InboundDocument], *, force: b
 
 
 def _sample_numbers(text: str) -> list[int]:
-    """argparse type for --only: "1,5,12" -> [1, 5, 12] (sample numbers from world.DOCUMENTS)."""
+    """argparse type for --only: "1,5,12" -> [1, 5, 12] (checked against the dataset's numbers in main)."""
     try:
         numbers = [int(part) for part in text.split(",") if part.strip()]
     except ValueError:
         raise argparse.ArgumentTypeError(f"expected comma-separated numbers, got {text!r}") from None
-    unknown = [n for n in numbers if n not in world.DOCUMENT_BY_NO]
-    if unknown or not numbers:
-        raise argparse.ArgumentTypeError(f"unknown sample number(s) {unknown}; valid: 1..{len(world.DOCUMENTS)}")
+    if not numbers:
+        raise argparse.ArgumentTypeError("expected at least one sample number")
     return numbers
+
+
+def _dataset_documents(dataset: str) -> tuple[list[world.DocumentSpec], Path]:
+    """The sample documents of a dataset and their folder: v1 = the 14 case documents, v2 = test set v2."""
+    if dataset == "v2":
+        return list(world.documents_for("v2")), config.INVOICES_V2_DIR
+    return list(world.DOCUMENTS), config.INVOICES_DIR
+
+
+def _ensure_files(dataset: str, paths: list[Path]) -> None:
+    """Generate the sample files if some are missing (existing files are never rewritten)."""
+    if dataset == "v1":
+        from app import seed  # lazy: generates the PDFs (app.invoices_gen) only if some are missing
+
+        seed.ensure_pdfs()
+    elif any(not path.exists() for path in paths):
+        from app import invoices_gen
+
+        invoices_gen.generate_all_v2(config.INVOICES_V2_DIR)
+
+
+def _needs_model(path: Path) -> bool:
+    """Only PDFs go to the model: a UBL e-invoice is parsed, an email body has nothing to extract."""
+    return path.suffix.lower() not in (".xml", ".txt")
 
 
 def _min_critical_confidence(data: dict[str, Any]) -> Optional[float]:
@@ -675,9 +792,9 @@ def _min_critical_confidence(data: dict[str, Any]) -> Optional[float]:
     return min(values) if values else None
 
 
-def _summary_row(no: int, file_name: str, result: Optional[ExtractionResult]) -> list[str]:
+def _summary_row(no: int, file_name: str, result: Optional[ExtractionResult], note: str = "FAILED") -> list[str]:
     if result is None:
-        return [str(no), file_name, "FAILED", "", "", "", "", ""]
+        return [str(no), file_name, note, "", "", "", "", ""]
     data = result.data
     gross = data["gross_total"]["value"]
     min_conf = _min_critical_confidence(data)
@@ -711,31 +828,41 @@ def _update_database(paths: list[Path]) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Extract the sample PDFs with a Gemini model (cached on disk).")
+    parser = argparse.ArgumentParser(description="Extract the sample documents with a Gemini model "
+                                                 "(cached on disk; UBL e-invoices are parsed without a model).")
+    parser.add_argument("--dataset", choices=("v1", "v2"), default="v1",
+                        help="v1 = the 14 case documents (default), v2 = test set v2 (26 documents)")
     parser.add_argument("--force-extract", action="store_true", help="call the API even if a cached result exists")
     parser.add_argument("--only", type=_sample_numbers, metavar="1,5,12",
-                        help="comma-separated sample document numbers (default: all 12)")
+                        help="comma-separated sample document numbers (default: all of the dataset)")
     parser.add_argument("--no-db", action="store_true", help="do not copy the results into the database")
     args = parser.parse_args(argv)
 
-    from app import seed  # lazy: generates the PDFs (app.invoices_gen) only if some are missing
+    documents, folder = _dataset_documents(args.dataset)
+    by_no = {spec.no: spec for spec in documents}
+    unknown = [no for no in args.only or () if no not in by_no]
+    if unknown:
+        parser.error(f"unknown sample number(s) {unknown} for dataset {args.dataset}; valid: 1..{len(documents)}")
+    specs = [by_no[no] for no in (args.only or sorted(by_no))]
+    paths = [folder / spec.filename for spec in specs]
+    _ensure_files(args.dataset, paths)
 
-    seed.ensure_pdfs()
-    specs = [world.DOCUMENT_BY_NO[no] for no in (args.only or sorted(world.DOCUMENT_BY_NO))]
-    paths = [config.INVOICES_DIR / spec.filename for spec in specs]
-
-    if config.EXTRACTOR != "fixture" and not config.GEMINI_API_KEY:
-        misses = [p.name for p in paths if args.force_extract or not cache_path(file_sha256(p)).exists()]
+    if config.EXTRACTOR != "fixture" and not config.gemini_configured():
+        misses = [p.name for p in paths if _needs_model(p)
+                  and (args.force_extract or not cache_path(file_sha256(p)).exists())]
         if misses:
-            print(f"[extract] {len(misses)} document(s) are not in the cache and GEMINI_API_KEY is not set: "
-                  f"{', '.join(misses)}")
-            print("[extract] Add your Google AI Studio key to .env as GEMINI_API_KEY=... (see .env.example), "
-                  "then run this again.")
+            print(f"[extract] {len(misses)} document(s) are not in the cache and "
+                  f"{config.gemini_missing_setting()} is not set: {', '.join(misses)}")
+            print("[extract] Add your Google AI Studio key to .env as GEMINI_API_KEY=..., or use Vertex AI with "
+                  "GEMINI_BACKEND=vertex and GOOGLE_CLOUD_PROJECT=... (see .env.example), then run this again.")
             return 2
 
     rows: list[list[str]] = []
     extracted: list[Path] = []
     for spec, path in zip(specs, paths):
+        if path.suffix.lower() == ".txt":  # the email itself: nothing to extract, not a failure
+            rows.append(_summary_row(spec.no, path.name, None, note="email body only"))
+            continue
         try:
             result: Optional[ExtractionResult] = extract_file(path, force=args.force_extract)
             extracted.append(path)
@@ -751,7 +878,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print()
     if extracted and not args.no_db:
         _update_database(extracted)
-    return 0 if len(extracted) == len(paths) else 1
+    expected = [path for path in paths if path.suffix.lower() != ".txt"]
+    return 0 if len(extracted) == len(expected) else 1
 
 
 if __name__ == "__main__":

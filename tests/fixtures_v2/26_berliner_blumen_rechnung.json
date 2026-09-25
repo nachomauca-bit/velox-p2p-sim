@@ -1,0 +1,93 @@
+{
+  "file_name": "26_berliner_blumen_rechnung.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Berliner Blumen GmbH",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "DE305118442",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "DE05100500000190123456",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "invoice_number": {
+      "value": "BB-26-318",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-11-05",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-11-19",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 14,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 268.91,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 18.82,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 287.73,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Blumendekoration Schaufenster — November",
+          "quantity": 1,
+          "unit_price": 268.91,
+          "amount": 268.91
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

@@ -24,9 +24,16 @@
 
     {# Each action carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
     <div class="actions">
-      <form method="post" action="/documents/load">
+      <form method="post" action="/documents/load" class="load-form">
         <input type="hidden" name="scenario" value="{{ scenario }}">
-        <button type="submit">Load sample documents</button>
+        <details class="dropdown load-menu">
+          <summary role="button">Load sample documents</summary>
+          <ul>
+            {% for key, label in dataset_choices.items() %}
+            <li><button type="submit" name="dataset" value="{{ key }}" class="load-choice">{{ label }}</button></li>
+            {% endfor %}
+          </ul>
+        </details>
       </form>
       <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
         <input type="hidden" name="scenario" value="{{ scenario }}">

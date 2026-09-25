@@ -21,7 +21,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import gate, normalize, sim, taxonomy, world
+from app import config, gate, normalize, seed, sim, taxonomy
 from app.models import (Contract, Extraction, GateDecision, InboundDocument, Party, PurchaseOrder, Run,
                         VendorAccount)
 
@@ -53,6 +53,7 @@ KPI_DEFS: dict[str, tuple[str, str, str]] = {
     "credit_notes_applied": ("Credit notes applied", "downstream", "count"),
     "credit_notes_unapplied": ("Credit notes unapplied", "downstream", "count"),
     "wrong_entity_postings": ("Wrong-entity postings", "downstream", "count"),
+    "non_invoice_postings": ("Non-invoice documents posted", "downstream", "count"),
     "terms_variance_paid": ("Posted on non-agreed payment terms", "downstream", "count"),
     "cash_leakage_amount": ("Simulated cash leakage", "downstream", "EUR"),
     "avg_cycle_days": ("Average cycle time (sample)", "downstream", "days"),
@@ -203,10 +204,24 @@ def unapplied_credits(decisions: Sequence[GateDecision]) -> list[GateDecision]:
     return [d for d in decisions if detail(d, "credit_status") == "unapplied"]
 
 
+def non_invoice_postings(decisions: Sequence[GateDecision]) -> list[GateDecision]:
+    """Documents that are not invoices (doc_type "other", e.g. a supplier statement) posted as if they were."""
+    return [d for d in decisions if detail(d, "posted", False) and detail(d, "doc_type") == "other"]
+
+
+def leakage_postings(decisions: Sequence[GateDecision]) -> list[GateDecision]:
+    """Repeated postings + unapplied credit notes + non-invoice postings, each decision once."""
+    out: dict[int, GateDecision] = {}
+    for d in repeated_postings(decisions) + unapplied_credits(decisions) + non_invoice_postings(decisions):
+        out.setdefault(id(d), d)
+    return list(out.values())
+
+
 def cash_leakage(decisions: Sequence[GateDecision]) -> dict[str, float]:
-    """Per currency: gross of every repeated posting of a duplicated invoice + |gross| of unapplied credit notes.
-    Terms variance is a count only (brief section 12), so it adds nothing here."""
-    return gross_by_currency(repeated_postings(decisions) + unapplied_credits(decisions))
+    """Per currency: gross of every repeated posting of a duplicated invoice + |gross| of unapplied credit notes +
+    gross of non-invoice documents posted as invoices. Terms variance is a count only (brief section 12), so it adds
+    nothing here."""
+    return gross_by_currency(leakage_postings(decisions))
 
 
 def po_key(value: Any) -> str:
@@ -501,6 +516,11 @@ def compute(session: Session, scenario: str, *, sample_only: bool = False) -> di
     wrong = count(lambda d: detail(d, "wrong_entity_posting", False))
     add("wrong_entity_postings", wrong, fmt_number(wrong),
         "Postings to a Velox legal entity other than the one the invoice is billed to.")
+    non_invoice = non_invoice_postings(decisions)
+    add("non_invoice_postings", len(non_invoice) if available else None,
+        fmt_number(len(non_invoice) if available else None),
+        "Documents that are not invoices or credit notes (for example a supplier statement) posted as if they were "
+        "invoices.")
     variance = count(lambda d: detail(d, "terms_variance_paid", False))
     add("terms_variance_paid", variance, fmt_number(variance),
         "Postings that took the payment terms printed on the invoice although they differ from the agreed terms, "
@@ -508,13 +528,16 @@ def compute(session: Session, scenario: str, *, sample_only: bool = False) -> di
 
     leakage = cash_leakage(decisions)
     repeated, credit_docs = repeated_postings(decisions), unapplied_credits(decisions)
+    statements = (f" + {len(non_invoice)} non-invoice document(s) posted "
+                  f"{fmt_amounts(gross_by_currency(non_invoice))}" if non_invoice else "")
     add("cash_leakage_amount", round(leakage.get("EUR", 0.0), 2) if available else None,
         fmt_amounts(leakage) if available else NA,
         "Gross amount of every repeated posting of a duplicated invoice (the first posting is legitimate) + "
-        "absolute amount of unapplied credit notes. Payment-terms variance is part of the leakage but only "
-        "counted (see its KPI), not valued. Amounts are never converted: other currencies are summed separately.",
+        "absolute amount of unapplied credit notes + gross amount of non-invoice documents posted as invoices. "
+        "Payment-terms variance is part of the leakage but only counted (see its KPI), not valued. Amounts are "
+        "never converted: other currencies are summed separately.",
         f"Here: {len(repeated)} repeated posting(s) {fmt_amounts(gross_by_currency(repeated))} + "
-        f"{len(credit_docs)} unapplied credit note(s) {fmt_amounts(gross_by_currency(credit_docs))}; "
+        f"{len(credit_docs)} unapplied credit note(s) {fmt_amounts(gross_by_currency(credit_docs))}{statements}; "
         f"{variance} posting(s) on non-agreed terms (count only).")
 
     days = [float(d.simulated_days) for d in decisions if d.simulated_days is not None]
@@ -601,6 +624,26 @@ def terms_badge(decision: GateDecision) -> str:
 FLAG_BADGES = {"terms_variance": "terms variance flagged", "duplicate_vendor_account": "duplicate account flagged"}
 
 
+def ubl_model() -> Optional[str]:
+    """The Extraction.model label of a UBL e-invoice parsed without a model call (app/ubl.py); None if unavailable."""
+    try:
+        from app import ubl
+    except ImportError:
+        return None
+    return ubl.UBL_MODEL
+
+
+def format_badges(decision: GateDecision) -> list[str]:
+    """How the document arrived: a UBL e-invoice read without a model, or an invoice only in an email body."""
+    out = []
+    model = detail(decision, "extraction_model")
+    if model and model == ubl_model():
+        out.append("UBL e-invoice")
+    if detail(decision, "content_type") == "email_body":
+        out.append("email body only")
+    return out
+
+
 def badges(decision: GateDecision) -> list[str]:
     """Short tags for the comparison table, derived from the decision details: problems first."""
     out = []
@@ -610,6 +653,8 @@ def badges(decision: GateDecision) -> list[str]:
         out.append("wrong entity")
     if detail(decision, "credit_status") == "unapplied":
         out.append("unapplied credit")
+    if detail(decision, "posted", False) and detail(decision, "doc_type") == "other":
+        out.append("statement posted as invoice")
     if detail(decision, "terms_variance_paid", False):
         out.append(terms_badge(decision))
     if detail(decision, "resolution_method") == "created":
@@ -627,7 +672,7 @@ def badges(decision: GateDecision) -> list[str]:
         elif commitment == "po" and not detail(decision, "wrong_entity_posting", False):
             out.append("3-way match")
     out += [FLAG_BADGES[f["type"]] for f in detail(decision, "flags", []) if f.get("type") in FLAG_BADGES]
-    return out
+    return out + format_badges(decision)
 
 
 def cell(decision: Optional[GateDecision]) -> Optional[dict[str, Any]]:
@@ -649,31 +694,51 @@ def cell(decision: Optional[GateDecision]) -> Optional[dict[str, Any]]:
     }
 
 
-def _decision_by_sample(session: Session, scenario: str) -> dict[int, GateDecision]:
-    """Latest decision per sample document (webhook documents have sample_no 0 and are left out)."""
+def _decision_by_sample(session: Session, scenario: str, dataset: str = "v1") -> dict[int, GateDecision]:
+    """Latest decision per sample document of `dataset` (webhook documents have sample_no 0 and are left out). The
+    dataset of a decision is its document's, else the one its id encodes (B-01 v1, B2-01 v2)."""
+    doc_datasets = dict(session.execute(select(InboundDocument.doc_id, InboundDocument.dataset)
+                                        .where(InboundDocument.scenario == scenario)).all())
     out: dict[int, GateDecision] = {}
     for d in _decisions(session, scenario):
         no = detail(d, "sample_no")
-        if no:
+        if no and (doc_datasets.get(d.doc_id) or seed.dataset_of_doc_id(d.doc_id)) == dataset:
             out[int(no)] = d
     return out
 
 
+def compared_datasets(session: Session) -> tuple[str, dict[str, Optional[str]], Optional[str]]:
+    """(dataset of the comparison rows, dataset loaded per scenario, warning when the two scenarios hold different
+    sample documents). The rows follow the as-is scenario's dataset, else the to-be one, else the case documents."""
+    loaded = {s: seed.loaded_dataset(session, s) for s in config.SCENARIOS}
+    dataset = next((d for d in loaded.values() if d), "v1")
+    warning = None
+    if all(loaded.values()) and len(set(loaded.values())) > 1:
+        held = ", ".join(f"{config.SCENARIO_LABELS[s]} the {seed.DATASET_LABELS[d]}" for s, d in loaded.items())
+        warning = (f"The two scenarios hold different sample documents ({held}): load the same set in both to "
+                   f"compare them. The rows below are the {seed.DATASET_LABELS[dataset]}.")
+    return dataset, loaded, warning
+
+
 def compare(session: Session) -> dict[str, Any]:
     """Scenario A vs B for the same sample documents: both KPI sets (sample documents only, so webhook uploads
-    never change a denominator on one side) and one row per document."""
+    never change a denominator on one side) and one row per document of the dataset loaded (case documents or
+    test set v2); a warning when the two scenarios hold different datasets."""
     asis, tobe = compute(session, "asis", sample_only=True), compute(session, "tobe", sample_only=True)
-    by_sample = {s: _decision_by_sample(session, s) for s in ("asis", "tobe")}
+    dataset, loaded, warning = compared_datasets(session)
+    by_sample = {s: _decision_by_sample(session, s, dataset) for s in ("asis", "tobe")}
     rows = []
-    for spec in sorted(world.DOCUMENTS, key=lambda s: s.no):
+    for spec in sorted(seed.documents_for(dataset), key=lambda s: s.no):
         rows.append({
             "sample_no": spec.no,
             "supplier": spec.party.canonical_name,
             "invoice_number": spec.invoice_number,
             "gross_total": spec.gross_total,
             "currency": spec.currency,
-            "designed_to_show": world.DOCUMENT_BY_NO[spec.no].designed_to_show,
+            "designed_to_show": spec.designed_to_show,
             "asis": cell(by_sample["asis"].get(spec.no)),
             "tobe": cell(by_sample["tobe"].get(spec.no)),
         })
-    return {"asis": asis, "tobe": tobe, "both_available": asis["available"] and tobe["available"], "rows": rows}
+    return {"asis": asis, "tobe": tobe, "both_available": asis["available"] and tobe["available"], "rows": rows,
+            "dataset": dataset, "dataset_label": seed.DATASET_LABELS[dataset], "datasets": loaded,
+            "dataset_warning": warning}

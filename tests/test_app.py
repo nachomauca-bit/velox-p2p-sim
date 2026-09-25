@@ -641,48 +641,86 @@ def test_assumptions_page_renders_markdown_or_explains_missing(client, monkeypat
 
 
 # --------------------------------------------------------------------------------------------
-# Intake webhook hook
+# Intake webhook (C6): PDF, UBL e-invoice, email body only, forwarded comment, idempotency, gate run
 # --------------------------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def tmp_data_dir(tmp_path, monkeypatch):
-    """Keep uploaded PDFs out of the repository's data/ directory."""
+    """Keep uploaded files out of the repository's data/ directory (project root moved to a temp folder)."""
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "INVOICES_DIR", tmp_path / "data" / "invoices")
+    monkeypatch.setattr(config, "INBOUND_DIR", tmp_path / "data" / "invoices" / "inbound")
     return tmp_path
 
 
-def post_webhook(client, content=MINIMAL_PDF, headers=None, **data):
+@pytest.fixture()
+def bucket_dir(tmp_path, monkeypatch):
+    """INBOUND_DIR outside the project (as a mounted Cloud Storage bucket on Cloud Run); the project stays put."""
+    inbound = tmp_path / "bucket" / "inbound"
+    monkeypatch.setattr(config, "INBOUND_DIR", inbound)
+    return inbound
+
+
+def post_webhook(client, content=MINIMAL_PDF, headers=None, filename="invoice.pdf", **data):
     fields = {"channel": "ap_mailbox", "sender": "billing@example.com"} | data
-    return client.post("/intake/webhook", files={"file": ("invoice.pdf", content, "application/pdf")}, data=fields,
-                       headers=headers)
+    files = None if content is None else {"file": (filename, content, "application/octet-stream")}
+    return client.post("/intake/webhook", files=files, data=fields, headers=headers)
 
 
-def test_webhook_accepts_pdf_and_registers_per_scenario(client, tmp_data_dir):
+def ubl_invoice(no: int = 11) -> bytes:
+    """A Peppol UBL e-invoice of test set v2 (document 11: Metro Media, PO 4500126)."""
+    ubl = pytest.importorskip("app.ubl")
+    return ubl.render_ubl(world.document_for("v2", no))
+
+
+def webhook_doc(session, doc_id: str) -> InboundDocument:
+    session.expire_all()  # the app wrote through its own sessions
+    return get_doc(session, doc_id)
+
+
+def test_webhook_accepts_pdf_registers_per_scenario_and_runs_the_gate(client, session, tmp_data_dir):
     r = post_webhook(client, scenario="tobe", subject="Invoice 42")
     assert r.status_code == 201, r.text
-    assert r.json() == {"doc_id": "B-W01", "scenario": "tobe", "registered": True, "extracted": False}
+    assert r.json() == {"doc_id": "B-W01", "scenario": "tobe", "registered": True, "extracted": False,
+                        "outcome": "human_review", "exception_type": "human_review", "owner_name": "Marco Ruiz"}
     assert post_webhook(client, scenario="tobe").json()["doc_id"] == "B-W02"
     use_scenario(client, "asis")
     r = post_webhook(client, channel="store_mailbox")  # scenario from the cookie
-    assert r.json() == {"doc_id": "A-W01", "scenario": "asis", "registered": False, "extracted": False}
+    assert r.json() == {"doc_id": "A-W01", "scenario": "asis", "registered": False, "extracted": False,
+                        "outcome": "exception", "exception_type": "email_loop", "owner_name": None}
     assert list((tmp_data_dir / "data" / "invoices" / "inbound").glob("*.pdf"))
     pdf = client.get("/files/B-W01.pdf")
     assert pdf.status_code == 200 and pdf.content == MINIMAL_PDF
+    doc = webhook_doc(session, "B-W01")
+    assert (doc.dataset, doc.content_type, doc.sample_no, doc.email_body) == ("live", "pdf", 0, None)
+    assert count_rows(session, GateDecision, "tobe") == 2  # the gate ran on each upload
     use_scenario(client, "tobe")
-    assert "Invoice 42" in client.get("/inbox").text
+    html = client.get("/inbox").text
+    assert "Invoice 42" in html and "Live intake (webhook)" in html
+    assert ">Human review<" in mailbox_section(html, "ap_mailbox")
 
 
-def test_webhook_rejects_invalid_input(client, tmp_data_dir):
+def test_webhook_scenario_defaults_to_tobe_without_a_cookie(client, bucket_dir):
+    assert client.cookies.get("scenario") is None
+    assert post_webhook(client).json()["scenario"] == "tobe"
+
+
+def test_webhook_rejects_invalid_input(client, session, tmp_data_dir):
     assert post_webhook(client, content=b"hello, not a pdf").status_code == 400
+    r = post_webhook(client, content=b"<?xml version='1.0'?><note>not an invoice</note>", filename="note.xml")
+    assert r.status_code == 400 and r.json() == {"detail": "file is not a PDF or a UBL e-invoice (XML)"}
+    r = post_webhook(client, content=None)  # neither a file nor an email body
+    assert r.status_code == 400 and r.json() == {"detail": "email_body is required when no file is attached"}
+    assert post_webhook(client, content=None, email_body="   ").status_code == 400  # a blank body is no body
     assert post_webhook(client, channel="fax").status_code == 400
     assert post_webhook(client, sender="not-an-email").status_code == 400
     assert post_webhook(client, scenario="prod").status_code == 400
     too_big = MINIMAL_PDF + b"0" * (main.MAX_UPLOAD_BYTES + 1)
     r = post_webhook(client, content=too_big)  # within the multipart allowance: the endpoint's own check
-    assert r.status_code == 413 and r.json() == {"detail": "PDF larger than 10 MB"}
+    assert r.status_code == 413 and r.json() == {"detail": "file larger than 10 MB"}
+    assert count_docs(session, "tobe") == count_docs(session, "asis") == 0
 
 
 def test_webhook_checks_content_length_before_parsing(client, tmp_data_dir):
@@ -696,7 +734,7 @@ def test_webhook_checks_content_length_before_parsing(client, tmp_data_dir):
     r = client.post("/intake/webhook", content=b"--x--\r\n", headers=multipart | {"content-length": str(limit + 1)})
     assert r.status_code == 413 and "at most 10 MB" in r.json()["detail"]
     r = post_webhook(client, content=MINIMAL_PDF + b"0" * limit)
-    assert r.status_code == 413 and r.json()["detail"] != "PDF larger than 10 MB"  # the middleware, not the endpoint
+    assert r.status_code == 413 and r.json()["detail"] != "file larger than 10 MB"  # the middleware, not the endpoint
     assert not (tmp_data_dir / "data" / "invoices" / "inbound").exists()
     assert post_webhook(client, scenario="tobe").status_code == 201  # normal uploads still pass
 
@@ -716,6 +754,211 @@ def test_concurrent_webhook_uploads_get_distinct_ids(client, session, tmp_data_d
     assert [r.status_code for r in responses] == [201] * len(uploads)
     assert sorted(r.json()["doc_id"] for r in responses) == ["B-W01", "B-W02", "B-W03"]
     assert count_docs(session, "tobe") == len(uploads)
+
+
+def test_webhook_ubl_e_invoice_is_parsed_without_a_model_and_posted(client, session, bucket_dir):
+    ubl = pytest.importorskip("app.ubl")
+    content = ubl_invoice(11)
+    r = post_webhook(client, content=content, filename="MM-2026-248.xml", scenario="tobe",
+                     sender="einvoice@metromedia.de")
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert (body["extracted"], body["outcome"], body["exception_type"]) == (True, "posted", None)
+    doc = webhook_doc(session, "B-W01")
+    assert (doc.content_type, doc.source_name, doc.extraction.model) == ("ubl_xml", "MM-2026-248.xml", ubl.UBL_MODEL)
+    assert list(bucket_dir.glob("*.xml"))
+    xml = client.get("/files/B-W01.xml")
+    assert xml.status_code == 200 and xml.headers["content-type"].startswith("application/xml")
+    assert xml.content == content
+    html = client.get("/invoice/B-W01").text
+    assert "<iframe" not in html and 'class="doc-text xml-text"' in html
+    assert "&lt;cbc:ID&gt;MM-2026-248&lt;/cbc:ID&gt;" in html  # escaped, never rendered as markup
+    assert "UBL e-invoice — parsed, no model call" in html and ">UBL e-invoice<" in gate_panel(html)
+
+
+def test_webhook_email_body_only_goes_to_human_review(client, session, bucket_dir):
+    text = "Guten Tag, anbei unsere Rechnung 2026/140 über 58,31 EUR. Mit freundlichen Grüßen, Kaffee & Co OHG"
+    r = post_webhook(client, content=None, email_body=text, channel="store_mailbox", scenario="tobe",
+                     sender="info@kaffee-und-co.de", subject="Rechnung 2026/140")
+    assert r.status_code == 201, r.text
+    assert r.json() == {"doc_id": "B-W01", "scenario": "tobe", "registered": True, "extracted": False,
+                        "outcome": "human_review", "exception_type": "human_review", "owner_name": "Marco Ruiz"}
+    doc = webhook_doc(session, "B-W01")
+    assert (doc.content_type, doc.email_body, doc.source_name) == ("email_body", text, None)
+    stored = list(bucket_dir.glob("*.txt"))
+    assert len(stored) == 1 and stored[0].read_text(encoding="utf-8") == text
+    decision = session.scalars(select(GateDecision).where(GateDecision.doc_id == "B-W01")).one()
+    assert "the invoice is only in the email body" in decision.reason
+    html = client.get("/invoice/B-W01").text
+    assert "<iframe" not in html and 'class="doc-text email-text"' in html
+    assert html_lib.escape(text, quote=False) in html
+    assert "Extract now" not in html and "there is no document to extract" in html
+    assert ">email body only<" in gate_panel(html)
+    use_scenario(client, "tobe")
+    assert ">Nothing to extract<" in client.get("/inbox").text
+
+
+def test_webhook_keeps_the_forwarding_comment_of_an_attachment(client, session, bucket_dir):
+    comment = "Bonjour, facture reçue au magasin la semaine dernière. Merci de la régler. Luc"
+    r = post_webhook(client, email_body=comment, sender="luc.bernard@velox.com", subject="TR: Facture QP-26-1107",
+                     scenario="tobe")
+    assert r.status_code == 201
+    doc = webhook_doc(session, "B-W01")
+    assert (doc.content_type, doc.email_body) == ("pdf", comment)
+    html = client.get("/invoice/B-W01").text
+    assert "<iframe" in html and "Email text" in html and html_lib.escape(comment, quote=False) in html
+
+
+def test_webhook_message_id_makes_a_repeated_delivery_a_no_op(client, session, bucket_dir):
+    first = post_webhook(client, scenario="tobe", message_id="<msg-1@example.com>")
+    assert first.status_code == 201 and first.json()["doc_id"] == "B-W01"
+    again = post_webhook(client, scenario="tobe", message_id="<msg-1@example.com>")
+    assert again.status_code == 200
+    assert again.json() == {**first.json(), "existing": True}
+    # a second attachment of the same email, and the same email for the other scenario, are new documents
+    assert post_webhook(client, scenario="tobe", message_id="<msg-1@example.com>",
+                        filename="annex.pdf").json()["doc_id"] == "B-W02"
+    assert post_webhook(client, scenario="asis", message_id="<msg-1@example.com>").status_code == 201
+    body = {"content": None, "email_body": "Invoice 77 for 120.00 EUR", "scenario": "tobe",
+            "message_id": "<msg-2@example.com>"}
+    assert post_webhook(client, **body).status_code == 201
+    repeat = post_webhook(client, **body)
+    assert repeat.status_code == 200 and repeat.json()["doc_id"] == "B-W03" and repeat.json()["existing"] is True
+    assert post_webhook(client, scenario="tobe").json()["doc_id"] == "B-W04"  # no message id: always new
+    assert count_docs(session, "tobe") == 4 and count_docs(session, "asis") == 1
+    assert count_rows(session, GateDecision, "tobe") == 4  # the gate ran once per document
+
+
+def test_webhook_document_shows_in_the_cockpit_after_a_run(client, session, bucket_dir):
+    run_scenario(client, "tobe")
+    assert 'id="bucket-human_review"' not in client.get("/gate/exceptions").text
+    r = post_webhook(client, scenario="tobe", subject="Scan from the store")
+    assert r.json()["outcome"] == "human_review"
+    html = client.get("/gate/exceptions").text
+    assert "5 blocking exceptions" in page_text(html)
+    assert 'href="/invoice/B-W01"' in section(html, "bucket-human_review")
+    assert count_rows(session, GateDecision, "tobe") == len(world.DOCUMENTS) + 1
+
+
+def test_files_of_an_inbound_dir_outside_the_project_are_served(client, session, bucket_dir):
+    assert not bucket_dir.resolve().is_relative_to(config.BASE_DIR.resolve())
+    post_webhook(client, scenario="tobe")
+    doc = webhook_doc(session, "B-W01")
+    stored = Path(doc.file_path)
+    assert stored.is_absolute() and stored.parent == bucket_dir.resolve()
+    for url in ("/files/B-W01.pdf", "/files/B-W01"):
+        r = client.get(url)
+        assert r.status_code == 200 and r.content == MINIMAL_PDF, url
+    assert client.get("/files/B-W01.xml").status_code == 404  # the extension must be the file's
+    doc.file_path = (bucket_dir.parent / "elsewhere.pdf").as_posix()  # outside INBOUND_DIR and DATA_DIR
+    (bucket_dir.parent / "elsewhere.pdf").write_bytes(MINIMAL_PDF)
+    session.commit()
+    assert client.get("/files/B-W01.pdf").status_code == 404
+
+
+def test_basic_auth_is_off_without_a_password_and_guards_everything_with_one(client, session, bucket_dir,
+                                                                             monkeypatch):
+    monkeypatch.setattr(config, "APP_PASSWORD", "")
+    assert client.get("/inbox").status_code == 200
+    monkeypatch.setattr(config, "APP_USERNAME", "velox")
+    monkeypatch.setattr(config, "APP_PASSWORD", "s3cret")
+    r = client.get("/inbox")
+    assert r.status_code == 401 and 'realm="Velox"' in r.headers["www-authenticate"]
+    assert client.get("/static/app.css").status_code == 401
+    assert client.get("/inbox", auth=("velox", "wrong")).status_code == 401
+    assert client.get("/inbox", auth=("velox", "s3cret")).status_code == 200
+    assert client.get("/health").status_code == 200  # uptime checks stay open
+    assert post_webhook(client, scenario="tobe").status_code == 401 and count_docs(session, "tobe") == 0
+    authorized = {"authorization": _basic("velox", "s3cret")}
+    assert post_webhook(client, scenario="tobe", headers=authorized).status_code == 201
+    monkeypatch.setattr(config, "APP_PASSWORD", "")
+    assert client.get("/inbox").status_code == 200
+
+
+def _basic(user: str, password: str) -> str:
+    import base64
+
+    return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+# --------------------------------------------------------------------------------------------
+# Datasets: case documents (14) or test set v2 (26)
+# --------------------------------------------------------------------------------------------
+
+
+def test_header_offers_both_datasets(client):
+    html = form_html(client.get("/inbox").text, "/documents/load")
+    for key, label in main.DATASET_CHOICES.items():
+        assert f'name="dataset" value="{key}"' in html and label in html
+    assert main.DATASET_CHOICES == {"v1": "Case documents (14)", "v2": "Test set v2 (26)"}
+
+
+def test_load_test_set_v2_and_reset_keeps_it(client, session):
+    use_scenario(client, "tobe")
+    r = client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})
+    assert r.status_code == 200 and r.url.path == "/inbox"
+    n = len(world.documents_for("v2"))
+    assert n == 26
+    assert f"{n} documents loaded into the mailboxes of B — To-be (test set v2)" in r.text
+    assert "1 email with the invoice only in the body" in r.text and "Extraction pending" not in r.text
+    assert "Test set v2 (26)" in r.text and 'id="doc-B2-01"' in r.text and 'id="doc-B2-26"' in r.text
+    assert ">UBL e-invoice (XML)<" in r.text and ">Email body, no attachment<" in r.text
+    assert ">Not an invoice<" in r.text  # document 3, the statement
+    assert count_docs(session, "tobe") == n
+    r = client.post("/reset", data={"scenario": "tobe"})
+    assert "Documents: Test set v2 (26)." in r.text
+    session.expire_all()
+    assert count_docs(session, "tobe") == n and seed.loaded_dataset(session, "tobe") == "v2"
+    r = client.post("/documents/load", data={"scenario": "tobe", "dataset": "v1"})
+    assert count_docs(session, "tobe") == len(world.DOCUMENTS) and "(case documents)" in r.text
+    assert client.post("/documents/load", data={"scenario": "tobe", "dataset": "v9"},
+                       follow_redirects=False).status_code == 400
+
+
+def test_invoice_pages_of_the_v2_formats(client):
+    client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})
+    ubl = client.get("/invoice/B2-11").text
+    assert "<iframe" not in ubl and 'class="doc-text xml-text"' in ubl and "&lt;cbc:ID&gt;MM-2026-248" in ubl
+    assert "Peppol BIS Billing 3.0" in ubl and 'href="/files/B2-11.xml"' in ubl
+    email = client.get("/invoice/B2-14").text
+    assert "<iframe" not in email and 'class="doc-text email-text"' in email and "Rechnung 2026/140" in email
+    assert "Extract now" not in email
+    forwarded = client.get("/invoice/B2-08").text
+    assert 'src="/files/B2-08.pdf#' in forwarded and "Email text" in forwarded and "Bonjour" in forwarded
+    r = client.get("/files/B2-11.xml")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/xml")
+    r = client.get("/files/B2-14.txt")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+
+
+def test_compare_warns_when_the_scenarios_hold_different_datasets(client):
+    client.post("/documents/load", data={"scenario": "asis", "dataset": "v1"})
+    client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})
+    html = squash(page_text(client.get("/gate/compare").text))
+    assert ("The two scenarios hold different sample documents (A — As-is the case documents, B — To-be the test "
+            "set v2)") in html
+    client.post("/documents/load", data={"scenario": "asis", "dataset": "v2"})
+    html = squash(page_text(client.get("/gate/compare").text))
+    assert "hold different sample documents" not in html and "same 26 documents (test set v2)" in html
+
+
+def test_run_after_a_scenario_exports_when_enabled_and_never_fails_on_export(client, monkeypatch, capsys):
+    export_bq = pytest.importorskip("app.export_bq")
+    calls = []
+    monkeypatch.setattr(export_bq, "export_all", lambda db_session: calls.append(1) or {"gate_decision": 14})
+    monkeypatch.setattr(config, "BQ_EXPORT", False)
+    run_scenario(client, "tobe")
+    assert calls == []
+    monkeypatch.setattr(config, "BQ_EXPORT", True)
+    run_scenario(client, "tobe")
+    assert calls == [1] and "[export] after the tobe run: 14 rows in 1 tables" in capsys.readouterr().out
+
+    def broken(db_session):
+        raise RuntimeError("BigQuery unreachable")
+    monkeypatch.setattr(export_bq, "export_all", broken)
+    r = run_scenario(client, "tobe")  # the run still succeeds
+    assert "documents processed" in r.text
+    assert "[export] after the tobe run FAILED: RuntimeError('BigQuery unreachable')" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------------------------

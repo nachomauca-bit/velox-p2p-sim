@@ -2,11 +2,13 @@
 <article class="panel" id="extraction-panel">
   <header class="panel-head">
     <h2>Extraction</h2>
+    {% if doc.content_type != "email_body" %}
     <form method="post" action="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
           hx-post="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
           hx-target="#extraction-panel" hx-swap="outerHTML" hx-disabled-elt="find button">
-      <button type="submit" class="{{ 'secondary outline' if ex else '' }}">{{ 'Force re-extract' if ex else 'Extract now' }}</button>
+      <button type="submit" class="{{ 'secondary outline' if ex else '' }}">{{ ('Parse again' if is_ubl else 'Force re-extract') if ex else 'Extract now' }}</button>
     </form>
+    {% endif %}
   </header>
 
   {% if panel_message %}
@@ -19,12 +21,14 @@
   <div class="source-line">
     {% if is_fixture %}
       <span class="badge badge-fixture">FIXTURE — not a Gemini output</span>
+    {% elif is_ubl %}
+      <span class="badge badge-ubl">UBL e-invoice — parsed, no model call</span>
     {% elif ex.from_cache %}
       <span class="badge badge-cache">From cache</span>
     {% else %}
       <span class="badge badge-api">Gemini API</span>
     {% endif %}
-    <span class="chip chip-{{ 'info' if doc.doc_type == 'credit_note' else 'neutral' }}">{{ doc_type_labels.get(doc.doc_type, doc.doc_type) }}</span>
+    <span class="chip chip-{{ 'info' if doc_type == 'credit_note' else 'warn' if doc_type == 'other' else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
   </div>
   <dl class="kv kv-compact">
     <dt>Model</dt><dd><code>{{ ex.model }}</code></dd>

@@ -1,0 +1,99 @@
+{
+  "file_name": "03_nordwind_kontoauszug.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "other",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Nordwind Logistics GmbH",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "DE281947305",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "DE44500105175407324931",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "KA-2026-11",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-11-05",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "payment_terms_days": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 56525.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "gross_total": {
+      "value": 56525.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Rechnung NWL-2026-00913 vom 30.09.2026",
+          "quantity": null,
+          "unit_price": null,
+          "amount": 27846.0
+        },
+        {
+          "description": "Rechnung NWL-2026-01027 vom 31.10.2026",
+          "quantity": null,
+          "unit_price": null,
+          "amount": 28679.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "Statement of account, not an invoice. Open items: Rechnung NWL-2026-00913 vom 30.09.2026; Rechnung NWL-2026-01027 vom 31.10.2026. Balance 56,525.00 EUR.",
+      "confidence": 0.99
+    }
+  }
+}

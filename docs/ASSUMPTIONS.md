@@ -290,6 +290,7 @@ Exception types, owners and SLAs (brief section 9; single source of truth `app/t
 | `credit_note_without_invoice` | Credit note references no known invoice | AP specialist (Marco Ruiz) | 2 |
 | `human_review` | Low extraction confidence | AP specialist (Marco Ruiz) | 1 |
 | `terms_variance` (info, not blocking) | Invoice payment terms differ from the master | AP specialist (Marco Ruiz) | — |
+| `not_an_invoice` (phase 3) | Document is not an invoice (e.g. a supplier statement) | AP specialist (Marco Ruiz) | 1 |
 | `email_loop` (as-is only) | Untracked manual follow-up | — | — |
 
 ## 9. KPIs (`app/metrics.py`)
@@ -309,7 +310,8 @@ The same definitions as the case deck (brief section 12). Each KPI shows its for
 | Credit notes applied / unapplied | From the credit-note application of each credit note | Downstream |
 | Wrong-entity postings | Postings to a legal entity other than the one billed | Downstream |
 | Average cycle | Mean simulated business days per document; also the mean over documents with a human step, and the reference path "non-PO invoice sent to a store" (section 6) | Downstream |
-| Simulated cash leakage | Amount of the repeated postings of duplicated invoices + unapplied credit notes; plus the **count** of postings on invoice terms that differ from the agreed terms (a count only, as the brief asks) | Downstream |
+| Non-invoice documents posted (phase 3) | Postings of documents that are not invoices (e.g. a statement posted by the as-is tool) | Downstream |
+| Simulated cash leakage | Amount of the repeated postings of duplicated invoices + unapplied credit notes + postings of non-invoice documents; plus the **count** of postings on invoice terms that differ from the agreed terms (a count only, as the brief asks). The 14 case documents contain no non-invoice document, so their values are unchanged | Downstream |
 
 Expected values for the 14 documents (checked against `tests/golden.yaml`): to-be touchless 10 of 14 (71.4%), 4 exceptions, 1 duplicate blocked, 1 credit note applied, cash leakage 0.00; as-is touchless 5 of 14 (35.7%), 9 documents in the email loop, 2 postings of 1 duplicated invoice, 1 unapplied credit note, 2 wrong-entity postings (documents 8 and 11), 3 postings on non-agreed terms (documents 1, 2 and 6; 1 and 2 are the same invoice), cash leakage 29,646.00 EUR (27,846.00 + 1,800.00).
 
@@ -374,3 +376,12 @@ Illustrative, chosen to vary the tax blocks the extractor has to read; not tax a
 3. **Duplicate KPI**: "2 postings of 1 invoice" (documents 1 and 2 in as-is).
 4. **Document 12** routed to the receiver first, then the buyer (both readings of the brief).
 5. **Document 10** requester: Paul Neumann, store manager Berlin 01.
+
+## 12. Phase 3 (cloud-ready build, offline)
+
+- **Test set v2** (26 documents, four languages, scans, a Peppol UBL e-invoice, an email-body invoice, a statement): defined in `docs/TEST_SET_V2.md`, expected results in `tests/golden_v2.yaml`. It reuses the seed of the case documents; document 26 comes from a supplier that is not in the vendor master. The two scans carry **simulated** confidences in their fixtures (12: 0.93; 13: 0.62 on the gross total and 0.71 on the invoice number) to exercise the human-review path; with a key, the values come from Gemini.
+- **Structured e-invoices** (UBL XML) are read by `app/ubl.py` without any model call; the UI says so.
+- **Email-body invoices** (no attachment) are registered as `unknown` and routed to human review (brief section 17). As-is has no extraction for them, so the simulator does not post them.
+- **Statements** (doc_type `other`): to-be routes them as `not_an_invoice`; as-is has no document-type check and posts them as invoices, which counts as cash leakage.
+- **Model access**: `GEMINI_BACKEND=vertex` switches the same SDK to Vertex AI (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`); the extraction code does not change.
+- **Not tested here**: everything that needs Google Cloud (Vertex AI calls, Cloud Run, Cloud Storage, Secret Manager, Cloud Scheduler, BigQuery) or a real mailbox. It is covered by unit tests with fakes; `docs/DEPLOY_GCP.md` lists the steps and the acceptance test to run once the project exists.

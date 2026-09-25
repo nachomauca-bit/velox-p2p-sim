@@ -20,6 +20,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlsplit
+from xml.dom import minidom
 
 import jinja2
 import markdown
@@ -32,7 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import config, db, drafts, extract, gate, metrics, normalize, seed, sim, taxonomy, world
+from app import config, db, drafts, extract, gate, metrics, models, normalize, seed, sim, taxonomy, world
 from app.models import (
     Contract,
     GateDecision,
@@ -75,8 +76,13 @@ NAV_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
 ]
 
-DOC_TYPE_LABELS = {"invoice": "Invoice", "credit_note": "Credit note", "unknown": "Type unknown"}
+DOC_TYPE_LABELS = {"invoice": "Invoice", "credit_note": "Credit note", "other": "Not an invoice",
+                   "unknown": "Type unknown"}
 CHANNEL_LABELS = {"ap_mailbox": "AP shared mailbox", "store_mailbox": "Store mailbox (Berlin 01)"}
+CONTENT_LABELS = {"pdf": "PDF", "ubl_xml": "UBL e-invoice (XML)", "email_body": "Email body, no attachment"}
+# "Load sample documents" choices: the 14 case documents or test set v2 (docs/TEST_SET_V2.md).
+DATASET_CHOICES = {"v1": "Case documents (14)", "v2": "Test set v2 (26)"}
+DATASET_NAMES = {**DATASET_CHOICES, seed.LIVE_DATASET: "Live intake (webhook)"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -86,8 +92,11 @@ CHANNEL_LABELS = {"ap_mailbox": "AP shared mailbox", "store_mailbox": "Store mai
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create tables (never drop) and seed the mock ERP if the database is empty."""
+    """Create tables (never drop), add the columns an older database lacks, and seed the mock ERP if it is empty."""
     db.init_db()
+    added = models.add_missing_columns(db.engine)
+    if added:
+        print(f"[startup] database upgraded: added {', '.join(added)}")
     with db.SessionLocal() as session:
         if session.scalar(select(func.count()).select_from(LegalEntity)) == 0:
             seed.seed_all(session)
@@ -222,6 +231,7 @@ def render(request: Request, name: str, context: dict[str, Any], status_code: in
         "nav_active": nav_active(request.url.path),
         "footer_text": config.FOOTER_TEXT,
         "flash": flash,
+        "dataset_choices": DATASET_CHOICES,
         **context,
     }
     response = templates.TemplateResponse(request, name, ctx, status_code=status_code)
@@ -300,24 +310,35 @@ def extraction_mode_note() -> str:
     return ""
 
 
+def form_dataset(value: Optional[str]) -> str:
+    """Dataset of "Load sample documents": v1 (the 14 case documents, the default) or v2 (test set v2)."""
+    if not value:
+        return "v1"
+    if value not in seed.DATASETS:
+        raise HTTPException(status_code=400, detail=f"Unknown dataset {value!r}: use one of {seed.DATASETS}")
+    return value
+
+
 @app.post("/documents/load")
-def load_documents(request: Request, scenario: Optional[str] = Form(None),
+def load_documents(request: Request, scenario: Optional[str] = Form(None), dataset: Optional[str] = Form(None),
                    session: Session = Depends(db.get_session)) -> RedirectResponse:
-    """Load the sample PDFs into both mailboxes of the scenario and extract them.
+    """Load a set of sample documents (case documents or test set v2) into both mailboxes of the scenario and
+    extract them.
 
     The previous gate results of the scenario are cleared first: they belong to the old documents. The extraction
     runs inside the gate lock too, so a Run clicked meanwhile waits instead of reading half-written rows.
     """
     scenario = form_scenario(request, scenario)
+    dataset = form_dataset(dataset)
     with _gate_lock:
         gate.clear_results(session, scenario)
-        docs = seed.load_sample_documents(session, scenario)
+        docs = seed.load_sample_documents(session, scenario, dataset)
         for doc in docs:
             reg = registration_info(doc)
             print(f"[doc {doc.doc_id}] step=intake result={'registered' if doc.registered else 'waiting'} "
                   f"mailbox={doc.mailbox} registration={reg['date'].date().isoformat()}")
         try:
-            summary = extract.extract_documents(session, docs, allow_api=bool(config.GEMINI_API_KEY))
+            summary = extract.extract_documents(session, docs, allow_api=config.gemini_configured())
         except Exception as exc:  # per-document failures are counted; anything else must not break the intake
             session.rollback()
             print(f"[intake] scenario={scenario} loaded={len(docs)} extraction error: {exc!r}")
@@ -326,27 +347,35 @@ def load_documents(request: Request, scenario: Optional[str] = Form(None),
         response = redirect("/inbox", ("error", f"{len(docs)} documents loaded, but the extraction failed; "
                                                 "see the server log."))
     else:
-        print(f"[intake] scenario={scenario} loaded={len(docs)} extracted={summary['extracted']} "
+        print(f"[intake] scenario={scenario} dataset={dataset} loaded={len(docs)} extracted={summary['extracted']} "
               f"from_cache={summary['from_cache']} unavailable={summary['unavailable']} "
               f"failed={summary.get('failed', 0)}")
-        response = redirect("/inbox", load_message(len(docs), scenario, summary))
+        response = redirect("/inbox", load_message(len(docs), scenario, summary, dataset, docs))
     set_scenario_cookie(response, scenario)
     return response
 
 
-def load_message(loaded: int, scenario: str, summary: dict[str, Any]) -> tuple[str, str]:
-    """Flash (kind, text) for "Load sample documents" from the extract_documents summary."""
+def load_message(loaded: int, scenario: str, summary: dict[str, Any], dataset: str = "v1",
+                 docs: Sequence[InboundDocument] = ()) -> tuple[str, str]:
+    """Flash (kind, text) for "Load sample documents" from the extract_documents summary. An email that carries
+    the invoice only in its body has nothing to extract: it is counted apart, not as pending."""
     failed, unavailable = summary.get("failed", 0), summary["unavailable"]
-    text = (f"{loaded} documents loaded into the mailboxes of {config.SCENARIO_LABELS[scenario]}; "
-            f"{summary['extracted']} extracted ({summary['from_cache']} from cache).{extraction_mode_note()}")
+    body_only = sum(1 for d in docs if d.content_type == "email_body" and d.extraction is None)
+    unavailable = max(unavailable - body_only, 0)
+    text = (f"{loaded} documents loaded into the mailboxes of {config.SCENARIO_LABELS[scenario]} "
+            f"({seed.DATASET_LABELS[dataset]}); {summary['extracted']} extracted ({summary['from_cache']} from cache)."
+            f"{extraction_mode_note()}")
+    if body_only:
+        text += (f" {plural(body_only, 'email')} with the invoice only in the body (nothing to extract: AP keys "
+                 f"{'it' if body_only == 1 else 'them'}).")
     if failed:
         error = str(summary.get("error") or "unknown error")[:300].rstrip(".")  # the flash lives in a cookie
         text += f" {plural(failed, 'document')} failed: {error}."
     if unavailable:
         text += f" Extraction pending for {plural(unavailable, 'document')}"
-        if config.EXTRACTOR != "fixture" and not config.GEMINI_API_KEY:
-            text += ": set GEMINI_API_KEY in .env and run make extract."
-        elif config.GEMINI_API_KEY:
+        if config.EXTRACTOR != "fixture" and not config.gemini_configured():
+            text += f": set {config.gemini_missing_setting()} in .env and run make extract."
+        elif config.gemini_configured():
             text += " (retry with Extract now on the invoice page, or run make extract)."
         else:
             text += "."
@@ -367,28 +396,32 @@ _gate_lock = threading.Lock()
 @app.post("/reset")
 def reset(request: Request, scenario: Optional[str] = Form(None),
           session: Session = Depends(db.get_session)) -> RedirectResponse:
-    """Restore the scenario for the demo: ERP re-seeded, gate results cleared, sample documents reloaded
-    (unprocessed) and extracted from the cache or fixtures only (never the API)."""
+    """Restore the scenario for the demo: ERP re-seeded, gate results cleared, the sample documents of the dataset
+    that was loaded (case documents by default) reloaded (unprocessed) and extracted from the cache or fixtures
+    only (never the API)."""
     scenario = form_scenario(request, scenario)
     with _gate_lock:
         gate.clear_results(session, scenario)
-        seed.reset_scenario(session, scenario)
-        docs = seed.load_sample_documents(session, scenario)
+        dataset = seed.reset_scenario(session, scenario) or "v1"
+        docs = seed.load_sample_documents(session, scenario, dataset)
         try:
             summary = extract.extract_documents(session, docs, allow_api=False)
         except Exception as exc:  # the reset itself succeeded; report the extraction problem
             session.rollback()
             summary = {"extracted": 0, "from_cache": 0, "unavailable": len(docs), "failed": 0, "error": str(exc)}
-    print(f"[reset] scenario={scenario} ERP tables re-seeded, gate results cleared, {len(docs)} documents "
-          f"reloaded, extracted={summary['extracted']} unavailable={summary['unavailable']}")
+    body_only = sum(1 for d in docs if d.content_type == "email_body" and d.extraction is None)
+    pending = max(summary["unavailable"] - body_only, 0)
+    print(f"[reset] scenario={scenario} dataset={dataset} ERP tables re-seeded, gate results cleared, {len(docs)} "
+          f"documents reloaded, extracted={summary['extracted']} unavailable={summary['unavailable']}")
     path = back_path(request)
     if path.startswith(DOCUMENT_PAGE_PREFIXES):
         path = "/inbox"
     text = (f"{config.SCENARIO_LABELS[scenario]} reset: ERP tables re-seeded, gate results cleared, "
-            f"{len(docs)} sample documents reloaded and not processed yet; {summary['extracted']} extracted.")
-    if summary["unavailable"]:
-        text += f" Extraction pending for {plural(summary['unavailable'], 'document')} (no cache entry)."
-    response = redirect(path, ("warn" if summary["unavailable"] else "info", text))
+            f"{len(docs)} sample documents reloaded and not processed yet; {summary['extracted']} extracted. "
+            f"Documents: {DATASET_CHOICES[dataset]}.")
+    if pending:
+        text += f" Extraction pending for {plural(pending, 'document')} (no cache entry)."
+    response = redirect(path, ("warn" if pending else "info", text))
     set_scenario_cookie(response, scenario)
     return response
 
@@ -404,14 +437,31 @@ def run_gate(session: Session, scenario: str) -> tuple[Optional[Run], str]:
             if count_documents(session, scenario) == 0:
                 docs = seed.load_sample_documents(session, scenario)
                 loaded = f"{len(docs)} sample documents loaded first. "
-            run = gate.run_scenario(session, scenario, allow_api=bool(config.GEMINI_API_KEY))
+            run = gate.run_scenario(session, scenario, allow_api=config.gemini_configured())
         except Exception as exc:  # a broken rule or data problem must not end in a 500
             session.rollback()
             print(f"[run] scenario={scenario} FAILED: {exc!r}")
             return None, f"The gate run of {config.SCENARIO_LABELS[scenario]} failed; see the server log."
+    export_after_run(session, scenario)
     s = run.summary_json or {}
     return run, (f"{loaded}{config.SCENARIO_LABELS[scenario]}: {s.get('documents', 0)} documents processed, "
                  f"{s.get('touchless', 0)} touchless, {s.get('exceptions', 0)} exceptions.")
+
+
+def export_after_run(session: Session, scenario: str) -> None:
+    """With BQ_EXPORT on, export the decisions and mock tables (app/export_bq.py: NDJSON files, then BigQuery)
+    after a run. Imported lazily; a failure is logged and never fails the run."""
+    if not config.BQ_EXPORT:
+        return
+    try:
+        from app import export_bq
+
+        tables = export_bq.export_all(session) or {}
+        rows = sum(v if isinstance(v, int) else len(v) for v in tables.values())
+        print(f"[export] after the {scenario} run: {rows} rows in {len(tables)} tables")
+    except Exception as exc:  # the export is optional: the demo keeps working without it
+        session.rollback()
+        print(f"[export] after the {scenario} run FAILED: {exc!r}")
 
 
 def count_documents(session: Session, scenario: str) -> int:
@@ -459,7 +509,8 @@ BADGE_TONES = {"duplicate posting": "bad", "wrong entity": "bad", "unapplied cre
                "vendor account created": "bad", "terms paid early": "warn", "terms paid late": "warn",
                "terms variance": "warn", "terms variance flagged": "info", "duplicate account flagged": "info",
                "DoA auto-approved": "info", "blocked duplicate": "info", "contract match": "ok",
-               "3-way match": "ok", "credit applied": "ok"}
+               "3-way match": "ok", "credit applied": "ok", "statement posted as invoice": "bad",
+               "UBL e-invoice": "info", "email body only": "warn"}
 STEP_LABELS = {"register": "Register", "extract": "Extract", "resolve_vendor": "Resolve vendor",
                "legal_entity": "Legal entity check", "duplicate_check": "Duplicate check",
                "credit_note": "Credit note", "commitment_match": "Commitment match", "terms": "Payment terms",
@@ -536,7 +587,8 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
     """
     det = dict(decision.details or {})
     label, tone = outcome_chip(decision.outcome, decision.exception_type)
-    spec = world.DOCUMENT_BY_NO.get(det.get("sample_no") or (doc.sample_no if doc else 0))
+    spec = seed.spec_for(doc.dataset if doc else seed.dataset_of_doc_id(decision.doc_id),
+                         det.get("sample_no") or (doc.sample_no if doc else 0))
     posted = posted_on(decision)
     posted_by_snapshot = bool(as_of and posted and posted <= as_of)
     return {
@@ -610,6 +662,25 @@ def registration_info(doc: InboundDocument) -> dict[str, Any]:
             "reason": reason}
 
 
+def doc_type_key(doc: InboundDocument) -> str:
+    """invoice | credit_note | other | unknown: extract.py registers a document read as "other" (e.g. a supplier
+    statement) as "unknown"; the pages show what the extraction says."""
+    if doc.doc_type == "unknown" and doc.extraction is not None:
+        if ((doc.extraction.json or {}).get("doc_type") or {}).get("value") == "other":
+            return "other"
+    return doc.doc_type
+
+
+def dataset_summary(docs: Sequence[InboundDocument]) -> list[dict[str, Any]]:
+    """The document sets in a mailbox view, e.g. [{"key": "v2", "label": "Test set v2 (26)", "count": 26}]."""
+    counts: dict[str, int] = {}
+    for d in docs:
+        counts[d.dataset or "v1"] = counts.get(d.dataset or "v1", 0) + 1
+    order = [*seed.DATASETS, seed.LIVE_DATASET]
+    return [{"key": k, "label": DATASET_NAMES.get(k, k), "count": counts[k]}
+            for k in sorted(counts, key=lambda k: (order.index(k) if k in order else len(order), k))]
+
+
 @app.get("/inbox")
 def inbox(request: Request, session: Session = Depends(db.get_session)) -> Response:
     scenario = active_scenario(request)
@@ -619,11 +690,13 @@ def inbox(request: Request, session: Session = Depends(db.get_session)) -> Respo
     views = {d.doc_id: gate_view(decisions[d.doc_id], d) for d in docs if d.doc_id in decisions}
     mailboxes = [
         {"channel": channel, "address": address, "label": CHANNEL_LABELS[channel],
-         "docs": [(d, registration_info(d), views.get(d.doc_id)) for d in docs if d.channel == channel]}
+         "docs": [(d, registration_info(d), views.get(d.doc_id), doc_type_key(d)) for d in docs
+                  if d.channel == channel]}
         for channel, address in world.MAILBOX_BY_CHANNEL.items()
     ]
     return render(request, "inbox.html", {"page_title": "Inbox", "mailboxes": mailboxes, "total": len(docs),
                                           "processed": len(views), "doc_type_labels": DOC_TYPE_LABELS,
+                                          "content_labels": CONTENT_LABELS, "datasets": dataset_summary(docs),
                                           "run": latest_run(session, scenario)})
 
 
@@ -701,15 +774,23 @@ def field_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def no_extraction_reason() -> str:
+def no_extraction_reason(doc: Optional[InboundDocument] = None) -> str:
+    if doc is not None and doc.content_type == "email_body":
+        return ("The invoice is only in the email body: there is no document to extract. The AP specialist keys "
+                "it from the email text shown on this page.")
     if config.EXTRACTOR == "fixture":
         return "Fixture mode is on (EXTRACTOR=fixture) and there is no ground-truth fixture for this PDF."
-    if not config.GEMINI_API_KEY:
+    if not config.gemini_configured():
         # the running server does not re-read .env: Extract now only works after a restart
-        return ("This PDF is not in the extraction cache and GEMINI_API_KEY is not set: add the key to .env "
-                "and run make extract (it updates the database directly), or restart the app and click "
-                "Extract now.")
+        return (f"This PDF is not in the extraction cache and {config.gemini_missing_setting()} is not set: add "
+                "the key to .env and run make extract (it updates the database directly), or restart the app and "
+                "click Extract now.")
     return "Not extracted yet. Extract now calls the Gemini API once; the result is cached on disk."
+
+
+def is_ubl_extraction(ex: Any) -> bool:
+    """The extraction is a UBL e-invoice parsed directly (metrics.ubl_model), not a model output."""
+    return bool(ex) and ex.model == metrics.ubl_model()
 
 
 def extraction_context(doc: InboundDocument, message: Optional[tuple[str, str]] = None) -> dict[str, Any]:
@@ -719,11 +800,13 @@ def extraction_context(doc: InboundDocument, message: Optional[tuple[str, str]] 
         "ex": ex,
         "fields": field_rows(ex.json) if ex else [],
         "raw_json": json.dumps(ex.json, indent=2, ensure_ascii=False) if ex else "",
-        "is_fixture": bool(ex and ex.model == extract.FIXTURE_MODEL),
-        "no_extraction_reason": no_extraction_reason(),
+        "is_fixture": bool(ex and extract.is_fixture_model(ex.model)),
+        "is_ubl": is_ubl_extraction(ex),
+        "no_extraction_reason": no_extraction_reason(doc),
         "threshold_pct": round(config.CONFIDENCE_THRESHOLD * 100),
         "panel_message": message,
         "doc_type_labels": DOC_TYPE_LABELS,
+        "doc_type": doc_type_key(doc),
     }
 
 
@@ -745,8 +828,9 @@ def cycle_rows(breakdown: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # Columns of the line-check table, in this order, when the gate provides them (else every key it provides).
-LINE_CHECK_COLUMNS = ("line", "description", "kind", "invoiced_qty", "received_qty", "unit_price", "po_unit_price",
-                      "variance", "tolerance", "issues", "result")
+# po_number: only on the rows of a multi-PO invoice.
+LINE_CHECK_COLUMNS = ("line", "po_number", "description", "kind", "invoiced_qty", "received_qty", "unit_price",
+                      "po_unit_price", "variance", "tolerance", "issues", "result")
 
 
 def line_columns(checks: list[dict[str, Any]]) -> list[str]:
@@ -794,8 +878,48 @@ def invoice_page(doc_id: str, request: Request, session: Session = Depends(db.ge
     ctx.update(gate_context(session, doc))
     ctx.update(page_title=f"Invoice {doc.doc_id}", registration=registration_info(doc),
                channel_label=CHANNEL_LABELS.get(doc.channel, doc.channel),
-               doc_scenario_label=config.SCENARIO_LABELS.get(doc.scenario, doc.scenario))
+               doc_scenario_label=config.SCENARIO_LABELS.get(doc.scenario, doc.scenario),
+               content=document_content(doc), dataset_label=DATASET_NAMES.get(doc.dataset, doc.dataset))
     return render(request, "invoice.html", ctx)
+
+
+FILE_TYPES = {".pdf": "application/pdf", ".xml": "application/xml", ".txt": "text/plain; charset=utf-8"}
+
+
+def file_url(doc: InboundDocument) -> str:
+    """/files/B-01.pdf, /files/B2-11.xml, /files/B2-14.txt: the document id plus its file's extension."""
+    suffix = Path(doc.file_path).suffix.lower()
+    return f"/files/{doc.doc_id}{suffix if suffix in FILE_TYPES else ''}"
+
+
+def pretty_xml(data: bytes) -> str:
+    """Indented XML text for display (escaped by the template); the raw text if it cannot be parsed or declares a
+    DTD (never expanded)."""
+    raw = data.decode("utf-8", errors="replace")
+    if b"<!DOCTYPE" in data.upper():
+        return raw
+    try:
+        pretty = minidom.parseString(data).toprettyxml(indent="  ")
+    except Exception:  # not well-formed: show it as received
+        return raw
+    return "\n".join(line for line in pretty.splitlines() if line.strip())
+
+
+def document_content(doc: InboundDocument) -> dict[str, Any]:
+    """How the invoice page shows the received document: a PDF in a frame, a UBL e-invoice as indented XML text, or
+    the email body; plus the email text that came with an attachment (e.g. a store manager's forwarding comment)."""
+    kind = doc.content_type or "pdf"
+    content: dict[str, Any] = {"kind": kind, "label": CONTENT_LABELS.get(kind, kind), "url": file_url(doc),
+                               "text": None, "comment": None}
+    if kind == "email_body":
+        path = resolve_document_file(doc.file_path)
+        content["text"] = doc.email_body or (path.read_text(encoding="utf-8", errors="replace") if path else None)
+        return content
+    if kind == "ubl_xml":
+        path = resolve_document_file(doc.file_path)
+        content["text"] = pretty_xml(path.read_bytes()) if path else None
+    content["comment"] = doc.email_body
+    return content
 
 
 def rerun_message(decision: GateDecision, processed_first: Sequence[str] = ()) -> tuple[str, str]:
@@ -821,7 +945,7 @@ def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_
     with _gate_lock:
         try:
             before = processed_doc_ids(session, doc.scenario)
-            decision = gate.rerun_document(session, doc, allow_api=bool(config.GEMINI_API_KEY))
+            decision = gate.rerun_document(session, doc, allow_api=config.gemini_configured())
             new = processed_doc_ids(session, doc.scenario) - before - {doc_id}
             message = rerun_message(decision, [d.doc_id for d in scenario_documents(session, doc.scenario)
                                                if d.doc_id in new])
@@ -844,7 +968,7 @@ def draft_message(doc_id: str, request: Request, force: int = 0,
     decision = latest_decision(session, doc_id)
     draft, error = None, None
     try:
-        draft = drafts.get_draft(decision, doc, allow_api=bool(config.GEMINI_API_KEY), force=bool(force))
+        draft = drafts.get_draft(decision, doc, allow_api=config.gemini_configured(), force=bool(force))
     except drafts.DraftUnavailable as exc:
         error = str(exc)
     except Exception as exc:  # anything unexpected: readable, not a 500
@@ -866,12 +990,13 @@ def api_error_text(exc: Exception) -> str:
 
 def run_extraction(session: Session, doc: InboundDocument, force: bool) -> tuple[str, str]:
     """Extract (or re-extract) one document. Never raises: returns a (kind, message) pair."""
-    if force and config.EXTRACTOR != "fixture" and not config.GEMINI_API_KEY:
-        return ("warn", "Force re-extract needs the Gemini API and GEMINI_API_KEY is not set in .env. "
-                        "The current extraction was kept.")
+    needs_model = (doc.content_type or "pdf") == "pdf"  # a UBL file is parsed; an email body has nothing to read
+    if force and needs_model and config.EXTRACTOR != "fixture" and not config.gemini_configured():
+        return ("warn", f"Force re-extract needs the Gemini API and {config.gemini_missing_setting()} is not set "
+                        "in .env. The current extraction was kept.")
     had_extraction = doc.extraction is not None
     try:
-        row = extract.extract_document(session, doc, force=force, allow_api=bool(config.GEMINI_API_KEY))
+        row = extract.extract_document(session, doc, force=force, allow_api=config.gemini_configured())
     except extract.ExtractionFailed as exc:  # the API was called but failed: the old row stays
         session.rollback()
         print(f"[extract] doc={doc.doc_id} API error: {exc}")
@@ -882,7 +1007,7 @@ def run_extraction(session: Session, doc: InboundDocument, force: bool) -> tuple
         return ("error", f"Extraction failed: {exc}")
     if row is None:
         return ("warn", "Extraction unavailable: nothing was extracted (see the reason below).")
-    if row.model == extract.FIXTURE_MODEL:
+    if extract.is_fixture_model(row.model):
         return ("info", "Loaded the ground-truth fixture (no API call; not a Gemini output).")
     source = "from cache" if row.from_cache else f"via the Gemini API in {row.latency_ms} ms"
     return ("info", f"Extracted with {row.model} ({source}).")
@@ -900,21 +1025,27 @@ def extract_now(doc_id: str, request: Request, force: int = 0,
     return redirect(f"/invoice/{doc.doc_id}", message)
 
 
-def resolve_data_file(relative: str) -> Optional[Path]:
-    """Absolute path of a stored document, or None if it escapes data/ or does not exist."""
-    path = (config.BASE_DIR / relative).resolve()
-    if not path.is_relative_to(config.DATA_DIR.resolve()) or not path.is_file():
+def resolve_document_file(stored: str) -> Optional[Path]:
+    """Absolute path of a stored document (relative to the project root, or absolute for INBOUND_DIR outside it),
+    or None if it lies outside DATA_DIR and INBOUND_DIR or does not exist."""
+    path = (Path(config.BASE_DIR) / stored).resolve()
+    roots = [Path(config.DATA_DIR).resolve(), Path(config.INBOUND_DIR).resolve()]
+    if not any(path.is_relative_to(root) for root in roots) or not path.is_file():
         return None
     return path
 
 
-@app.get("/files/{doc_id}.pdf")
-def document_file(doc_id: str, session: Session = Depends(db.get_session)) -> FileResponse:
-    doc = get_document(session, doc_id)
-    path = resolve_data_file(doc.file_path)
-    if path is None:
+@app.get("/files/{name}")
+def document_file(name: str, session: Session = Depends(db.get_session)) -> FileResponse:
+    """The received file of a document: /files/B-01.pdf, /files/B2-11.xml, /files/B2-14.txt (or without the
+    extension). Only files under DATA_DIR or INBOUND_DIR are served."""
+    stem, suffix = (name[: -len(ext)], ext) if (ext := Path(name).suffix.lower()) in FILE_TYPES else (name, "")
+    doc = get_document(session, stem)
+    path = resolve_document_file(doc.file_path)
+    actual = path.suffix.lower() if path else ""
+    if path is None or actual not in FILE_TYPES or (suffix and suffix != actual):
         raise HTTPException(status_code=404, detail="File not available")
-    return FileResponse(path, media_type="application/pdf", filename=f"{doc.doc_id}.pdf",
+    return FileResponse(path, media_type=FILE_TYPES[actual], filename=f"{doc.doc_id}{actual}",
                         content_disposition_type="inline")
 
 
@@ -1210,7 +1341,8 @@ KPI_BETTER = {"po_contract_coverage": 1, "accounts_per_supplier": -1, "pct_accou
               "pct_accounts_terms_ok": 1, "registration_lag_days": -1, "touchless": 1, "touchless_rate": 1,
               "exceptions": -1, "exception_rate": -1, "duplicates_blocked": 1, "duplicate_postings": -1,
               "duplicate_invoices": -1, "credit_notes_applied": 1, "credit_notes_unapplied": -1,
-              "wrong_entity_postings": -1, "terms_variance_paid": -1, "cash_leakage_amount": -1,
+              "wrong_entity_postings": -1, "non_invoice_postings": -1, "terms_variance_paid": -1,
+              "cash_leakage_amount": -1,
               "avg_cycle_days": -1, "avg_cycle_followup_days": -1, "reference_nonpo_store_days": -1}
 CYCLE_KPIS = ("avg_cycle_days", "avg_cycle_followup_days", "reference_nonpo_store_days")
 KPI_GROUPS = (("upstream", "Upstream — process health"), ("downstream", "Downstream — automation efficiency"))
@@ -1358,22 +1490,28 @@ def assumptions(request: Request) -> Response:
 
 
 # ============================================================================================
-# HOOK: real intake (n8n IMAP trigger / Gmail) — out of scope for now; wire it here later.
+# Real intake: the IMAP poller (app/imap_poll.py) or an n8n IMAP trigger posts every email here.
 #
-# POST /intake/webhook  (multipart/form-data)
-#   file      the PDF (checked: %PDF- magic bytes, at most 10 MB)
-#             Content-Length is required (411 without it; 413 before parsing if clearly too large).
-#   channel   ap_mailbox | store_mailbox
-#   sender    sender email address
-#   subject   optional
-#   scenario  optional: asis | tobe (default: the active scenario cookie)
-# Saves data/invoices/inbound/<sha256[:16]>.pdf, registers an InboundDocument ("B-W01", ...)
-# following the scenario's registration rules, and tries extraction (API only if a key is set).
+# POST /intake/webhook  (multipart/form-data; basic auth applies when APP_PASSWORD is set)
+#   file        optional: a PDF (%PDF- magic bytes) or a UBL e-invoice (XML), at most 10 MB
+#               Content-Length is required (411 without it; 413 before parsing if clearly too large).
+#   email_body  optional text; required without a file (the invoice is then only in the email body); with a
+#               file it is the email text, e.g. a store manager's forwarding comment
+#   channel     ap_mailbox | store_mailbox
+#   sender      sender email address
+#   subject     optional
+#   scenario    optional: asis | tobe (default: the active scenario cookie, else tobe)
+#   message_id  optional: the email's Message-ID; the same message and file name (or body) again -> 200 with the
+#               existing doc_id, nothing created
+# Saves INBOUND_DIR/<sha256[:16]>.pdf|.xml|.txt, registers an InboundDocument ("B-W01", dataset "live") per the
+# scenario's registration rule, extracts it (a model call only when Gemini is configured; UBL is parsed) and runs
+# the gate on it, so it shows in the inbox and the exception cockpit. Returns 201 with the gate's outcome.
 # ============================================================================================
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-MULTIPART_OVERHEAD_BYTES = 64 * 1024  # form fields and multipart boundaries around the PDF
+MULTIPART_OVERHEAD_BYTES = 64 * 1024  # form fields and multipart boundaries around the file
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+INBOUND_SUFFIX = {"pdf": ".pdf", "ubl_xml": ".xml", "email_body": ".txt"}
 
 # One process (brief): a lock is enough to keep doc_id allocation + insert atomic across the
 # threadpool, so two concurrent uploads never get the same id (IntegrityError -> 500).
@@ -1388,7 +1526,7 @@ async def limit_webhook_upload(request: Request, call_next: Callable[[Request], 
         if not length.isdigit():
             return JSONResponse({"detail": "Content-Length header required"}, status_code=411)
         if int(length) > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES:
-            return JSONResponse({"detail": "request too large: the PDF must be at most 10 MB"}, status_code=413)
+            return JSONResponse({"detail": "request too large: the file must be at most 10 MB"}, status_code=413)
     return await call_next(request)
 
 
@@ -1401,50 +1539,163 @@ def next_webhook_doc_id(session: Session, scenario: str) -> str:
     return f"{prefix}{max(numbers, default=0) + 1:02d}"
 
 
-@app.post("/intake/webhook", status_code=201)
+def webhook_scenario(request: Request, value: Optional[str]) -> str:
+    """The form's scenario, else the active scenario cookie, else to-be (a mail poller sends no cookie)."""
+    if value:
+        return check_scenario(value)
+    cookie = request.cookies.get(SCENARIO_COOKIE, "")
+    return cookie if cookie in config.SCENARIOS else "tobe"
+
+
+def looks_like_ubl(content: bytes) -> bool:
+    """A UBL Invoice or CreditNote (app/ubl.py, imported lazily); False when the parser is not available."""
+    try:
+        from app import ubl
+    except ImportError:
+        return False
+    return ubl.is_ubl(content)
+
+
+def attachment_kind(content: bytes) -> Optional[str]:
+    """content_type of an attached file: "pdf" (%PDF- magic bytes) or "ubl_xml"; None for anything else."""
+    if content.startswith(b"%PDF-"):
+        return "pdf"
+    return "ubl_xml" if looks_like_ubl(content) else None
+
+
+def read_attachment(file: Optional[UploadFile]) -> tuple[Optional[bytes], Optional[str]]:
+    """(content, file name) of the uploaded file; (None, None) when no file (or an empty one) was sent."""
+    if file is None:
+        return None, None
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="file larger than 10 MB")
+    return (content, (file.filename or "").strip()[:200] or None) if content else (None, None)
+
+
+def existing_webhook_document(session: Session, scenario: str, message_id: str, kind: str,
+                              source_name: Optional[str], sha: str) -> Optional[InboundDocument]:
+    """A document of the scenario already stored from the same email: same Message-ID and the same file name, or,
+    for a body-only email, the same body."""
+    for doc in session.scalars(select(InboundDocument).where(InboundDocument.scenario == scenario,
+                                                             InboundDocument.message_id == message_id)):
+        if kind == "email_body" and doc.content_type == "email_body" and doc.file_hash == sha:
+            return doc
+        if kind != "email_body" and doc.content_type != "email_body" and doc.source_name == source_name:
+            return doc
+    return None
+
+
+def webhook_result(doc: InboundDocument, decision: Optional[GateDecision], registered: bool) -> dict[str, Any]:
+    return {"doc_id": doc.doc_id, "scenario": doc.scenario, "registered": registered,
+            "extracted": doc.extraction is not None, "outcome": decision.outcome if decision else None,
+            "exception_type": decision.exception_type if decision else None,
+            "owner_name": decision.owner_name if decision else None}
+
+
+def gate_one_document(session: Session, doc: InboundDocument) -> Optional[GateDecision]:
+    """Run the gate on a newly received document (after those already processed). Never raises."""
+    with _gate_lock:
+        try:
+            return gate.process(session, doc)
+        except Exception as exc:  # the document is stored; Run scenario or Re-run gate can process it later
+            session.rollback()
+            print(f"[intake] gate on {doc.doc_id} FAILED: {exc!r}")
+            return None
+
+
+@app.post(WEBHOOK_PATH, status_code=201)
 def intake_webhook(
     request: Request,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    email_body: Optional[str] = Form(None),
     channel: str = Form(...),
     sender: str = Form(...),
     subject: Optional[str] = Form(None),
     scenario: Optional[str] = Form(None),
+    message_id: Optional[str] = Form(None),
     session: Session = Depends(db.get_session),
 ) -> JSONResponse:
-    scenario = check_scenario(scenario) if scenario else active_scenario(request)
+    scenario = webhook_scenario(request, scenario)
     if channel not in world.MAILBOX_BY_CHANNEL:
         raise HTTPException(status_code=400, detail="channel must be ap_mailbox or store_mailbox")
     if not _EMAIL_RE.match(sender.strip()):
         raise HTTPException(status_code=400, detail="sender must be an email address")
-    content = file.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="PDF larger than 10 MB")
-    if not content.startswith(b"%PDF-"):
-        raise HTTPException(status_code=400, detail="file is not a PDF")
+    body = (email_body or "").strip() or None
+    content, source_name = read_attachment(file)
+    if content is None and body is None:
+        raise HTTPException(status_code=400, detail="email_body is required when no file is attached")
+    kind = attachment_kind(content) if content is not None else "email_body"
+    if kind is None:
+        raise HTTPException(status_code=400, detail="file is not a PDF or a UBL e-invoice (XML)")
 
-    sha = hashlib.sha256(content).hexdigest()
-    inbound_dir = config.INVOICES_DIR / "inbound"
-    path = inbound_dir / f"{sha[:16]}.pdf"
+    data = content if content is not None else body.encode("utf-8")
+    sha = hashlib.sha256(data).hexdigest()
+    inbound_dir = Path(config.INBOUND_DIR)
+    path = inbound_dir / f"{sha[:16]}{INBOUND_SUFFIX[kind]}"
+    msg_id = (message_id or "").strip()[:250] or None
     received_on = datetime.now().replace(microsecond=0)
     registered = sim.registration_delay_days(scenario, channel) == 0  # to-be: registered on arrival
-    with _webhook_lock:  # file write, id allocation and insert: one upload at a time
+    with _webhook_lock:  # idempotency check, file write, id allocation and insert: one upload at a time
+        known = existing_webhook_document(session, scenario, msg_id, kind, source_name, sha) if msg_id else None
+        if known is not None:
+            print(f"[intake] webhook message_id={msg_id} already stored as {known.doc_id}: nothing created")
+            on_arrival = sim.registration_delay_days(known.scenario, known.channel) == 0
+            result = webhook_result(known, latest_decision(session, known.doc_id), on_arrival)
+            return JSONResponse({**result, "existing": True}, status_code=200)
         inbound_dir.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            path.write_bytes(content)
+            path.write_bytes(data)
         doc = InboundDocument(
             doc_id=next_webhook_doc_id(session, scenario), scenario=scenario,
             sample_no=0,  # 0 = not one of the sample documents
             channel=channel, mailbox=world.MAILBOX_BY_CHANNEL[channel], received_on=received_on,
-            file_path=path.relative_to(config.BASE_DIR).as_posix(), file_hash=sha,
-            sender_email=sender.strip(),
-            subject=(subject or "").strip() or f"(no subject) {file.filename or ''}".strip(),
+            file_path=seed.stored_path(path), file_hash=sha, sender_email=sender.strip(),
+            subject=((subject or "").strip() or f"(no subject) {source_name or ''}".strip())[:200],
             registered=registered, registered_on=received_on if registered else None, doc_type="unknown",
+            dataset=seed.LIVE_DATASET, content_type=kind, email_body=body, message_id=msg_id,
+            source_name=source_name,
         )
         session.add(doc)
         session.commit()
-    kind, message = run_extraction(session, doc, force=False)
-    extracted = doc.extraction is not None
-    print(f"[intake] webhook doc={doc.doc_id} scenario={scenario} channel={channel} "
-          f"registered={registered} extracted={extracted} ({kind}: {message})")
-    return JSONResponse({"doc_id": doc.doc_id, "scenario": scenario, "registered": registered,
-                         "extracted": extracted}, status_code=201)
+    if kind == "email_body":  # nothing to extract: AP keys it from the email (the gate routes it)
+        extraction = "no document attached"
+    else:
+        extraction = ": ".join(run_extraction(session, doc, force=False))
+    decision = gate_one_document(session, doc)
+    session.refresh(doc)
+    print(f"[intake] webhook doc={doc.doc_id} scenario={scenario} channel={channel} content={kind} "
+          f"registered={registered} extracted={doc.extraction is not None} ({extraction}) "
+          f"outcome={decision.outcome if decision else 'not processed'}")
+    return JSONResponse(webhook_result(doc, decision, registered), status_code=201)
+
+
+# --------------------------------------------------------------------------------------------
+# Basic auth (brief section 17): one shared password in front of every page when APP_PASSWORD is set
+# --------------------------------------------------------------------------------------------
+
+
+class OptionalBasicAuth:
+    """Outermost ASGI layer: app/auth.py's BasicAuthMiddleware when config.APP_PASSWORD is set, else a pass-through
+    (the local default). The settings are read per request, so both ways can be tested without a restart; the guard
+    is rebuilt only when they change."""
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+        self._guard: Optional[Callable[..., Awaitable[None]]] = None
+        self._credentials: Optional[tuple[str, str]] = None
+
+    async def __call__(self, scope: dict[str, Any], receive: Callable[..., Any], send: Callable[..., Any]) -> None:
+        if scope["type"] != "http" or not config.APP_PASSWORD:
+            await self.app(scope, receive, send)
+            return
+        credentials = (config.APP_USERNAME, config.APP_PASSWORD)
+        if self._guard is None or self._credentials != credentials:
+            from app import auth
+
+            self._guard = auth.BasicAuthMiddleware(self.app, username=credentials[0], password=credentials[1])
+            self._credentials = credentials
+        await self._guard(scope, receive, send)
+
+
+app.add_middleware(OptionalBasicAuth)  # added last: the outermost layer, before the other middleware

@@ -1,0 +1,105 @@
+{
+  "file_name": "13_kaffee_scan_low.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, simulated scan confidences, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.88
+    },
+    "supplier_name": {
+      "value": "Kaffee & Co OHG",
+      "confidence": 0.88
+    },
+    "supplier_vat_id": {
+      "value": "DE274619385",
+      "confidence": 0.88
+    },
+    "supplier_iban": {
+      "value": "DE75120300001020304050",
+      "confidence": 0.88
+    },
+    "supplier_country": {
+      "value": "DE",
+      "confidence": 0.88
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.88
+    },
+    "bill_to_vat_id": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "invoice_number": {
+      "value": "2026/139",
+      "confidence": 0.71
+    },
+    "invoice_date": {
+      "value": "2026-10-30",
+      "confidence": 0.88
+    },
+    "due_date": {
+      "value": "2026-11-13",
+      "confidence": 0.88
+    },
+    "payment_terms_days": {
+      "value": 14,
+      "confidence": 0.88
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.88
+    },
+    "net_total": {
+      "value": 80.78,
+      "confidence": 0.88
+    },
+    "tax_total": {
+      "value": 15.35,
+      "confidence": 0.88
+    },
+    "gross_total": {
+      "value": 96.13,
+      "confidence": 0.62
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Kaffeebohnen Espresso 1 kg",
+          "quantity": 3,
+          "unit_price": 18.5,
+          "amount": 55.5
+        },
+        {
+          "description": "Hafermilch 1 l, Karton à 12",
+          "quantity": 1,
+          "unit_price": 14.98,
+          "amount": 14.98
+        },
+        {
+          "description": "Lieferung",
+          "quantity": 1,
+          "unit_price": 10.3,
+          "amount": 10.3
+        }
+      ],
+      "confidence": 0.88
+    },
+    "notes": {
+      "value": "Poor-quality scan: the invoice number and the total are smudged and only partly legible.",
+      "confidence": 0.88
+    }
+  }
+}

@@ -12,14 +12,18 @@ from typing import Any, Optional
 from sqlalchemy import (
     JSON,
     Boolean,
+    Column,
     Date,
     DateTime,
+    Engine,
     Float,
     ForeignKey,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -206,19 +210,27 @@ class InboundDocument(Base):
     __tablename__ = "inbound_document"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    doc_id: Mapped[str] = mapped_column(String(20), unique=True)  # e.g. B-01 (scenario letter + sample no)
+    doc_id: Mapped[str] = mapped_column(String(20), unique=True)  # B-01 / B2-01 (scenario letter, dataset, sample no)
     scenario: Mapped[str] = mapped_column(String(8), index=True)
-    sample_no: Mapped[int] = mapped_column(Integer)
+    sample_no: Mapped[int] = mapped_column(Integer)  # 0 = a live (webhook) document
     channel: Mapped[str] = mapped_column(String(16))  # ap_mailbox | store_mailbox
     mailbox: Mapped[str] = mapped_column(String(120))  # ap@velox.com | store.berlin01@velox.com
     received_on: Mapped[datetime] = mapped_column(DateTime)
-    file_path: Mapped[str] = mapped_column(String(300))  # relative to project root
+    # Relative to the project root, or absolute for a file outside it (INBOUND_DIR on a mounted bucket).
+    file_path: Mapped[str] = mapped_column(String(500))
     file_hash: Mapped[str] = mapped_column(String(64))
     sender_email: Mapped[str] = mapped_column(String(120))
     subject: Mapped[str] = mapped_column(String(200))
     registered: Mapped[bool] = mapped_column(Boolean, default=False)
     registered_on: Mapped[Optional[datetime]] = mapped_column(DateTime)
     doc_type: Mapped[str] = mapped_column(String(12), default="unknown")  # invoice | credit_note | unknown
+    dataset: Mapped[str] = mapped_column(String(8), default="v1")  # v1 (case documents) | v2 (test set) | live
+    content_type: Mapped[str] = mapped_column(String(16), default="pdf")  # pdf | ubl_xml | email_body
+    # The email text: the invoice itself for content_type email_body, else the sender's comment (e.g. forwarding).
+    email_body: Mapped[Optional[str]] = mapped_column(Text)
+    # Webhook idempotency: the email's Message-ID and the attachment's file name (None for a body-only email).
+    message_id: Mapped[Optional[str]] = mapped_column(String(250), index=True)
+    source_name: Mapped[Optional[str]] = mapped_column(String(200))
 
     extraction: Mapped[Optional["Extraction"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", uselist=False
@@ -268,3 +280,38 @@ class Run(Base):
     started_on: Mapped[datetime] = mapped_column(DateTime)
     finished_on: Mapped[Optional[datetime]] = mapped_column(DateTime)
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+# --------------------------------------------------------------------------------------------
+# Schema upgrade: an existing database (created before a column was added) gets the new columns
+# --------------------------------------------------------------------------------------------
+
+
+def _column_ddl(engine: Engine, column: Column) -> str:
+    """'name TYPE [DEFAULT x]' for ALTER TABLE ... ADD COLUMN (a constant default fills the existing rows)."""
+    ddl = f"{column.name} {column.type.compile(dialect=engine.dialect)}"
+    default = column.default.arg if column.default is not None and column.default.is_scalar else None
+    if isinstance(default, bool):
+        default = int(default)
+    if isinstance(default, (int, float)):
+        ddl += f" DEFAULT {default}"
+    elif isinstance(default, str):
+        ddl += " DEFAULT '{}'".format(default.replace("'", "''"))
+    return ddl
+
+
+def add_missing_columns(engine: Engine) -> list[str]:
+    """Add the model columns an existing table lacks (create_all never alters a table). Returns 'table.column' per
+    added column. Only nullable or constant-default columns are ever added, so existing rows stay valid."""
+    existing_tables = set(inspect(engine).get_table_names())
+    added = []
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {c["name"] for c in inspect(conn).get_columns(table.name)}
+            for column in table.columns:
+                if column.name not in present:
+                    conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {_column_ddl(engine, column)}"))
+                    added.append(f"{table.name}.{column.name}")
+    return added

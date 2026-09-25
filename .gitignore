@@ -5,3 +5,5 @@ __pycache__/
 .env
 data/velox.db
 data/velox.db-journal
+data/export/
+data/invoices/inbound/

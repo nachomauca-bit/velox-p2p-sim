@@ -1,0 +1,102 @@
+{
+  "file_name": "16_securenet_multi_po.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "SecureNet AG",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "CHE-419.287.563",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "CH5400700110008765432",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "CH",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "SN-2026-3391",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-31",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-11-30",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 8300.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 8300.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500128",
+        "4500130"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Managed firewall service Q3 2026 (PO 4500128)",
+          "quantity": 1,
+          "unit_price": 4800.0,
+          "amount": 4800.0
+        },
+        {
+          "description": "Penetration test — e-commerce platform (PO 4500130)",
+          "quantity": 1,
+          "unit_price": 3500.0,
+          "amount": 3500.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

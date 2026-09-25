@@ -13,6 +13,11 @@
       {% else %}Nothing is registered until then; each card shows the expected registration date and why.{% endif %}
     {% endif %}
   </p>
+  {% if datasets %}
+  <p class="dataset-line">Documents:
+    {% for ds in datasets %}<span class="chip chip-neutral dataset-chip" data-dataset="{{ ds.key }}">{{ ds.label }}</span>{% if ds.key == "live" %} <span class="muted">{{ ds.count }} received</span>{% endif %}{% if not loop.last %} + {% endif %}{% endfor %}
+  </p>
+  {% endif %}
   {% if total %}
   <p class="run-status">
     {% if processed %}
@@ -28,10 +33,14 @@
 {% if total == 0 %}
 <article class="empty-state">
   <h2>No documents in the mailboxes of {{ scenario_label }}</h2>
-  <p>Load the sample supplier documents into ap@ and the Berlin store mailbox to start.</p>
-  <form method="post" action="/documents/load">
+  <p>Load a set of sample supplier documents into ap@ and the Berlin store mailbox to start: the 14 case documents,
+    or test set v2 (26 documents in German, French, Spanish and English, with scans, a UBL e-invoice and an invoice
+    in an email body).</p>
+  <form method="post" action="/documents/load" class="load-choices">
     <input type="hidden" name="scenario" value="{{ scenario }}">
-    <button type="submit">Load sample documents</button>
+    {% for key, label in dataset_choices.items() %}
+    <button type="submit" name="dataset" value="{{ key }}"{% if not loop.first %} class="secondary"{% endif %}>Load sample documents: {{ label }}</button>
+    {% endfor %}
   </form>
 </article>
 {% else %}
@@ -46,7 +55,7 @@
     {% if not box.docs %}
       <p class="muted">No documents in this mailbox.</p>
     {% endif %}
-    {% for doc, reg, gv in box.docs %}
+    {% for doc, reg, gv, doc_type in box.docs %}
     <article class="doc-card" id="doc-{{ doc.doc_id }}">
       <div class="doc-card-top">
         <a class="doc-id" href="/invoice/{{ doc.doc_id }}">{{ doc.doc_id }}</a>
@@ -80,10 +89,17 @@
         {% endif %}
         {% if doc.extraction %}
           <span class="chip chip-ok">Extracted</span>
+        {% elif doc.content_type == "email_body" %}
+          <span class="chip chip-warn">Nothing to extract</span>
         {% else %}
           <span class="chip chip-bad">Extraction pending</span>
         {% endif %}
-        <span class="chip chip-{{ 'info' if doc.doc_type == 'credit_note' else 'neutral' }}">{{ doc_type_labels.get(doc.doc_type, doc.doc_type) }}</span>
+        <span class="chip chip-{{ 'info' if doc_type == 'credit_note' else 'warn' if doc_type == 'other' else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
+        {% if doc.content_type and doc.content_type != "pdf" %}
+          <span class="chip chip-info content-chip">{{ content_labels.get(doc.content_type, doc.content_type) }}</span>
+        {% elif doc.email_body %}
+          <span class="chip chip-neutral content-chip">With email comment</span>
+        {% endif %}
       </div>
     </article>
     {% endfor %}

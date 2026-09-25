@@ -7,8 +7,9 @@
   fallback, per-model temperature and single retry on transient errors. Plain text, no schema.
 - Cached on disk as data/cache/drafts/<sha256>.json (key: system instruction + prompt), written atomically;
   a corrupt file is a miss. force=True re-calls the API.
-- Never faked: in fixture mode, without a key, for a non-draftable decision or when the API fails,
-  get_draft raises DraftUnavailable with a readable reason. The UI shows the text under DRAFT_LABEL.
+- Never faked: in fixture mode, without model access (config.gemini_configured()), for a non-draftable decision
+  or when the API fails, get_draft raises DraftUnavailable with a readable reason. The UI shows the text under
+  DRAFT_LABEL.
 """
 from __future__ import annotations
 
@@ -55,7 +56,8 @@ recorded. Please post the receipt or tell AP what was delivered by Monday 5 Octo
 
 
 class DraftUnavailable(RuntimeError):
-    """No draft can be shown: fixture mode, no key, not draftable, not cached with the API disabled, API failure."""
+    """No draft can be shown: fixture mode, no model access, not draftable, not cached with the API disabled,
+    API failure."""
 
 
 @dataclass
@@ -247,7 +249,8 @@ def get_draft(decision: Optional[GateDecision], doc: InboundDocument, *, allow_a
     """The draft message to the owner of a to-be exception: from the cache, else one Gemini call.
 
     Raises DraftUnavailable (readable reason) when the decision is not draftable, in fixture mode, when the
-    draft is not cached and the API is disabled or has no key, or when the call fails.
+    draft is not cached and the API is disabled or not configured (no key / no Vertex project), or when the
+    call fails.
     """
     reason = _why_not_draftable(decision)
     if reason:
@@ -262,8 +265,8 @@ def get_draft(decision: Optional[GateDecision], doc: InboundDocument, *, allow_a
         if cached is not None:
             print(f"[draft] doc={doc_id} model={cached.model} latency_ms={cached.latency_ms} cache=hit")
             return cached
-    if not config.GEMINI_API_KEY:  # checked first: the most useful reason when both apply
-        raise DraftUnavailable("Set GEMINI_API_KEY in .env to draft messages.")
+    if not config.gemini_configured():  # checked first: the most useful reason when both apply
+        raise DraftUnavailable(f"Set {config.gemini_missing_setting()} in .env to draft messages.")
     if not allow_api:
         raise DraftUnavailable("No cached draft for this exception, and API calls are disabled here.")
     try:

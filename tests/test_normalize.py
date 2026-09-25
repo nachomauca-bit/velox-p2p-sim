@@ -121,6 +121,28 @@ def test_names_match_threshold_is_a_parameter() -> None:
     ("CHE-419.287.563 IVA", "CHE419287563"),
     (None, ""),
     ("", ""),
+    # Printed labels in front of the ID (test set v2 prints VAT IDs in national formats)
+    ("USt-IdNr. DE281947305", "DE281947305"),
+    ("USt-ID: DE 281 947 305", "DE281947305"),
+    ("MwSt-Nr. DE281947305", "DE281947305"),
+    ("VAT ID: DE 281 947 305", "DE281947305"),
+    ("vat id de281947305", "DE281947305"),
+    ("VAT No. GB293 8475 61", "GB293847561"),
+    ("VAT Reg. No. GB293 8475 61", "GB293847561"),
+    ("GB293 8475 61", "GB293847561"),
+    ("TVA FR 62 512 345 678", "FR62512345678"),
+    ("N° TVA FR 62 512 345 678", "FR62512345678"),
+    ("Nº TVA: FR62512345678", "FR62512345678"),
+    ("TVA intracommunautaire : FR62512345678", "FR62512345678"),
+    ("NIF: ESB86419273", "ESB86419273"),
+    ("CIF ES-B86419273", "ESB86419273"),
+    ("ES-B86419273", "ESB86419273"),
+    ("BTW NL859374612B01", "NL859374612B01"),
+    ("BTW-nr. NL859374612B01", "NL859374612B01"),
+    ("UID CHE-419.287.563", "CHE419287563"),
+    ("UID-Nr. CHE-419.287.563 MWST", "CHE419287563"),
+    ("DE 305 118 442", "DE305118442"),
+    ("USTIDNRDE281947305", "USTIDNRDE281947305"),  # no separator after the label: never cut into the ID
 ])
 def test_normalise_vat(raw, expected: str) -> None:
     assert normalise_vat(raw) == expected

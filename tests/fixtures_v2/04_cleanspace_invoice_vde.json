@@ -1,0 +1,93 @@
+{
+  "file_name": "04_cleanspace_invoice_vde.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Cleanspace Facilities BV",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "NL859374612B01",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "NL34INGB0007364521",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "NL",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "CSF-26-11412",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-31",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-11-30",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 3150.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 3150.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Store cleaning services Germany — October 2026 (9 stores)",
+          "quantity": 1,
+          "unit_price": 3150.0,
+          "amount": 3150.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "References contract CT-2025-002.",
+      "confidence": 0.99
+    }
+  }
+}

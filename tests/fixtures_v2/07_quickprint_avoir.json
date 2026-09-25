@@ -1,0 +1,93 @@
+{
+  "file_name": "07_quickprint_avoir.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "credit_note",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "QuickPrint SAS",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "FR73491234567",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "FR8210107001180009876543221",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "AV-26-0088",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-11-04",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "payment_terms_days": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": -200.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": -40.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": -240.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Remise commerciale — volume 2026",
+          "quantity": 1,
+          "unit_price": -200.0,
+          "amount": -200.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "Credit note without a reference to an invoice.",
+      "confidence": 0.99
+    }
+  }
+}

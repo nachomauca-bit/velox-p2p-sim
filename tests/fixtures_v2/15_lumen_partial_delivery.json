@@ -1,0 +1,101 @@
+{
+  "file_name": "15_lumen_partial_delivery.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Lumen Store Lighting Ltd",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "GB618273940",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "GB07LOYD30963412345678",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "GB",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "LSL-INV-5602",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-29",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-11-28",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 4200.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 4200.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500112"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "LED track spotlight 30W",
+          "quantity": 80,
+          "unit_price": 40.0,
+          "amount": 3200.0
+        },
+        {
+          "description": "LED panel 600x600 40W — partial delivery, 20 of 40",
+          "quantity": 20,
+          "unit_price": 50.0,
+          "amount": 1000.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

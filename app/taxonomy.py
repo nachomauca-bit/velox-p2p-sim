@@ -38,6 +38,9 @@ EXCEPTION_TYPES: list[ExceptionType] = [
                   "Identify original invoice"),
     ExceptionType("human_review", "Low extraction confidence", "AP specialist", 1,
                   "Verify fields against the document"),
+    # Document-type check of the to-be gate (e.g. a supplier statement): nothing is posted.
+    ExceptionType("not_an_invoice", "Document is not an invoice", "AP specialist", 1,
+                  "File the statement or reconcile it with the open items"),
     # Non-blocking info flag of gate step 8 (terms taken from the master; the variance is reported).
     ExceptionType("terms_variance", "Invoice payment terms differ from the master (info)", "AP specialist", None,
                   "Confirm terms with the supplier; the master terms apply", blocking=False),

@@ -60,8 +60,10 @@ def sleeps(isolated_extractor) -> list[float]:
 
 @pytest.fixture()
 def gemini_mode(monkeypatch, tmp_cache_dir):
-    """EXTRACTOR=gemini with a dummy key and an empty temporary cache."""
+    """EXTRACTOR=gemini on the AI Studio backend with a dummy key and an empty temporary cache."""
     monkeypatch.setattr(config, "EXTRACTOR", "gemini")
+    monkeypatch.setattr(config, "GEMINI_BACKEND", "aistudio")
+    monkeypatch.setattr(config, "GOOGLE_CLOUD_PROJECT", "")
     monkeypatch.setattr(config, "GEMINI_API_KEY", "test-key")
     return tmp_cache_dir
 
@@ -267,7 +269,8 @@ def test_cache_is_written_then_hit_and_force_bypasses_it(gemini_mode, tmp_path, 
     cache_file = gemini_mode / f"{sha}.json"
     assert cache_file.exists() and extract.cache_path(sha) == cache_file
     record = json.loads(cache_file.read_text(encoding="utf-8"))
-    assert set(record) == {"file_name", "file_sha256", "model", "created_on", "latency_ms", "usage", "extraction"}
+    assert set(record) == {"file_name", "file_sha256", "model", "backend", "created_on", "latency_ms", "usage",
+                           "extraction"}
     assert record["file_name"] == pdf.name and record["file_sha256"] == sha
     assert record["model"] == "gemini-2.5-flash" and record["latency_ms"] == 4210
     assert record["usage"] == {"input_tokens": 1834, "output_tokens": 812, "thinking_tokens": 200}
@@ -415,6 +418,7 @@ def test_call_gemini_postprocesses_the_parsed_response(monkeypatch, capsys):
     assert all(0.0 <= out[name]["confidence"] <= 1.0 for name in FIELDS)
     assert result.model == "gemini-2.5-flash" and client.models.calls == ["gemini-2.5-flash"]
     assert result.source == "gemini" and result.from_cache is False and not result.is_fixture
+    assert result.backend == config.GEMINI_BACKEND and not result.is_ubl
     assert isinstance(result.latency_ms, int) and result.latency_ms >= 0
     assert (result.input_tokens, result.output_tokens, result.thinking_tokens) == (1834, 612, None)
 
@@ -429,7 +433,7 @@ def test_call_gemini_postprocesses_the_parsed_response(monkeypatch, capsys):
 
     log = capsys.readouterr().out
     assert "[extract] file=04_bright_agency_credit_note.pdf model=gemini-2.5-flash latency_ms=" in log
-    assert "tokens_in=1834 tokens_out=612 (thinking=None) cache=miss" in log
+    assert f"tokens_in=1834 tokens_out=612 (thinking=None) cache=miss backend={config.GEMINI_BACKEND}" in log
 
 
 @pytest.mark.parametrize("candidates, thinking, tokens_out", [
@@ -1077,3 +1081,83 @@ def test_cli_fixture_mode_updates_both_scenarios_in_the_database(cli_invoices, s
 def test_cli_rejects_unknown_sample_numbers(cli_invoices):
     with pytest.raises(SystemExit):
         extract.main(["--only", str(len(world.DOCUMENTS) + 1), "--no-db"])
+
+
+# --------------------------------------------------------------------------------------------
+# CLI: test set v2 (UBL e-invoice parsed, email body skipped, only PDFs need the model)
+# --------------------------------------------------------------------------------------------
+
+
+class _FakeUbl:
+    UBL_MODEL = "UBL e-invoice (parsed, no model call)"
+
+    @staticmethod
+    def parse_ubl(data: bytes) -> dict:
+        return fixture_extraction("03_bright_agency_invoice")
+
+
+@pytest.fixture()
+def cli_invoices_v2(tmp_path, monkeypatch):
+    """Stand-in files for test set v2 in a temporary folder (the generator is not run); UBL parsing is faked."""
+    folder = tmp_path / "invoices_v2"
+    folder.mkdir()
+    for spec in world.documents_for("v2"):
+        (folder / spec.filename).write_bytes(f"%PDF-1.4 fake v2 sample {spec.no}\n".encode())
+    monkeypatch.setattr(config, "INVOICES_V2_DIR", folder)
+    monkeypatch.setattr(extract, "_ubl_module", lambda: _FakeUbl)
+    return folder
+
+
+def v2_file(no: int) -> str:
+    return next(spec.filename for spec in world.documents_for("v2") if spec.no == no)
+
+
+def test_cli_v2_parses_the_ubl_and_skips_the_email_body_without_a_key(cli_invoices_v2, gemini_mode, monkeypatch,
+                                                                      capsys):
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(extract, "call_gemini", lambda *a: pytest.fail("no model call for UBL or email body"))
+    assert v2_file(11).endswith(".xml") and v2_file(14).endswith(".txt")
+
+    assert extract.main(["--dataset", "v2", "--only", "11,14", "--no-db"]) == 0
+
+    out = capsys.readouterr().out
+    table = {line.split()[1]: line for line in out.splitlines() if line[:3].strip().isdigit()}
+    assert _FakeUbl.UBL_MODEL.split()[0] in table[v2_file(11)] and "ubl" in table[v2_file(11)]
+    assert table[v2_file(14)].rstrip().endswith("email body only")
+    assert list(gemini_mode.iterdir()) == []  # nothing cached
+
+
+def test_cli_v2_without_key_names_only_the_pdfs_that_need_the_model(cli_invoices_v2, gemini_mode, monkeypatch,
+                                                                    capsys):
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    assert extract.main(["--dataset", "v2", "--no-db"]) == 2
+    out = capsys.readouterr().out
+    assert v2_file(1) in out and v2_file(11) not in out and v2_file(14) not in out
+    assert "GEMINI_BACKEND=vertex" in out and ".env.example" in out
+
+
+def test_cli_v2_fixture_mode_reads_the_v2_fixtures(cli_invoices_v2, tmp_path, monkeypatch, capsys):
+    fixtures_v2 = tmp_path / "fixtures_v2"
+    fixtures_v2.mkdir()
+    record = json.loads((config.FIXTURES_DIR / "03_bright_agency_invoice.json").read_text(encoding="utf-8"))
+    (fixtures_v2 / f"{Path(v2_file(21)).stem}.json").write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(config, "FIXTURES_V2_DIR", fixtures_v2)
+    assert extract.main(["--dataset", "v2", "--only", "21", "--no-db"]) == 0
+    assert "INV-2026-0457" in capsys.readouterr().out
+
+
+def test_cli_v2_rejects_unknown_numbers(cli_invoices_v2):
+    with pytest.raises(SystemExit):
+        extract.main(["--dataset", "v2", "--only", str(len(world.documents_for("v2")) + 1), "--no-db"])
+
+
+def test_cli_v2_generates_missing_files(tmp_path, monkeypatch, gemini_mode):
+    from app import invoices_gen
+
+    generated: list[Path] = []
+    monkeypatch.setattr(config, "INVOICES_V2_DIR", tmp_path / "empty")
+    monkeypatch.setattr(invoices_gen, "generate_all_v2", lambda out_dir: generated.append(out_dir) or [])
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(extract, "_ubl_module", lambda: _FakeUbl)
+    extract.main(["--dataset", "v2", "--only", "14", "--no-db"])
+    assert generated == [tmp_path / "empty"]

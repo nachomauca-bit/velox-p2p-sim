@@ -1,0 +1,95 @@
+{
+  "file_name": "12_fitout_partners_scan.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, simulated scan confidences, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.93
+    },
+    "supplier_name": {
+      "value": "FitOut Partners Ltd",
+      "confidence": 0.93
+    },
+    "supplier_vat_id": {
+      "value": "GB293847561",
+      "confidence": 0.93
+    },
+    "supplier_iban": {
+      "value": "GB92BARC20038412345678",
+      "confidence": 0.93
+    },
+    "supplier_country": {
+      "value": "GB",
+      "confidence": 0.93
+    },
+    "bill_to_name": {
+      "value": "Velox Retail GmbH",
+      "confidence": 0.93
+    },
+    "bill_to_vat_id": {
+      "value": "DE298765431",
+      "confidence": 0.93
+    },
+    "invoice_number": {
+      "value": "2026-104",
+      "confidence": 0.93
+    },
+    "invoice_date": {
+      "value": "2026-10-30",
+      "confidence": 0.93
+    },
+    "due_date": {
+      "value": "2026-11-29",
+      "confidence": 0.93
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.93
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.93
+    },
+    "net_total": {
+      "value": 40000.0,
+      "confidence": 0.93
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.93
+    },
+    "gross_total": {
+      "value": 40000.0,
+      "confidence": 0.93
+    },
+    "po_numbers": {
+      "value": [
+        "4500101"
+      ],
+      "confidence": 0.93
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Store fit-out Hamburg — milestone 1: demolition and electrical works",
+          "quantity": 1,
+          "unit_price": 40000.0,
+          "amount": 40000.0
+        }
+      ],
+      "confidence": 0.93
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

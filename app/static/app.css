@@ -120,6 +120,16 @@ body > footer.site-footer {
 .invoice-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
 .pdf-pane { position: sticky; top: 5rem; }
 .pdf-pane iframe { width: 100%; height: calc(100vh - 12rem); min-height: 32rem; border: 1px solid var(--line); background: #fff; }
+/* a UBL e-invoice (escaped XML) or an invoice in an email body, shown as text instead of a PDF frame */
+.doc-text {
+  max-height: calc(100vh - 16rem); overflow: auto; margin: 0 0 0.5rem; padding: 0.75rem 0.9rem;
+  background: #fff; border: 1px solid var(--line); font-size: 0.82rem; line-height: 1.4; white-space: pre-wrap;
+  word-break: break-word;
+}
+.content-note { font-size: 0.92rem; margin-bottom: 0.5rem; }
+.email-comment { margin-top: 0.75rem; }
+.email-comment h3 { font-size: 1rem; margin-bottom: 0.35rem; }
+.email-comment .doc-text { max-height: 12rem; }
 .panel { background: #fff; border: 1px solid var(--line); padding: 1rem; margin-bottom: 1rem; }
 .panel h2 { font-size: 1.15rem; margin: 0 0 0.6rem; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 0.5rem; padding: 0; background: none; border: 0; }
@@ -135,6 +145,7 @@ body > footer.site-footer {
 .badge-fixture { background: #7c2d12; color: #fff; letter-spacing: 0.03em; }
 .badge-cache { background: var(--info-bg); color: var(--info); }
 .badge-api { background: var(--ok-bg); color: var(--ok); }
+.badge-ubl { background: var(--info); color: #fff; }
 .legend { font-size: 0.85rem; margin: 0.5rem 0; }
 .crit { background: #ede9fe; color: #5b21b6; font-size: 0.7rem; margin-left: 0.3rem; vertical-align: middle; }
 .crit-id { background: #e0e7ff; color: #3730a3; }
@@ -378,3 +389,12 @@ table.line-checks td { font-size: 0.82rem; }
   .sidenav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .content { padding: 1rem; }
 }
+
+/* ---------------------------------------------------------------- dataset choice (Load sample documents) */
+.load-menu { margin: 0; }
+.load-menu > summary { padding: 0.45rem 0.9rem; font-size: 0.95rem; }
+.load-menu > ul { min-width: 14rem; }
+.load-menu > ul li { padding: 0.25rem 0.4rem; }
+.load-menu button.load-choice { width: 100%; text-align: left; }
+.load-choices { display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: center; }
+.dataset-line { margin: 0.35rem 0 0; font-size: 0.92rem; }

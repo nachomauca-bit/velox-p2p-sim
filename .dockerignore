@@ -1,0 +1,24 @@
+# Keep the build context small and never ship secrets, the local database, the cache or uploads.
+# (The Dockerfile copies app/, docs/, data/invoices/ and data/invoices_v2/ explicitly.)
+.git
+.gitignore
+.gitattributes
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env
+.env.*
+tests
+deploy
+Makefile
+README.md
+Dockerfile
+.dockerignore
+data/velox.db
+data/velox.db-*
+data/cache
+data/export
+data/invoices/inbound
+docs/img
+pytest.ini

@@ -390,3 +390,77 @@ def test_tobe_identifiers_resolve_resends_and_credit_notes_to_the_same_party():
     party = {d.no: by_vat[normalise_vat(d.party.vat_id)] for d in world.DOCUMENTS}
     assert party[1] == party[2] == "P-0001"
     assert party[3] == party[4] == "P-0002"
+
+
+# --------------------------------------------------------------------------------------------
+# Datasets (phase 3): the case documents (v1) or test set v2, and the columns they fill
+# --------------------------------------------------------------------------------------------
+
+
+def test_doc_ids_encode_scenario_dataset_and_number() -> None:
+    assert (seed.doc_id_for("tobe", 1), seed.doc_id_for("asis", 14, "v1")) == ("B-01", "A-14")
+    assert (seed.doc_id_for("tobe", 1, "v2"), seed.doc_id_for("asis", 26, "v2")) == ("B2-01", "A2-26")
+    assert [seed.dataset_of_doc_id(i) for i in ("B-01", "A2-26", "B-W01", "")] == ["v1", "v2", None, None]
+    with pytest.raises(ValueError):
+        seed.doc_id_for("tobe", 1, "v3")
+
+
+def test_load_test_set_v2_fills_dataset_content_type_and_email_body(session: Session) -> None:
+    docs = seed.load_sample_documents(session, "tobe", "v2")
+    specs = world.documents_for("v2")
+    assert len(docs) == len(specs) == 26 and seed.loaded_dataset(session, "tobe") == "v2"
+    assert seed.loaded_dataset(session, "asis") is None
+    by_no = {d.sample_no: d for d in docs}
+    for spec in specs:
+        doc = by_no[spec.no]
+        assert (doc.doc_id, doc.dataset, doc.content_type, doc.email_body) == (
+            seed.doc_id_for("tobe", spec.no, "v2"), "v2", spec.content, spec.email_body)
+        assert doc.file_path == f"data/invoices_v2/{spec.filename}" and doc.registered is True
+    assert (by_no[11].content_type, by_no[14].content_type) == ("ubl_xml", "email_body")
+    assert by_no[8].email_body and by_no[8].content_type == "pdf"  # the store manager's forwarding comment
+    assert all(d.content_type == "pdf" and d.email_body is None for d in seed.load_sample_documents(session, "tobe"))
+    assert seed.loaded_dataset(session, "tobe") == "v1"
+
+
+def test_reset_scenario_returns_the_dataset_that_was_loaded(session: Session) -> None:
+    seed.load_sample_documents(session, "asis", "v2")
+    assert seed.reset_scenario(session, "asis") == "v2" and count(session, InboundDocument, "asis") == 0
+    assert seed.reset_scenario(session, "asis") is None
+
+
+def test_spec_for_is_dataset_aware() -> None:
+    assert seed.spec_for("v1", 14).filename == world.DOCUMENT_BY_NO[14].filename
+    assert seed.spec_for("v2", 14).content == "email_body"
+    assert seed.spec_for("v2", 26).party.canonical_name == "Berliner Blumen GmbH"
+    assert seed.spec_for("live", 0) is None and seed.spec_for("v1", 99) is None
+
+
+def test_stored_path_is_relative_inside_the_project_and_absolute_outside(tmp_path) -> None:
+    from app import config
+
+    assert seed.stored_path(config.BASE_DIR / "data" / "invoices" / "x.pdf") == "data/invoices/x.pdf"
+    outside = tmp_path / "bucket" / "inbound" / "x.pdf"
+    assert seed.stored_path(outside) == outside.resolve().as_posix()
+
+
+def test_add_missing_columns_upgrades_an_older_database(tmp_path) -> None:
+    """A database created before phase 3 (inbound_document without the new columns) gets them, with defaults."""
+    from sqlalchemy import create_engine, inspect, text
+
+    from app import models
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'old.db').as_posix()}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE inbound_document (id INTEGER PRIMARY KEY, doc_id VARCHAR(20), "
+                          "scenario VARCHAR(8), doc_type VARCHAR(12))"))
+        conn.execute(text("INSERT INTO inbound_document (doc_id, scenario, doc_type) "
+                          "VALUES ('B-01', 'tobe', 'invoice')"))
+    added = models.add_missing_columns(engine)
+    assert {"inbound_document.dataset", "inbound_document.content_type", "inbound_document.email_body",
+            "inbound_document.message_id", "inbound_document.source_name"} <= set(added)
+    assert all(a.startswith("inbound_document.") for a in added)  # tables that do not exist are left alone
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT dataset, content_type, email_body FROM inbound_document")).one()
+    assert tuple(row) == ("v1", "pdf", None)
+    assert models.add_missing_columns(engine) == []  # idempotent
+    assert "message_id" in {c["name"] for c in inspect(engine).get_columns("inbound_document")}

@@ -1,0 +1,93 @@
+{
+  "file_name": "19_harbor_freight_credit_note.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "credit_note",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Harbor Freight Forwarders Inc.",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "36-4817290",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "ABA 021000021 ACCT 7730045918",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "US",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail Inc.",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "84-2716453",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "HFF-CN-2026-017",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-11-06",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "payment_terms_days": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "currency": {
+      "value": "USD",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": -450.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 0.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": -450.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "referenced_invoice_number": {
+      "value": "HFF-2026-1031",
+      "confidence": 0.99
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Credit: demurrage charge waived — October 2026",
+          "quantity": 1,
+          "unit_price": -450.0,
+          "amount": -450.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": "Credit note referencing invoice HFF-2026-1031.",
+      "confidence": 0.99
+    }
+  }
+}

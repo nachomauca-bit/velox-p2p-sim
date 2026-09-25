@@ -1,0 +1,6 @@
+# Optional Google Cloud libraries (phase 3). Imported lazily: the app and the tests run without them.
+# Installed in the Docker image (Dockerfile, INSTALL_GCP=1). Vertex AI needs nothing extra: it uses google-genai
+# (requirements.txt) with the service account's Application Default Credentials.
+#
+#   BigQuery export of the gate decisions and mock tables (app/export_bq.py, BQ_EXPORT=1)
+google-cloud-bigquery>=3.20

@@ -69,6 +69,9 @@ def test_both_scenarios_configure_the_same_flags() -> None:
     assert gate.SCENARIOS["tobe"]["confidence_threshold"] == config.CONFIDENCE_THRESHOLD
     assert gate.SCENARIOS["asis"]["confidence_threshold"] is None
     assert gate.SCENARIOS["tobe"]["doa_auto_approve_limit"] == 500.0
+    assert (gate.SCENARIOS["tobe"]["doc_type_check"], gate.SCENARIOS["asis"]["doc_type_check"]) == (True, False)
+    assert (gate.SCENARIOS["tobe"]["po_vendor_match"], gate.SCENARIOS["asis"]["po_vendor_match"]) == (
+        "party", "account")
 
 
 # --------------------------------------------------------------------------------------------
@@ -604,8 +607,8 @@ def test_credit_note_without_a_known_invoice(session: Session) -> None:
     assert (d.outcome, d.exception_type, d.owner_name, d.sla_days) == (
         "exception", "credit_note_without_invoice", "Marco Ruiz", 2)
     assert d.details["posted"] is False and count(session, PendingVendorInvoice, "tobe") == 0
-    assert session.scalars(select(CreditNoteApplication.status).where(
-        CreditNoteApplication.doc_id == "B-04")).one() == "unapplied"
+    # Pending, not unapplied: nothing is posted, so it is neither an unapplied credit nor cash leakage.
+    assert d.details["credit_status"] is None and count(session, CreditNoteApplication, "tobe") == 0
     a = gate.process(session, asis, log=quiet)
     assert (a.outcome, a.details["credit_status"], a.details["touchless"]) == ("posted", "unapplied", True)
 
@@ -902,3 +905,183 @@ def test_labelled_or_copy_invoice_numbers_are_still_duplicates(session: Session,
     gate.run_scenario(session, "tobe", log=quiet)
     d = decision(session, "B-02")
     assert (d.outcome, d.details["duplicate_of"]) == ("blocked_duplicate", "B-01")
+
+
+# --------------------------------------------------------------------------------------------
+# Phase 3 rules (test set v2): document type, email body only, multi-PO, pending credit notes
+# --------------------------------------------------------------------------------------------
+
+
+def read_as_other(doc: InboundDocument, conf: float = 0.97) -> None:
+    """The extraction reads the document as doc_type "other" (extract.py then registers it as "unknown")."""
+    patch(doc, doc_type=("other", conf))
+    doc.doc_type = "unknown"
+
+
+def test_a_document_that_is_not_an_invoice_is_filed_in_tobe(session: Session) -> None:
+    doc = load(session, "tobe")[1]
+    read_as_other(doc)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.sla_days) == (
+        "exception", "not_an_invoice", "Marco Ruiz", "AP specialist", 1)
+    assert (d.details["doc_type"], d.details["posted"], d.details["contract_period"]) == ("other", False, None)
+    assert "neither an invoice nor a credit note" in d.reason and count(session, PendingVendorInvoice, "tobe") == 0
+    assert [s["step"] for s in d.steps if s["result"] != "skipped"] == ["register", "extract"]
+
+
+def test_asis_posts_a_document_that_is_not_an_invoice(session: Session) -> None:
+    doc = load(session, "asis")[1]
+    read_as_other(doc)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.details["posted"], d.details["doc_type"]) == (
+        "exception", "email_loop", True, "other")
+
+
+def test_an_uncertain_other_document_type_goes_to_human_review(session: Session) -> None:
+    doc = load(session, "tobe")[1]
+    read_as_other(doc, 0.5)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type) == ("human_review", "human_review")
+    assert "document type (not recognised as an invoice or credit note)" in d.reason
+
+
+def test_a_filed_statement_is_never_the_original_of_a_duplicate_nor_claims_a_contract(session: Session) -> None:
+    """Document 1 read as a statement: the reminder (document 2, same number) is not its duplicate, and it takes
+    the contract period that the statement never claimed."""
+    docs = load(session, "tobe")
+    read_as_other(docs[1])
+    gate.run_scenario(session, "tobe", log=quiet)
+    assert decision(session, "B-01").exception_type == "not_an_invoice"
+    d = decision(session, "B-02")
+    assert (d.outcome, d.details["duplicate_of"], d.details["contract_id"]) == ("posted", None, "CT-2025-001")
+
+
+def _email_body_only(doc: InboundDocument) -> None:
+    doc.content_type, doc.email_body, doc.extraction = "email_body", "Invoice 2026/140, 58.31 EUR.", None
+
+
+def test_an_invoice_only_in_the_email_body_is_keyed_by_ap(session: Session) -> None:
+    tobe, asis = load(session, "tobe")[10], load(session, "asis")[10]
+    for doc in (tobe, asis):
+        _email_body_only(doc)
+    session.commit()
+    n_accounts = count(session, VendorAccount, "asis")
+    d = gate.process(session, tobe, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.sla_days) == ("human_review", "human_review", "Marco Ruiz", 1)
+    assert "the invoice is only in the email body" in d.reason and d.details["content_type"] == "email_body"
+    a = gate.process(session, asis, log=quiet)
+    assert (a.outcome, a.exception_type, a.details["posted"], a.details["account_id"]) == (
+        "exception", "email_loop", False, None)
+    assert "only in the email body" in a.reason
+    assert count(session, VendorAccount, "asis") == n_accounts  # no account created without data
+    assert count(session, PendingVendorInvoice, "asis") == 0
+
+
+FIREWALL = {"description": "Managed firewall service Q3 2026 (PO 4500128)", "quantity": 1, "unit_price": 4800.0,
+            "amount": 4800.0}
+PENTEST = {"description": "Penetration test — e-commerce platform (PO 4500130)", "quantity": 1, "unit_price": 3500.0,
+           "amount": 3500.0}
+
+
+def _multi_po(doc: InboundDocument, lines: Any = (FIREWALL, PENTEST)) -> None:
+    """Document 13 (SecureNet) invoicing both of its POs."""
+    patch(doc, po_numbers=(["PO 4500128", "PO 4500130"], 0.97), lines=(list(lines) if lines else None, 0.97),
+          net_total=(8300.0, 0.97), gross_total=(8300.0, 0.97))
+
+
+def test_multi_po_invoice_routes_the_unconfirmed_po_to_its_requester(session: Session) -> None:
+    doc = load(session, "tobe")[13]
+    _multi_po(doc)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role) == (
+        "exception", "po_no_receipt", "Felix Braun", "Requester")
+    assert (d.details["commitment"], d.details["po_number"], d.details["po_numbers"]) == (
+        "po", "4500130", ["4500128", "4500130"])
+    assert "PO 4500130 exists but no service confirmation is recorded for line 1 (3,500.00 EUR invoiced on it)" \
+        in d.reason and "the lines on PO 4500128 match" in d.reason
+    assert [(c["line"], c["po_number"], c["po_line"], c["result"]) for c in d.details["line_checks"]] == [
+        (1, "4500128", 1, "ok"), (2, "4500130", 1, "issue")]
+
+
+def test_multi_po_invoice_posts_when_every_po_is_matched(session: Session) -> None:
+    doc = load(session, "tobe")[13]
+    _multi_po(doc)
+    _confirm_pentest(session)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.details["touchless"], d.details["po_number"]) == ("posted", True, "4500128")
+    assert "Multi-PO match on POs 4500128 and 4500130: 2 lines within tolerance" in d.reason
+    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-13")).one()
+    assert posting.po_number == "4500128"
+
+
+def test_multi_po_invoice_without_lines_is_checked_against_the_pos_total(session: Session) -> None:
+    doc = load(session, "tobe")[13]
+    _multi_po(doc, lines=None)
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "po_no_receipt", "Felix Braun")
+    assert d.details["line_checks"][0]["description"] == (
+        "No invoice lines read: net total vs total of POs 4500128 and 4500130")
+    patch(doc, net_total=(4800.0, 0.97), gross_total=(4800.0, 0.97))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.owner_name) == ("human_review", "Marco Ruiz")
+    assert "total of POs 4500128 and 4500130" in d.reason
+
+
+def _confirm_pentest(session: Session) -> None:
+    session.add(ProductReceipt(scenario="tobe", receipt_id="PR-26-0470", po_number="4500130", line_no=1,
+                               qty_received=1, received_on=date(2026, 10, 2), received_by="Felix Braun",
+                               kind="service_confirmation"))
+    session.commit()
+
+
+def test_multi_po_line_on_neither_po_goes_to_the_buyer(session: Session) -> None:
+    doc = load(session, "tobe")[13]
+    _confirm_pentest(session)
+    extra = {"description": "Consulting day, on site", "quantity": 1, "unit_price": 1200.0, "amount": 1200.0}
+    _multi_po(doc, lines=(FIREWALL, PENTEST, extra))
+    patch(doc, net_total=(9500.0, 0.97), gross_total=(9500.0, 0.97))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "price_qty_mismatch", "Sofia Brandt")
+    assert "Line 3 ('Consulting day, on site') is not on POs 4500128 and 4500130" in d.reason
+
+
+def test_a_po_of_another_supplier_quoted_with_the_right_one_is_ignored(session: Session) -> None:
+    doc = load(session, "tobe")[3]
+    patch(doc, po_numbers=(["4500105", "PO 4500117"], 0.95))  # 4500105 is Atlas Displays'
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.details["po_number"], d.details["po_numbers"]) == ("posted", "4500117", ["4500117"])
+
+
+def test_asis_matches_a_po_by_vendor_account_only(session: Session) -> None:
+    """Atlas Displays read as its VDE account (V-000106) quoting its VFR PO 4500105 (account V-000115): the as-is
+    tool sees another vendor's PO; the to-be gate sees the same party, then the wrong legal entity."""
+    line = [{"description": "Wall display unit WD-120, oak finish", "quantity": 80, "unit_price": 42.0,
+             "amount": 3360.0}]
+    for scenario in config.SCENARIOS:
+        doc = load(session, scenario)[6]
+        patch(doc, po_numbers=(["4500105"], 0.95), lines=(line, 0.95), net_total=(3360.0, 0.95),
+              gross_total=(3360.0, 0.95))
+        gate.process(session, doc, log=quiet)
+    a, b = decision(session, "A-06"), decision(session, "B-06")
+    assert (a.exception_type, a.details["account_id"]) == ("email_loop", "V-000106")
+    assert "PO 4500105 belongs to another vendor account" in a.reason
+    assert (b.exception_type, b.details["account_id"]) == ("wrong_legal_entity", "V-000106")
+
+
+def test_credit_note_without_a_reference_says_so(session: Session) -> None:
+    tobe, asis = load(session, "tobe")[4], load(session, "asis")[4]
+    for doc in (tobe, asis):
+        patch(doc, referenced_invoice_number=(None, 0.0))
+    d, a = gate.process(session, tobe, log=quiet), gate.process(session, asis, log=quiet)
+    assert "references no invoice: routed to the AP specialist" in d.reason and d.details["credit_status"] is None
+    assert "references no invoice and was posted to" in a.reason and a.details["credit_status"] == "unapplied"
+    assert "None" not in a.reason + " ".join(s["detail"] for s in a.steps)
+
+
+def test_log_lines_of_a_live_document_carry_its_id(session: Session) -> None:
+    assert gate.log_line("B-W01", "outcome=posted") == "[doc B-W01] outcome=posted"
+    doc = load(session, "tobe")[3]
+    doc.sample_no = 0
+    lines: list[str] = []
+    gate.process(session, doc, log=lines.append)
+    assert lines and all(line.startswith("[doc B-03] ") for line in lines)

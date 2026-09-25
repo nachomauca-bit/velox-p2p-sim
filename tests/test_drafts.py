@@ -62,8 +62,11 @@ def client_creations(monkeypatch) -> list[str]:
 
 @pytest.fixture()
 def gemini_mode(monkeypatch, tmp_cache_dir):
-    """EXTRACTOR=gemini with a dummy key and an empty temporary cache (the drafts go to <cache>/drafts)."""
+    """EXTRACTOR=gemini on the AI Studio backend with a dummy key and an empty temporary cache (the drafts go
+    to <cache>/drafts)."""
     monkeypatch.setattr(config, "EXTRACTOR", "gemini")
+    monkeypatch.setattr(config, "GEMINI_BACKEND", "aistudio")
+    monkeypatch.setattr(config, "GOOGLE_CLOUD_PROJECT", "")
     monkeypatch.setattr(config, "GEMINI_API_KEY", "test-key")
     return tmp_cache_dir
 
@@ -346,6 +349,25 @@ def test_not_draftable_is_unavailable_with_a_reason(gemini_mode, monkeypatch, de
     with pytest.raises(DraftUnavailable, match=reason):
         drafts.get_draft(decision, make_doc())
     assert models.calls == []
+
+
+def test_vertex_without_project_names_the_missing_setting(gemini_mode, monkeypatch, client_creations):
+    monkeypatch.setattr(config, "GEMINI_BACKEND", "vertex")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    with pytest.raises(DraftUnavailable) as info:
+        drafts.get_draft(make_decision(), make_doc())
+    assert str(info.value) == "Set GOOGLE_CLOUD_PROJECT in .env to draft messages."
+    assert client_creations == []
+
+
+def test_vertex_with_a_project_drafts_without_an_api_key(gemini_mode, monkeypatch):
+    """config.gemini_configured(), not GEMINI_API_KEY, decides whether the API can be called."""
+    monkeypatch.setattr(config, "GEMINI_BACKEND", "vertex")
+    monkeypatch.setattr(config, "GOOGLE_CLOUD_PROJECT", "velox-demo")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    models = use_fake(monkeypatch)
+    draft = drafts.get_draft(make_decision(), make_doc())
+    assert draft.text == GOOD_TEXT and draft.from_cache is False and models.calls == ["gemini-2.5-flash"]
 
 
 def test_no_key_reason_wins_over_api_disabled(gemini_mode, monkeypatch, client_creations):

@@ -1,0 +1,101 @@
+{
+  "file_name": "08_quickprint_facture_forwarded.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "QuickPrint SAS",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "FR73491234567",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "FR8210107001180009876543221",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "QP-26-1107",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-10-28",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-11-27",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 30,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 2400.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 480.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 2880.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500114"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Affiches A2 en magasin, quadrichromie",
+          "quantity": 400,
+          "unit_price": 3.5,
+          "amount": 1400.0
+        },
+        {
+          "description": "Flyers A5 recto-verso",
+          "quantity": 10000,
+          "unit_price": 0.1,
+          "amount": 1000.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

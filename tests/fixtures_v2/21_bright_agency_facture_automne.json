@@ -1,0 +1,95 @@
+{
+  "file_name": "21_bright_agency_facture_automne.pdf",
+  "file_sha256": null,
+  "model": "fixture (ground truth, no API call)",
+  "created_on": "2026-11-02T00:00:00",
+  "latency_ms": null,
+  "usage": null,
+  "extraction": {
+    "doc_type": {
+      "value": "invoice",
+      "confidence": 0.99
+    },
+    "supplier_name": {
+      "value": "Bright Agency SARL",
+      "confidence": 0.99
+    },
+    "supplier_vat_id": {
+      "value": "FR62512345678",
+      "confidence": 0.99
+    },
+    "supplier_iban": {
+      "value": "FR8430004005500001234567890",
+      "confidence": 0.99
+    },
+    "supplier_country": {
+      "value": "FR",
+      "confidence": 0.99
+    },
+    "bill_to_name": {
+      "value": "Velox Retail SAS",
+      "confidence": 0.99
+    },
+    "bill_to_vat_id": {
+      "value": "FR48823456781",
+      "confidence": 0.99
+    },
+    "invoice_number": {
+      "value": "INV-2026-0530",
+      "confidence": 0.99
+    },
+    "invoice_date": {
+      "value": "2026-11-03",
+      "confidence": 0.99
+    },
+    "due_date": {
+      "value": "2026-12-18",
+      "confidence": 0.99
+    },
+    "payment_terms_days": {
+      "value": 45,
+      "confidence": 0.99
+    },
+    "currency": {
+      "value": "EUR",
+      "confidence": 0.99
+    },
+    "net_total": {
+      "value": 12000.0,
+      "confidence": 0.99
+    },
+    "tax_total": {
+      "value": 2400.0,
+      "confidence": 0.99
+    },
+    "gross_total": {
+      "value": 14400.0,
+      "confidence": 0.99
+    },
+    "po_numbers": {
+      "value": [
+        "4500117"
+      ],
+      "confidence": 0.99
+    },
+    "referenced_invoice_number": {
+      "value": null,
+      "confidence": 0.0
+    },
+    "lines": {
+      "value": [
+        {
+          "description": "Campagne d'automne 2026 — conception, production et achat média",
+          "quantity": 1,
+          "unit_price": 12000.0,
+          "amount": 12000.0
+        }
+      ],
+      "confidence": 0.99
+    },
+    "notes": {
+      "value": null,
+      "confidence": 0.0
+    }
+  }
+}

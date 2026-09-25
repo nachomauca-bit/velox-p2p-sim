@@ -34,6 +34,7 @@ def init_db(drop: bool = False) -> None:
     if drop:
         models.Base.metadata.drop_all(engine)
     models.Base.metadata.create_all(engine)
+    models.add_missing_columns(engine)  # an existing database gets the columns added since it was created
 
 
 def get_session() -> Iterator[Session]:

@@ -19,13 +19,17 @@
 {% block content %}
 <div class="page-head">
   <p class="crumb">Control gate (new) › Compare</p>
-  <h1>Compare <span class="muted h1-sub">A — As-is vs B — To-be, same {{ rows|length }} documents</span></h1>
+  <h1>Compare <span class="muted h1-sub">A — As-is vs B — To-be, same {{ rows|length }} documents{% if data and data.dataset_label %} ({{ data.dataset_label }}){% endif %}</span></h1>
   <p class="lead">The same supplier documents, the same extraction, two processes: a dirty vendor master and no gate (A)
     against clean master data, commitments and a control gate (B).</p>
 </div>
 
 {% if error %}
 <p class="flash flash-error">{{ error }}</p>
+{% endif %}
+
+{% if data and data.dataset_warning %}
+<p class="flash flash-warn dataset-warning" role="status">{{ data.dataset_warning }}</p>
 {% endif %}
 
 {% for label, warning in partial_warnings %}

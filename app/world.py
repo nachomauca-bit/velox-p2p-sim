@@ -4,6 +4,8 @@ Everything else is derived from this module:
 - seed.py loads it as scenario `tobe` and derives scenario `asis` by explicit corruption rules;
 - invoices_gen.py renders DOCUMENTS (the 12 of the brief plus 2 clean ones) as PDFs;
 - tests/fixtures/ ground-truth extraction JSON is built from DOCUMENTS.
+Test set v2 (26 documents, phase 3) lives in app/world_v2.py and reuses this seed; documents_for(dataset)
+returns either set.
 
 All companies, people, VAT IDs and bank accounts are fictional.
 """
@@ -418,7 +420,7 @@ class DocumentSpec:
     sender_email: str
     subject: str
     received_on: datetime
-    doc_type: str  # invoice | credit_note
+    doc_type: str  # invoice | credit_note | other (a supplier statement, test set v2)
     party_id: str
     printed_supplier_name: str  # the name as printed on this document (may differ from canonical)
     bill_to_entity: str  # legal entity code printed in the bill-to block
@@ -441,6 +443,14 @@ class DocumentSpec:
     printed_notes: tuple[str, ...] = ()  # free text printed on the document
     layout: str = "classic"  # classic | banner | modern | compact (see invoices_gen.py)
     designed_to_show: str = ""
+    # Test set v2 (app/world_v2.py). The defaults leave every v1 spec, and so every v1 PDF, unchanged.
+    language: str = "en"  # en | de | fr | es: the labels printed on the document
+    content: str = "pdf"  # pdf | ubl_xml (Peppol UBL e-invoice) | email_body (invoice only in the email text)
+    scan: Optional[str] = None  # None: native PDF; "clean" | "low": skewed image-only PDF (no text layer)
+    email_body: Optional[str] = None  # the invoice text (content email_body), else a forwarding comment
+    vat_display: Optional[str] = None  # supplier VAT ID exactly as printed (default: the national format)
+    supplier: Optional[PartySpec] = None  # a supplier that is not in PARTIES (unknown to the vendor master)
+    dataset: str = "v1"  # v1: the 14 case documents; v2: test set v2
 
     @property
     def mailbox(self) -> str:
@@ -448,7 +458,7 @@ class DocumentSpec:
 
     @property
     def party(self) -> PartySpec:
-        return PARTY_BY_ID[self.party_id]
+        return self.supplier if self.supplier is not None else PARTY_BY_ID[self.party_id]
 
     @property
     def bill_to(self) -> LegalEntitySpec:
@@ -687,3 +697,26 @@ DOCUMENTS: list[DocumentSpec] = [
     ),
 ]
 DOCUMENT_BY_NO = {d.no: d for d in DOCUMENTS}
+
+
+# --------------------------------------------------------------------------------------------
+# Datasets: v1 = the 14 documents above; v2 = test set v2 (app/world_v2.py, docs/TEST_SET_V2.md)
+# --------------------------------------------------------------------------------------------
+
+DATASETS = ("v1", "v2")
+
+
+def documents_for(dataset: str = "v1") -> list[DocumentSpec]:
+    """The sample documents of a dataset. v2 is imported lazily, so v1 users never load it."""
+    if dataset == "v1":
+        return DOCUMENTS
+    if dataset == "v2":
+        from app import world_v2
+
+        return world_v2.DOCUMENTS_V2
+    raise ValueError(f"unknown dataset {dataset!r}; expected one of {DATASETS}")
+
+
+def document_for(dataset: str, no: int) -> Optional[DocumentSpec]:
+    """The document with sample number `no` in a dataset, or None."""
+    return next((d for d in documents_for(dataset) if d.no == no), None)

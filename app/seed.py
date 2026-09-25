@@ -3,23 +3,26 @@
 - `tobe` = the clean world, loaded as defined.
 - `asis` = the clean world after explicit corruption rules D1–D6 (documented in docs/ASSUMPTIONS.md).
 
-Also loads the 14 sample documents into the simulated mailboxes ("Load sample documents").
+Also loads a set of sample documents into the simulated mailboxes ("Load sample documents"): the 14 case
+documents (dataset v1, app/world.py) or the 26 documents of test set v2 (app/world_v2.py, docs/TEST_SET_V2.md).
 
 CLI:  python -m app.seed            # drop + create tables, seed both scenarios, generate PDFs,
-                                     # load sample documents into both inboxes (cached extraction only)
+                                     # load the case documents into both inboxes (cached extraction only)
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app import sim, world
+from app import config, sim, world
 from app.config import BASE_DIR, INVOICES_DIR, SCENARIOS
 from app.models import (
     Contract,
@@ -239,16 +242,23 @@ def seed_all(session: Session) -> None:
     session.commit()
 
 
-def reset_scenario(session: Session, scenario: str) -> None:
-    """Restore one scenario to its seeded state (empty inbox, no decisions, no postings)."""
+def reset_scenario(session: Session, scenario: str) -> Optional[str]:
+    """Restore one scenario to its seeded state (empty inbox, no decisions, no postings). Returns the dataset of
+    the sample documents that were loaded (None if none), so the caller can reload the same set."""
+    dataset = loaded_dataset(session, scenario)
     clear_scenario(session, scenario)
     seed_scenario(session, scenario)
     session.commit()
+    return dataset
 
 
 # --------------------------------------------------------------------------------------------
-# Intake: load the 14 sample documents into the simulated mailboxes
+# Intake: load a set of sample documents into the simulated mailboxes
 # --------------------------------------------------------------------------------------------
+
+DATASETS = ("v1", "v2")  # v1 = the 14 case documents; v2 = test set v2 (26 documents)
+LIVE_DATASET = "live"  # documents received through the intake webhook
+DATASET_LABELS = {"v1": "case documents", "v2": "test set v2", LIVE_DATASET: "live intake"}
 
 
 def file_sha256(path: Path) -> str:
@@ -256,10 +266,50 @@ def file_sha256(path: Path) -> str:
 
 
 SCENARIO_LETTER = {"asis": "A", "tobe": "B"}  # prefix of document IDs, e.g. A-01 / B-01
+_DOC_ID = re.compile(r"^[AB](2?)-(\d+)$")  # a sample document's id: A-01 (v1) / B2-01 (v2)
 
 
-def doc_id_for(scenario: str, sample_no: int) -> str:
-    return f"{SCENARIO_LETTER[scenario]}-{sample_no:02d}"
+def check_dataset(dataset: str) -> str:
+    if dataset not in DATASETS:
+        raise ValueError(f"unknown dataset {dataset!r}: use one of {DATASETS}")
+    return dataset
+
+
+def doc_id_for(scenario: str, sample_no: int, dataset: str = "v1") -> str:
+    """'B-01' for a case document (v1), 'B2-01' for a document of test set v2."""
+    suffix = "" if check_dataset(dataset) == "v1" else "2"
+    return f"{SCENARIO_LETTER[scenario]}{suffix}-{sample_no:02d}"
+
+
+def dataset_of_doc_id(doc_id: str) -> Optional[str]:
+    """The sample dataset a document id belongs to ('B2-01' -> 'v2'); None for a webhook id ('B-W01')."""
+    m = _DOC_ID.match(doc_id or "")
+    return None if m is None else ("v2" if m.group(1) else "v1")
+
+
+def dataset_dir(dataset: str) -> Path:
+    return INVOICES_DIR if check_dataset(dataset) == "v1" else config.INVOICES_V2_DIR
+
+
+def documents_for(dataset: str) -> list[world.DocumentSpec]:
+    return world.DOCUMENTS if check_dataset(dataset) == "v1" else world.documents_for(dataset)
+
+
+def spec_for(dataset: Optional[str], sample_no: Optional[int]) -> Optional[world.DocumentSpec]:
+    """The DocumentSpec of a sample document; None for a live document or an unknown number."""
+    if dataset not in DATASETS or not sample_no:
+        return None
+    return next((s for s in documents_for(dataset) if s.no == sample_no), None)
+
+
+def stored_path(path: Path) -> str:
+    """How InboundDocument.file_path stores a file: relative to the project root, or absolute (POSIX form) when the
+    file lies outside it (e.g. INBOUND_DIR on a mounted Cloud Storage bucket)."""
+    path = Path(path).resolve()
+    try:
+        return path.relative_to(Path(config.BASE_DIR).resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def ensure_pdfs() -> None:
@@ -270,29 +320,53 @@ def ensure_pdfs() -> None:
         invoices_gen.generate_all(INVOICES_DIR)
 
 
-def load_sample_documents(session: Session, scenario: str) -> list[InboundDocument]:
-    """(Re)load the 14 sample PDFs into the two mailboxes of one scenario.
+def ensure_files(dataset: str) -> None:
+    """Generate the files of a dataset when any is missing (v1: the 14 PDFs; v2: PDFs, the UBL XML, the email)."""
+    if check_dataset(dataset) == "v1":
+        ensure_pdfs()
+        return
+    out_dir = config.INVOICES_V2_DIR
+    if any(not (out_dir / d.filename).exists() for d in documents_for(dataset)):
+        from app import invoices_gen
+
+        invoices_gen.generate_all_v2(out_dir)
+
+
+def loaded_dataset(session: Session, scenario: str) -> Optional[str]:
+    """Dataset of the sample documents in the scenario's mailboxes (v1 or v2), None when none is loaded."""
+    datasets = session.scalars(select(InboundDocument.dataset).where(
+        InboundDocument.scenario == scenario, InboundDocument.sample_no > 0).distinct()).all()
+    known = [d for d in DATASETS if d in datasets]
+    return known[0] if known else None
+
+
+def load_sample_documents(session: Session, scenario: str, dataset: str = "v1") -> list[InboundDocument]:
+    """(Re)load a dataset's sample documents into the two mailboxes of one scenario (every document of the
+    scenario, webhook uploads included, is replaced).
 
     to-be: every document is registered on arrival (registered_on = received_on).
     as-is: documents stay unregistered until the scenario runs; the expected registration date
            follows sim.registration_date (ap@ +1 business day, store mailbox +7 business days).
     """
-    ensure_pdfs()
+    specs = documents_for(dataset)
+    ensure_files(dataset)
     for doc in session.scalars(select(InboundDocument).where(InboundDocument.scenario == scenario)):
         session.delete(doc)
     session.flush()
 
+    folder = dataset_dir(dataset)
     docs: list[InboundDocument] = []
-    for spec in world.DOCUMENTS:
-        path = INVOICES_DIR / spec.filename
+    for spec in specs:
+        path = folder / spec.filename
         registered = scenario == "tobe"
         doc = InboundDocument(
-            doc_id=doc_id_for(scenario, spec.no), scenario=scenario, sample_no=spec.no,
+            doc_id=doc_id_for(scenario, spec.no, dataset), scenario=scenario, sample_no=spec.no,
             channel=spec.channel, mailbox=spec.mailbox, received_on=spec.received_on,
-            file_path=path.relative_to(BASE_DIR).as_posix(), file_hash=file_sha256(path),
+            file_path=stored_path(path), file_hash=file_sha256(path),
             sender_email=spec.sender_email, subject=spec.subject, registered=registered,
             registered_on=sim.registration_date(scenario, spec.channel, spec.received_on) if registered else None,
-            doc_type="unknown",
+            doc_type="unknown", dataset=dataset, content_type=getattr(spec, "content", "pdf") or "pdf",
+            email_body=getattr(spec, "email_body", None),
         )
         session.add(doc)
         docs.append(doc)

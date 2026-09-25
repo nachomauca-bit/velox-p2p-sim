@@ -1,0 +1,19 @@
+# Upload list for `gcloud builds submit` (02_deploy_app.sh passes --ignore-file=deploy/.gcloudignore).
+# Never upload secrets, the local database, the cache or the virtualenv. The Docker build then applies
+# .dockerignore on top of this.
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env
+.env.*
+tests
+deploy
+data/velox.db
+data/velox.db-*
+data/cache
+data/export
+data/invoices/inbound
+docs/img

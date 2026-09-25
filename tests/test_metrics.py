@@ -36,7 +36,7 @@ BASE_DETAILS: dict[str, Any] = dict(
     next_owner_role=None, credit_status=None, applied_to=None, flags=[], terms_days=None, terms_source=None,
     invoice_terms_days=None, agreed_terms_days=None, terms_variance_paid=False, touchless=False, path=None,
     cycle_breakdown={}, registration_lag_days=0, email_loop_days=None, line_checks=[], lookup_party_id=None,
-    invoice_date=None, posted_on=None,
+    invoice_date=None, posted_on=None, po_numbers=[], content_type="pdf", extraction_model=None,
 )
 
 
@@ -519,3 +519,71 @@ def test_golden_compare_rows(golden_run) -> None:
     assert "terms paid early" in badges[(1, "asis")]
     assert "terms paid late" in badges[(2, "asis")] and "terms paid early" not in badges[(2, "asis")]
     assert result["asis"]["documents"] == result["asis"]["documents_total"] == len(world.DOCUMENTS)
+
+
+# --------------------------------------------------------------------------------------------
+# Phase 3: non-invoice postings, format badges, dataset-aware comparison
+# --------------------------------------------------------------------------------------------
+
+STATEMENT = dict(true_party_id="P-0001", supplier_name="Nordwind Logistics GmbH", invoice_number="KA-2026-11",
+                 invoice_number_norm="KA202611", gross_total=56525.0, bill_to_entity="VDE", posted=True,
+                 posted_entity="VDE", doc_type="other")
+
+
+def test_non_invoice_postings_count_and_add_to_the_cash_leakage(session: Session, configs) -> None:
+    store(session, mini_run("A") + [decision("A-05", "exception", exception_type="email_loop", days=12,
+                                             path="email_loop", **STATEMENT)])
+    kpis = metrics.compute(session, "asis")["kpis"]
+    assert kpis["non_invoice_postings"]["value"] == 1
+    assert kpis["non_invoice_postings"]["label"] == "Non-invoice documents posted"
+    assert kpis["cash_leakage_amount"]["value"] == 29646.0 + 56525.0
+    assert ("1 unapplied credit note(s) 1,800.00 EUR + 1 non-invoice document(s) posted 56,525.00 EUR; "
+            in kpis["cash_leakage_amount"]["formula"])
+    assert "gross amount of non-invoice documents posted as invoices" in kpis["cash_leakage_amount"]["formula"]
+
+
+def test_a_filed_statement_is_neither_counted_nor_leaked(session: Session, configs) -> None:
+    store(session, [decision("B-05", "exception", exception_type="not_an_invoice", owner_name="Marco Ruiz",
+                             sla_days=1, **{**STATEMENT, "posted": False, "posted_entity": None})])
+    kpis = metrics.compute(session, "tobe")["kpis"]
+    assert (kpis["non_invoice_postings"]["value"], kpis["cash_leakage_amount"]["value"]) == (0, 0.0)
+    assert "non-invoice document(s) posted" not in kpis["cash_leakage_amount"]["formula"]
+
+
+def test_leakage_counts_a_decision_once() -> None:
+    """A statement posted twice is a repeated posting and a non-invoice posting: its gross counts once per posting."""
+    first, again = decision("A-05", **STATEMENT), decision("A-06", **STATEMENT)
+    assert metrics.cash_leakage([first, again]) == {"EUR": 2 * 56525.0}
+
+
+def test_format_badges() -> None:
+    ubl = pytest.importorskip("app.ubl")
+    assert metrics.badges(decision("B-11", commitment="po", posted=True, extraction_model=ubl.UBL_MODEL)) == [
+        "3-way match", "UBL e-invoice"]
+    assert metrics.badges(decision("B-14", "human_review", exception_type="human_review",
+                                   content_type="email_body")) == ["email body only"]
+    assert metrics.badges(decision("A-03", "exception", exception_type="email_loop", **STATEMENT)) == [
+        "statement posted as invoice"]
+    assert metrics.badges(decision("B-01", extraction_model="gemini-2.5-flash", posted=True)) == []
+
+
+def test_compare_follows_the_dataset_loaded_and_warns_on_a_mismatch(session: Session, configs) -> None:
+    seed.load_sample_documents(session, "asis", "v2")
+    seed.load_sample_documents(session, "tobe", "v2")
+    result = metrics.compare(session)
+    assert (result["dataset"], result["dataset_label"], result["dataset_warning"]) == ("v2", "test set v2", None)
+    assert len(result["rows"]) == 26 and result["rows"][25]["supplier"] == "Berliner Blumen GmbH"
+    seed.load_sample_documents(session, "tobe", "v1")
+    result = metrics.compare(session)
+    assert result["datasets"] == {"asis": "v2", "tobe": "v1"} and result["dataset"] == "v2"
+    assert result["dataset_warning"].startswith("The two scenarios hold different sample documents (A — As-is the "
+                                                "test set v2, B — To-be the case documents)")
+
+
+def test_compare_only_matches_decisions_of_the_rows_dataset(session: Session, configs) -> None:
+    """Sample number 2 exists in both datasets: a v1 decision (B-02) never fills the row of v2 document 2."""
+    seed.load_sample_documents(session, "tobe", "v2")
+    store(session, [decision("B-02", "blocked_duplicate", exception_type="duplicate_invoice"),
+                    decision("B2-03", "exception", exception_type="not_an_invoice", **{**STATEMENT, "posted": False})])
+    rows = {r["sample_no"]: r for r in metrics.compare(session)["rows"]}
+    assert rows[2]["tobe"] is None and rows[3]["tobe"]["doc_id"] == "B2-03"

@@ -49,6 +49,9 @@
         <dt>Credit note</dt>
         <dd>{% if gv.credit_status == "applied" %}<span class="chip chip-ok">applied</span>{% else %}<span class="chip chip-bad">unapplied</span>{% endif %}
           {% if applied_link %} to <a href="{{ applied_link.href }}">{{ applied_link.label }}</a>{% elif gv.credit_status != "applied" %} — not linked to the invoice it credits{% endif %}</dd>
+      {% elif gv.exception_type == "credit_note_without_invoice" %}
+        <dt>Credit note</dt>
+        <dd><span class="chip chip-warn">pending</span> — not posted until AP identifies the invoice it credits</dd>
       {% endif %}
 
       {% if gv.account_id %}
@@ -74,7 +77,8 @@
 
       {% if gv.commitment %}
         <dt>Commitment</dt>
-        <dd>{% if gv.commitment == "po" %}PO <code>{{ gv.po_number }}</code>
+        <dd>{% if gv.commitment == "po" and (gv.po_numbers or [])|length > 1 %}POs {% for n in gv.po_numbers %}<code>{{ n }}</code>{% if not loop.last %} and {% endif %}{% endfor %}
+            {% elif gv.commitment == "po" %}PO <code>{{ gv.po_number }}</code>
             {% elif gv.commitment == "contract" %}Contract <code>{{ gv.contract_id }}</code>{% if gv.contract_period %} · period {{ gv.contract_period }}{% endif %}
             {% else %}No PO, no contract{% endif %}
             {% if gv.doa_auto_approved %}<span class="chip chip-info">auto-approved under the DoA limit</span>{% endif %}

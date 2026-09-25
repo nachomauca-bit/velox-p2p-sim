@@ -7,6 +7,9 @@ _TMP = Path(tempfile.mkdtemp(prefix="velox-test-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["EXTRACTOR"] = "fixture"
 os.environ["GEMINI_API_KEY"] = ""  # tests must never call the Gemini API
+os.environ["GEMINI_BACKEND"] = "aistudio"  # a developer .env with Vertex settings must not leak into tests
+os.environ["GOOGLE_CLOUD_PROJECT"] = ""
+os.environ["APP_PASSWORD"] = ""  # basic auth off unless a test turns it on
 
 import pytest  # noqa: E402
 

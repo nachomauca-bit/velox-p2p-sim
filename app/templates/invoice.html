@@ -9,9 +9,26 @@
 </div>
 
 <div class="invoice-layout">
-  <section class="pdf-pane">
-    <iframe src="/files/{{ doc.doc_id }}.pdf#navpanes=0&amp;view=FitH" title="PDF of {{ doc.doc_id }}"></iframe>
-    <p class="muted"><a href="/files/{{ doc.doc_id }}.pdf" target="_blank" rel="noopener">Open the PDF in a new tab</a></p>
+  <section class="pdf-pane content-{{ content.kind }}">
+    {% if content.kind == "pdf" %}
+    <iframe src="{{ content.url }}#navpanes=0&amp;view=FitH" title="PDF of {{ doc.doc_id }}"></iframe>
+    <p class="muted"><a href="{{ content.url }}" target="_blank" rel="noopener">Open the PDF in a new tab</a></p>
+    {% elif content.kind == "ubl_xml" %}
+    <p class="content-note"><span class="chip chip-info">UBL e-invoice</span>
+      A structured Peppol BIS Billing 3.0 invoice: its fields are parsed directly from the XML, without a model call.</p>
+    <pre class="doc-text xml-text">{{ content.text or "The XML file is not available." }}</pre>
+    <p class="muted"><a href="{{ content.url }}" target="_blank" rel="noopener">Open the XML in a new tab</a></p>
+    {% else %}
+    <p class="content-note"><span class="chip chip-warn">Email body, no attachment</span>
+      The invoice is only in the text of the email: there is no document to read, so AP keys it from the email.</p>
+    <pre class="doc-text email-text">{{ content.text or "The email text is not available." }}</pre>
+    {% endif %}
+    {% if content.comment %}
+    <div class="email-comment">
+      <h3>Email text <small class="muted">sent with the attachment by {{ doc.sender_email }}</small></h3>
+      <pre class="doc-text">{{ content.comment }}</pre>
+    </div>
+    {% endif %}
   </section>
 
   <section class="detail-pane">
@@ -30,6 +47,8 @@
             <span class="muted">({{ registration.reason }})</span></dd>
         {% endif %}
         <dt>Scenario</dt><dd>{{ doc_scenario_label }}</dd>
+        <dt>Documents</dt><dd>{{ dataset_label }}{% if doc.sample_no %} <span class="muted">· no. {{ doc.sample_no }}</span>{% endif %}</dd>
+        <dt>Received as</dt><dd>{{ content.label }}{% if doc.source_name %} <span class="muted">({{ doc.source_name }})</span>{% endif %}</dd>
         <dt>File</dt><dd><code>{{ doc.file_path }}</code> <span class="muted">sha256 {{ doc.file_hash[:12] }}…</span></dd>
       </dl>
     </article>
