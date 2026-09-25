@@ -1,28 +1,64 @@
 {% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Control gate (new)", none), ("Inbox", "/inbox"), (doc.doc_id, none)] %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › <a href="/inbox">Inbox</a> › {{ doc.doc_id }}</p>
-  <h1>{{ doc.doc_id }} <span class="muted h1-sub">{{ doc.subject }}</span></h1>
-  {% if doc.scenario != scenario %}
-  <p class="flash flash-warn">This document belongs to scenario {{ doc_scenario_label }}, not the active scenario.</p>
-  {% endif %}
-</div>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1><span class="doc-title-id">{{ doc.doc_id }}</span> <span class="h1-sub">{{ doc.subject }}</span></h1>
+  </div>
+</header>
+{% if doc.scenario != scenario %}
+<p class="flash flash-warn">This document belongs to scenario {{ doc_scenario_label }}, not the active scenario.</p>
+{% endif %}
 
 <div class="invoice-layout">
-  <section class="pdf-pane content-{{ content.kind }}">
-    {% if content.kind == "pdf" %}
-    <iframe src="{{ content.url }}#navpanes=0&amp;view=FitH" title="PDF of {{ doc.doc_id }}"></iframe>
-    <p class="muted"><a href="{{ content.url }}" target="_blank" rel="noopener">Open the PDF in a new tab</a></p>
-    {% elif content.kind == "ubl_xml" %}
-    <p class="content-note"><span class="chip chip-info">UBL e-invoice</span>
-      A structured Peppol BIS Billing 3.0 invoice: its fields are parsed directly from the XML, without a model call.</p>
-    <pre class="doc-text xml-text">{{ content.text or "The XML file is not available." }}</pre>
-    <p class="muted"><a href="{{ content.url }}" target="_blank" rel="noopener">Open the XML in a new tab</a></p>
-    {% else %}
-    <p class="content-note"><span class="chip chip-warn">Email body, no attachment</span>
-      The invoice is only in the text of the email: there is no document to read, so AP keys it from the email.</p>
-    <pre class="doc-text email-text">{{ content.text or "The email text is not available." }}</pre>
-    {% endif %}
+  <section class="pdf-pane content-{{ content.kind }}" aria-label="Received document">
+    <header class="pane-head">
+      <h2>{{ ic.icon('file' if content.kind == 'pdf' else 'code' if content.kind == 'ubl_xml' else 'mail') }}Received document</h2>
+      <span class="chip chip-neutral">{{ content.label }}</span>
+      {% if content.kind == "pdf" %}
+      <a class="pane-link" href="{{ content.url }}" target="_blank" rel="noopener" title="Open the PDF in a new tab">Open PDF{{ ic.icon('external') }}</a>
+      {% elif content.kind == "ubl_xml" %}
+      <a class="pane-link" href="{{ content.url }}" target="_blank" rel="noopener" title="Open the XML in a new tab">Open XML{{ ic.icon('external') }}</a>
+      {% endif %}
+    </header>
+    <div class="pane-body">
+      {% if content.kind == "pdf" %}
+      <iframe src="{{ content.url }}#navpanes=0&amp;view=FitH" title="PDF of {{ doc.doc_id }}"></iframe>
+      {% elif content.kind == "ubl_xml" %}
+      <p class="content-note">A structured Peppol BIS Billing 3.0 invoice: its fields are parsed directly from the XML,
+        without a model call.</p>
+      {#- the key fields first; the raw XML on request -#}
+      {%- set ubl_keys = ["invoice_number", "invoice_date", "due_date", "supplier_name", "supplier_vat_id", "bill_to_name",
+                          "po_numbers", "net_total", "tax_total", "gross_total"] -%}
+      {%- set ubl_fields = [] -%}
+      {%- for key in ubl_keys %}{% for f in fields if f.name == key %}{% set _ = ubl_fields.append(f) %}{% endfor %}{% endfor -%}
+      {% if ubl_fields %}
+      <section class="parsed-xml" aria-label="Parsed from the XML">
+        <h3>Parsed from the XML</h3>
+        <dl class="parsed-grid">
+          {% for f in ubl_fields %}
+          <div class="{{ 'wide' if f.name in ('supplier_name', 'bill_to_name') else '' }}{{ ' amount' if f.name.endswith('_total') else '' }}">
+            <dt>{{ f.label }}</dt>
+            <dd>{% if f.value is none or f.value == [] %}<span class="muted">not in the XML</span>
+              {%- elif f.name == "po_numbers" %}{% for po in f.value %}<code>{{ po }}</code> {% endfor %}
+              {%- elif f.name.endswith("_total") %}{{ f.value|money }} <span class="ccy">{{ ex.json.get('currency', {}).get('value') or '' }}</span>
+              {%- else %}{{ f.value }}{% endif %}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+      </section>
+      {% endif %}
+      <details class="raw-xml"{% if not ubl_fields %} open{% endif %}>
+        <summary>Raw XML as received</summary>
+        <pre class="doc-text xml-text">{{ content.text or "The XML file is not available." }}</pre>
+      </details>
+      {% else %}
+      <p class="content-note">The invoice is only in the text of the email: there is no document to read, so AP keys it
+        from the email.</p>
+      <pre class="doc-text email-text">{{ content.text or "The email text is not available." }}</pre>
+      {% endif %}
+    </div>
     {% if content.comment %}
     <div class="email-comment">
       <h3>Email text <small class="muted">sent with the attachment by {{ doc.sender_email }}</small></h3>
@@ -31,31 +67,43 @@
     {% endif %}
   </section>
 
-  <section class="detail-pane">
-    <article class="panel">
-      <h2>Document</h2>
-      <dl class="kv">
-        <dt>Mailbox</dt><dd>{{ doc.mailbox }} <span class="muted">({{ channel_label }})</span></dd>
-        <dt>Sender</dt><dd>{{ doc.sender_email }}</dd>
-        <dt>Subject</dt><dd>{{ doc.subject }}</dd>
-        <dt>Received</dt><dd>{{ doc.received_on|dt }}</dd>
-        {% if registration.registered %}
-          <dt>Registered</dt><dd>{{ registration.date|dt }} <span class="muted">({{ registration.reason }})</span></dd>
-        {% else %}
-          <dt>Registered</dt>
-          <dd><strong class="not-registered">Not registered yet</strong> — expected {{ registration.date|d }}
-            <span class="muted">({{ registration.reason }})</span></dd>
-        {% endif %}
-        <dt>Scenario</dt><dd>{{ doc_scenario_label }}</dd>
-        <dt>Documents</dt><dd>{{ dataset_label }}{% if doc.sample_no %} <span class="muted">· no. {{ doc.sample_no }}</span>{% endif %}</dd>
-        <dt>Received as</dt><dd>{{ content.label }}{% if doc.source_name %} <span class="muted">({{ doc.source_name }})</span>{% endif %}</dd>
-        <dt>File</dt><dd><code>{{ doc.file_path }}</code> <span class="muted">sha256 {{ doc.file_hash[:12] }}…</span></dd>
-      </dl>
+  <div class="detail-pane">
+    <article class="panel doc-panel">
+      <header class="panel-head">
+        <h2>{{ ic.icon('mail') }}Document</h2>
+        <span class="head-meta">
+          {% if registration.registered %}<span class="chip chip-ok">Registered</span>{% else %}<span class="chip chip-warn">Not registered yet</span>{% endif %}
+        </span>
+      </header>
+      <div class="panel-body">
+        <dl class="doc-facts">
+          <div><dt>Mailbox</dt><dd>{{ doc.mailbox }} <span class="muted">({{ channel_label }})</span></dd></div>
+          <div><dt>Sender</dt><dd>{{ doc.sender_email }}</dd></div>
+          <div><dt>Received</dt><dd>{{ doc.received_on|dt }}</dd></div>
+          {% if registration.registered %}
+            <div><dt>Registered</dt><dd>{{ registration.date|dt }} <span class="muted">({{ registration.reason }})</span></dd></div>
+          {% else %}
+            <div><dt>Registered</dt>
+            <dd><strong class="not-registered">Not registered yet</strong> — expected {{ registration.date|d }}
+              <span class="muted">({{ registration.reason }})</span></dd></div>
+          {% endif %}
+        </dl>
+        <details class="more-facts">
+          <summary>Subject, scenario and source file</summary>
+          <dl class="doc-facts">
+            <div class="wide"><dt>Subject</dt><dd>{{ doc.subject }}</dd></div>
+            <div><dt>Scenario</dt><dd>{{ doc_scenario_label }}</dd></div>
+            <div><dt>Documents</dt><dd>{{ dataset_label }}{% if doc.sample_no %} <span class="muted">· no. {{ doc.sample_no }}</span>{% endif %}</dd></div>
+            <div><dt>Received as</dt><dd>{{ content.label }}{% if doc.source_name %} <span class="muted">({{ doc.source_name }})</span>{% endif %}</dd></div>
+            <div><dt>File</dt><dd><code>{{ doc.file_path }}</code> <span class="muted">sha256 {{ doc.file_hash[:12] }}…</span></dd></div>
+          </dl>
+        </details>
+      </div>
     </article>
 
     {% include "_gate_panel.html" %}
 
     {% include "_extraction_panel.html" %}
-  </section>
+  </div>
 </div>
 {% endblock %}

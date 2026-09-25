@@ -1,0 +1,48 @@
+{# Inline SVG icons (24x24, stroke = currentColor): no icon font, no CDN, so the demo also works offline.
+   Decorative only: every icon sits next to a text label and is hidden from screen readers. #}
+
+{%- set PATHS = {
+  "inbox": '<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5.5 5h13l2.5 8v5.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5V13z"/>',
+  "alert": '<path d="M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4"/><path d="M12 17h.01"/>',
+  "chart": '<path d="M3 20.5h18"/><path d="M6 17v-5"/><path d="M11 17V6"/><path d="M16 17v-8"/>',
+  "compare": '<rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/><path d="M6 9h1.5M6 12.5h1.5M16.5 9H18M16.5 12.5H18"/>',
+  "book": '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19"/><path d="M9 7.5h6M9 11h4"/>',
+  "invoice": '<path d="M6 2.5h8.5L19 7v14.5H6z"/><path d="M14 2.5V7.5h5"/><path d="M9 12h7M9 15.5h7M9 8.5h2.5"/>',
+  "vendors": '<path d="M3.5 21V6.5l7-3.5V21"/><path d="M10.5 9h7.5a1 1 0 0 1 1 1V21"/><path d="M2 21h20"/><path d="M6.5 8.5h1M6.5 12h1M6.5 15.5h1M14 13h1.5M14 16.5h1.5"/>',
+  "cart": '<circle cx="9" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/><path d="M2.5 3.5h2.8l2.4 11.3a1.2 1.2 0 0 0 1.2 1h8.7a1.2 1.2 0 0 0 1.2-.9L21 7.5H6.2"/>',
+  "contract": '<path d="M6 2.5h8.5L19 7v14.5H6z"/><path d="M14 2.5V7.5h5"/><path d="m9 15 2 2 4-4.5"/>',
+  "play": '<path d="M7.5 4.8v14.4a.8.8 0 0 0 1.2.7l11.1-7.2a.8.8 0 0 0 0-1.4L8.7 4.1a.8.8 0 0 0-1.2.7z" fill="currentColor" stroke="none"/>',
+  "load": '<path d="M12 3.5v11"/><path d="m7.5 10 4.5 4.5 4.5-4.5"/><path d="M4 16.5v2.5A1.5 1.5 0 0 0 5.5 20.5h13a1.5 1.5 0 0 0 1.5-1.5v-2.5"/>',
+  "reset": '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 3.5v5h5"/>',
+  "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  "chevron-right": '<path d="m9 6 6 6-6 6"/>',
+  "database": '<ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/>',
+  "shield": '<path d="M12 2.8 4.5 5.8v5.7c0 4.8 3.2 8 7.5 9.7 4.3-1.7 7.5-4.9 7.5-9.7V5.8z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/>',
+  "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+  "check": '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  "check-circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8L16 9.5"/>',
+  "x-circle": '<circle cx="12" cy="12" r="9"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6"/>',
+  "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.8h.01"/>',
+  "terminal": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>',
+  "external": '<path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/>',
+  "user": '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+  "scan": '<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M8 9.5h8M8 12h8M8 14.5h5"/>',
+  "x": '<path d="M6 6l12 12M18 6 6 18"/>',
+  "list": '<path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/>',
+  "arrow-right": '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  "file": '<path d="M6 2.5h8.5L19 7v14.5H6z"/><path d="M14 2.5V7.5h5"/>',
+  "code": '<path d="m8.5 7.5-5 4.5 5 4.5M15.5 7.5l5 4.5-5 4.5"/>',
+  "gate": '<path d="M4 21V9l8-5 8 5v12"/><path d="M9 21v-6h6v6"/>',
+  "sparkle": '<path d="M12 3.5 13.9 9l5.6 2-5.6 2L12 18.5 10.1 13l-5.6-2 5.6-2z"/>',
+  "timeline": '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><path d="M6 8v8"/><path d="M11 6h9M11 18h9M11 12h6"/>',
+} -%}
+
+{% macro icon(name, cls="") -%}
+<svg class="icon{{ ' ' ~ cls if cls else '' }}" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">{{ PATHS.get(name, PATHS["file"])|safe }}</svg>
+{%- endmacro %}
+
+{# App mark: a gate chevron on an indigo tile (drawn for this demo; not any product's logo). #}
+{% macro brand_mark() -%}
+<svg class="brand-mark" viewBox="0 0 36 36" width="36" height="36" aria-hidden="true" focusable="false"><defs><linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#4338ca"/></linearGradient></defs><rect width="36" height="36" rx="9" fill="url(#brand-grad)"/><path d="M10 11.5 18 25l8-13.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 11.5h18" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round"/></svg>
+{%- endmacro %}

@@ -1,48 +1,65 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Control gate (new)", none), ("KPIs", none)] %}
 {% block head %}
 {% if charts %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>{% endif %}
 {% endblock %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › KPIs</p>
-  <h1>KPIs <span class="muted h1-sub">{{ scenario_label }}</span></h1>
-  <p class="lead">The same definitions as in the case deck. Hover a tile for its formula, or see the numbered notes below.
-    {% if data and data.run %}Latest run finished {{ data.run.finished_on|dt }}.{% endif %}</p>
-</div>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>KPIs <span class="h1-sub">{{ scenario_label }}</span></h1>
+    <p class="lead">The same definitions as in the case deck. Hover or focus a tile for its formula; the numbered notes
+      are below.{% if data and data.run %} Latest run finished {{ data.run.finished_on|dt }}.{% endif %}</p>
+  </div>
+</header>
 
 {% if error %}
 <p class="flash flash-error">{{ error }}</p>
 {% endif %}
 
 {% if data and not available %}
-<p class="flash flash-info">{{ scenario_label }} has not been run yet: the vendor-master KPIs are shown as the data
-  stands; the KPIs computed from gate decisions need a run.</p>
+<div class="flash flash-info partial-run" role="status"><span>{{ scenario_label }} has not been run yet: the
+  vendor-master KPIs are shown as the data stands; the KPIs computed from gate decisions need a run.</span>
+  {{ m.run_button(scenario=scenario) }}</div>
 {% endif %}
 
 {% if partial_warning %}
-<div class="flash flash-warn partial-run" role="status">{{ partial_warning }}: the KPIs below cover the processed
-  documents only. {{ m.run_button(scenario=scenario) }}</div>
+<div class="flash flash-warn partial-run" role="status"><span>{{ partial_warning }}: the KPIs below cover the processed
+  documents only.</span> {{ m.run_button(scenario=scenario) }}</div>
+{% endif %}
+
+{% macro tile(t, extra="") -%}
+<div class="kpi-tile{{ extra }}{{ ' kpi-na' if t.shown == 'Run the scenario' else '' }}" id="kpi-{{ t.key }}" tabindex="0" aria-describedby="f-{{ t.key }}">
+  <span class="kpi-value">{{ m.value(t.shown) }}</span>
+  <span class="kpi-label">{{ t.label }}<sup><a href="#note-{{ t.note }}">{{ t.note }}</a></sup></span>
+  {{ m.formula("f-" ~ t.key, t.formula) }}
+</div>
+{%- endmacro %}
+
+{% if headline %}
+<section class="kpi-group kpi-headline" aria-labelledby="kpi-headline-title">
+  <h2 id="kpi-headline-title">Headline results <span class="muted">downstream, from the gate decisions</span></h2>
+  <div class="kpi-tiles" style="--cols: {{ headline|length }}">
+    {% for t in headline %}{{ tile(t, " kpi-hero") }}{% endfor %}
+  </div>
+</section>
 {% endif %}
 
 {% for g in groups %}
 <section class="kpi-group kpi-{{ g.key }}">
   <h2>{{ g.title }}</h2>
-  <div class="kpi-tiles">
-    {% for t in g.tiles %}
-    <div class="kpi-tile{{ ' kpi-na' if t.shown == 'Run the scenario' else '' }}" id="kpi-{{ t.key }}" title="{{ t.formula }}">
-      <span class="kpi-value">{{ m.value(t.shown) }}</span>
-      <span class="kpi-label">{{ t.label }}<sup><a href="#note-{{ t.note }}">{{ t.note }}</a></sup></span>
-    </div>
-    {% endfor %}
+  {% for row in g.rows %}
+  {% if row.title %}<h3 class="kpi-row-title">{{ row.title }}</h3>{% endif %}
+  <div class="kpi-tiles" style="--cols: {{ row["items"]|length }}">
+    {% for t in row["items"] %}{{ tile(t) }}{% endfor %}
   </div>
-  {% if g.key == 'downstream' and not available and data %}
-  <div class="kpi-run">{{ m.run_button(scenario=scenario) }}</div>
-  {% endif %}
+  {% endfor %}
 </section>
 {% endfor %}
 
 {% if charts %}
+<h2 class="section-title">{{ ic.icon('chart') }}Charts <span class="muted">each with its data table</span></h2>
 <section class="kpi-charts">
   <figure class="chart-card">
     <figcaption>Outcomes</figcaption>
@@ -71,22 +88,32 @@
   window.addEventListener("load", function () {
     if (!window.Chart) { return; }  /* offline: the Data tables below each chart still work */
     var data = JSON.parse(document.getElementById("chart-data").textContent);
-    Chart.defaults.font.size = 15;
-    Chart.defaults.color = "#52514e";
-    var grid = { color: "#e1e0d9" };
+    var css = getComputedStyle(document.body);
+    Chart.defaults.font.family = css.fontFamily;
+    Chart.defaults.font.size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.9375;  /* 15 px */
+    Chart.defaults.color = "#475569";                  /* slate-600: axis labels and legends in text ink */
+    Chart.defaults.borderColor = "#e2e8f0";
+    Chart.defaults.plugins.legend.labels.usePointStyle = true;
+    Chart.defaults.plugins.legend.labels.boxWidth = 10;
+    Chart.defaults.plugins.tooltip.backgroundColor = "#0f172a";
+    Chart.defaults.plugins.tooltip.padding = 10;
+    Chart.defaults.plugins.tooltip.cornerRadius = 8;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { Chart.defaults.animation = false; }
+    var grid = { color: "#e2e8f0" };
     new Chart(document.getElementById("chart-outcomes"), {
       type: "doughnut",
       data: { labels: data.outcomes.labels, datasets: [{ data: data.outcomes.values,
               backgroundColor: data.outcomes.colours, borderColor: "#ffffff", borderWidth: 2 }] },
-      options: { maintainAspectRatio: false, cutout: "58%", plugins: { legend: { position: "right" } } }
+      options: { maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "right" } } }
     });
     new Chart(document.getElementById("chart-exceptions"), {
       type: "bar",
       /* long type names are split into lines (an array per label), so the axis never cuts them off */
       data: { labels: data.exceptions.lines, datasets: [{ label: "Documents", data: data.exceptions.values,
-              backgroundColor: data.exceptions.colours, borderRadius: 4, maxBarThickness: 34 }] },
+              backgroundColor: data.exceptions.colours, borderRadius: 4, maxBarThickness: 30 }] },
       options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false } },
-                 scales: { x: { beginAtZero: true, ticks: { precision: 0 }, grid: grid }, y: { grid: { display: false } } } }
+                 scales: { x: { beginAtZero: true, ticks: { precision: 0 }, grid: grid, border: { display: false } },
+                           y: { grid: { display: false } } } }
     });
     var paths = [];  /* one dataset per path, so the legend names the colours */
     data.cycle.paths.forEach(function (p, i) { if (paths.indexOf(p) < 0) { paths.push(p); } });
@@ -94,20 +121,22 @@
       type: "bar",
       data: { labels: data.cycle.labels, datasets: paths.map(function (p) {
         var i0 = data.cycle.paths.indexOf(p);
-        return { label: p, backgroundColor: data.cycle.colours[i0], borderRadius: 4, maxBarThickness: 34,
+        /* minBarLength: a document handled the day it arrived (0 days) still shows as a stub */
+        return { label: p, backgroundColor: data.cycle.colours[i0], borderRadius: 4, maxBarThickness: 30, minBarLength: 4,
                  data: data.cycle.values.map(function (v, i) { return data.cycle.paths[i] === p ? v : null; }) };
       }) },
       options: { maintainAspectRatio: false, skipNull: true,
+                 plugins: { legend: { position: "top", align: "end" } },
                  scales: { x: { stacked: true, grid: { display: false } },
-                           y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: grid,
+                           y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: grid, border: { display: false },
                                 title: { display: true, text: "business days" } } } }
     });
   });
 </script>
 {% endif %}
 
-<section class="kpi-notes">
-  <h2>How each KPI is computed</h2>
+<section class="kpi-notes" id="kpi-notes">
+  <h2>{{ ic.icon('book') }}How each KPI is computed</h2>
   <ol>
     {% for t in tiles %}
     <li id="note-{{ t.note }}"><strong>{{ t.label }}.</strong> {{ t.formula }}</li>

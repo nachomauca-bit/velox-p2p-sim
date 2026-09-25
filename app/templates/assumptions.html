@@ -1,12 +1,44 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set crumbs = [("Control gate (new)", none), ("Assumptions", none)] %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › Assumptions</p>
-</div>
 {% if html %}
-<article class="markdown">{{ html|safe }}</article>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>Assumptions</h1>
+    <p class="lead">Every simulated number and dirty-world rule of the demo, with its reason; from
+      <code>docs/ASSUMPTIONS.md</code>.</p>
+  </div>
+</header>
+<div class="doc-layout">
+  <article class="markdown" id="assumptions-doc">{{ html|safe }}</article>
+  <nav class="doc-toc" id="doc-toc" aria-label="On this page" hidden>
+    <h2>On this page</h2>
+    <ol></ol>
+  </nav>
+</div>
+<script>
+  (function () {  /* table of contents from the document's sections (h2), with stable anchors */
+    var doc = document.getElementById("assumptions-doc"), toc = document.getElementById("doc-toc");
+    var list = toc.querySelector("ol"), used = {};
+    doc.querySelectorAll("h2").forEach(function (h) {
+      if (!h.id) {
+        var base = "sec-" + (h.textContent.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "section");
+        var id = base, n = 2;
+        while (used[id] || document.getElementById(id)) { id = base + "-" + n++; }
+        h.id = id;
+      }
+      used[h.id] = true;
+      var li = document.createElement("li"), a = document.createElement("a");
+      a.href = "#" + h.id; a.textContent = h.textContent;
+      li.appendChild(a); list.appendChild(li);
+    });
+    if (list.children.length > 1) { toc.hidden = false; }
+  })();
+</script>
 {% else %}
 <article class="empty-state">
+  {{ m.empty_icon('book') }}
   <h1>Assumptions</h1>
   <p><code>docs/ASSUMPTIONS.md</code> does not exist yet. Every simulated number and dirty-world rule
      will be listed there with its reason.</p>

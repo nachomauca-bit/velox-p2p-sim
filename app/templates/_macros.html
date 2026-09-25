@@ -1,4 +1,5 @@
-{# Shared bits of the gate pages: outcome chip, badges, owner cell, run button. #}
+{# Shared bits of the gate pages: outcome chip, badges, owner cell, run button, KPI value and formula. #}
+{% import "_icons.html" as ic %}
 
 {% macro outcome(label, tone) -%}
 <span class="chip chip-{{ tone }} outcome-chip">{{ label }}</span>
@@ -18,13 +19,32 @@
 {% macro run_button(label="Run scenario", action="/run", scenario=None) -%}
 <form method="post" action="{{ action }}" class="inline-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
   {% if scenario %}<input type="hidden" name="scenario" value="{{ scenario }}">{% endif %}
-  <button type="submit">{{ label }}</button>
+  <button type="submit">{{ ic.icon('play') }}{{ label }}</button>
 </form>
 {%- endmacro %}
 
-{# KPI value: "3 days (0 under the 500 EUR DoA limit)" -> the value, and the parenthesis as a small note. #}
+{# KPI value. "Run the scenario" (a KPI that needs a run) -> a muted dash and a caption; "3 days (0 under the 500 EUR
+   DoA limit)" -> the value, and the parenthesis as a small note; "29,646.00 EUR" or "0.5 days" -> the number and a
+   smaller unit, the number never broken. #}
 {% macro value(text) -%}
-{%- set parts = (text or '—')|string -%}{%- set i = parts.find(' (') -%}
-{%- if i > 0 and parts.endswith(')') -%}{{ parts[:i] }}<small class="value-note">{{ parts[i + 2:-1] }}</small>
-{%- else -%}{{ parts }}{%- endif -%}
+{%- set parts = (text or '—')|string -%}
+{%- if parts == 'Run the scenario' -%}<span class="na-dash" aria-hidden="true">—</span><small class="value-note">needs a run</small>
+{%- else -%}
+{%- set i = parts.find(' (') -%}
+{%- set main = parts[:i] if (i > 0 and parts.endswith(')')) else parts -%}
+{%- set split = main|value_parts -%}
+{%- if split -%}<span class="vu">{% for num, unit in split %}{% if not loop.first %} <span class="vu-plus">+</span> {% endif %}<span class="vu-num">{{ num }}</span> <span class="vu-unit">{{ unit }}</span>{% endfor %}</span>
+{%- else -%}{{ main }}{%- endif -%}
+{%- if main != parts -%}<small class="value-note">{{ parts[i + 2:-1] }}</small>{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{# Formula of a KPI tile: a tooltip shown on hover and on keyboard focus (the tile is focusable). #}
+{% macro formula(id, text) -%}
+<span class="kpi-formula" role="tooltip" id="{{ id }}"><span class="kpi-formula-label">How it is computed</span>{{ text }}</span>
+{%- endmacro %}
+
+{# Round icon at the top of an empty state. #}
+{% macro empty_icon(name) -%}
+<span class="empty-icon" aria-hidden="true">{{ ic.icon(name) }}</span>
 {%- endmacro %}

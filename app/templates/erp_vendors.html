@@ -1,83 +1,97 @@
 {% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Velox ERP", none), ("Accounts payable", none), ("Vendor master", none)] %}
 {% block content %}
-<div class="page-head erp-head">
-  <p class="crumb">Velox ERP › Accounts payable › Vendor master <span class="chip chip-neutral">read-only</span></p>
-  <h1>Vendor master <span class="muted h1-sub">{{ view_label }}</span></h1>
-  <div class="view-toggle">
-    <span class="muted">View:</span>
-    {% for s in scenarios %}
-      <a href="/erp/vendors?view={{ s }}" class="toggle-{{ s }}{% if s == view %} active{% endif %}"
-         {% if s == view %}aria-current="true"{% endif %}>{{ scenario_labels[s] }}</a>
-    {% endfor %}
-    {% if view != scenario %}<span class="muted">(the active scenario is {{ scenario_label }})</span>{% endif %}
+<header class="page-head erp-head">
+  <div class="page-head-main">
+    <p class="eyebrow">{{ ic.icon('database') }}Velox ERP · Accounts payable <span class="readonly-tag">read-only</span></p>
+    <h1>Vendor master <span class="h1-sub">{{ view_label }}</span></h1>
+    <p class="lead">Vendor accounts per legal entity, grouped by supplier. Highlights mark possible duplicates, missing
+      identifiers, payment terms that differ from the agreement and inactive accounts.</p>
   </div>
-</div>
+  <div class="page-actions">
+    {#- A plain link, not a second scenario switch: it shows the other master data and leaves the scenario as it is. -#}
+    {% for s in scenarios if s != view %}
+    <a class="view-link" href="/erp/vendors?view={{ s }}">{% if s == scenario %}Back to {{ scenario_labels[s] }}{% else %}Compare with {{ scenario_labels[s] }}{% endif %}{{ ic.icon('arrow-right') }}</a>
+    {% endfor %}
+    {% if view != scenario %}<p class="view-note muted">Showing the vendor master of {{ view_label }}; the active scenario is {{ scenario_label }}.</p>{% endif %}
+  </div>
+</header>
 
-<p class="ratio">{{ stats.accounts }} accounts / {{ stats.suppliers }} suppliers = {{ stats.ratio }}</p>
-<div class="tiles">
+<div class="tiles tiles-5">
+  <div class="tile tile-hero">
+    <span class="tile-value">{{ stats.ratio }}</span>
+    <span class="tile-label">vendor accounts per supplier</span>
+    <span class="ratio">{{ stats.accounts }} accounts / {{ stats.suppliers }} suppliers = {{ stats.ratio }}</span>
+  </div>
   <div class="tile"><span class="tile-value">{{ stats.active }}</span><span class="tile-label">active accounts (of {{ stats.accounts }})</span></div>
   <div class="tile"><span class="tile-value">{{ stats.pct_complete }}%</span><span class="tile-label">accounts with VAT ID and IBAN</span></div>
-  <div class="tile"><span class="tile-value">{{ stats.terms_differ }}</span><span class="tile-label">accounts with terms ≠ agreed</span></div>
-  <div class="tile"><span class="tile-value">{{ stats.duplicates }}</span><span class="tile-label">accounts flagged as possible duplicates</span></div>
+  <div class="tile{{ ' tile-warn' if stats.terms_differ else ' tile-clear' }}"><span class="tile-value">{{ stats.terms_differ }}{% if not stats.terms_differ %}<small class="tile-none">none</small>{% endif %}</span><span class="tile-label">accounts with terms ≠ agreed</span></div>
+  <div class="tile{{ ' tile-bad' if stats.duplicates else ' tile-clear' }}"><span class="tile-value">{{ stats.duplicates }}{% if not stats.duplicates %}<small class="tile-none">none</small>{% endif %}</span><span class="tile-label">accounts flagged as possible duplicates</span></div>
 </div>
 
-<p class="legend">
-  <span class="flag flag-dup">possible duplicate</span> another account with the same VAT ID or a similar name
-  (one account per legal entity for the same party is by design) ·
-  <span class="flag flag-missing">missing VAT ID</span> / <span class="flag flag-missing">missing IBAN</span> ·
-  <span class="flag flag-terms">terms ≠ agreed</span> account terms differ from the recurring contract, else from the supplier agreement ·
-  <span class="flag flag-inactive">inactive</span>
-  {% if view == "asis" %}<br>Dirty-world rules (hover for details):
+<section class="legend-card" aria-label="Highlight legend">
+  <p class="legend-title">Highlight legend</p>
+  <div class="legend-item"><span class="swatch-row swatch-dup" aria-hidden="true"></span><span class="flag flag-dup">possible duplicate</span>
+    <span>another account with the same VAT ID or a similar name (one account per legal entity for the same party is by design); “Duplicate of” lists them</span></div>
+  <div class="legend-item"><span class="flag flag-missing">missing VAT ID</span><span class="flag flag-missing">missing IBAN</span>
+    <span>identifier not in the master</span></div>
+  <div class="legend-item"><span class="flag flag-terms">terms ≠ agreed</span>
+    <span>account terms differ from the recurring contract, else from the supplier agreement</span></div>
+  <div class="legend-item"><span class="flag flag-inactive">inactive</span><span>account marked inactive</span></div>
+  {% if view == "asis" %}
+  <div class="legend-rules"><span class="muted">Dirty-world rules (hover for details):</span>
     {% for rule, help in rule_help.items() %}<span class="rule" title="{{ help }}">{{ rule }}</span> {% endfor %}
+  </div>
   {% endif %}
-</p>
+</section>
 
-<div class="overflow-auto">
+<div class="overflow-auto table-card">
 <table class="erp-table vendor-table striped">
   <thead>
     <tr>
-      <th>Account</th><th>Entity</th><th>Display name</th><th>VAT ID</th><th>IBAN / bank</th>
-      <th class="num">Terms</th><th>Agreed terms</th><th>Created by</th><th>Created on</th><th>Status</th><th>Notes</th>
+      <th>Account<span class="th-sub">status</span></th><th>Entity</th><th>Display name</th><th>VAT ID</th><th>IBAN / bank</th>
+      <th class="num">Terms</th><th class="num">Agreed terms</th><th>Created</th><th>Notes</th>
     </tr>
   </thead>
   {% for title, rows in groups %}
   <tbody>
     <tr class="group-row">
-      <th colspan="11">{{ title }}
-        {% if rows[0].account.party_id %}<span class="muted">{{ rows[0].account.party_id }}</span>{% endif %}
-        <span class="muted">· {{ rows|length }} account{{ '' if rows|length == 1 else 's' }}</span></th>
+      <th colspan="9">{{ ic.icon('vendors') }}{{ title }}
+        {% if rows[0].account.party_id %}<code>{{ rows[0].account.party_id }}</code>{% endif %}
+        <span class="group-meta">{{ rows|length }} account{{ '' if rows|length == 1 else 's' }}</span></th>
     </tr>
     {% for r in rows %}
     {% set a = r.account %}
     <tr class="{{ 'row-dup' if r.duplicates else '' }} {{ 'row-inactive' if a.status == 'inactive' else '' }}">
-      <td><code>{{ a.account_id }}</code>
+      <td class="account"><code>{{ a.account_id }}</code>
+        <div class="account-status"><span class="chip chip-{{ 'ok' if a.status == 'active' else 'neutral' }}">{{ a.status }}</span></div>
         {% if view == "asis" and a.corruption_rules %}
           <div class="rules">{% for rule in a.corruption_rules %}<span class="rule" title="{{ rule_help.get(rule, rule) }}">{{ rule }}</span>{% endfor %}</div>
         {% endif %}
       </td>
       <td>{{ a.legal_entity_code }}</td>
-      <td class="name">{{ a.display_name }}
+      <td class="name"><span class="name-text">{{ a.display_name }}</span>
         {% if r.flags %}
         <div class="flags">
           {% for label, kind in r.flags %}<span class="flag flag-{{ kind }}">{{ label }}</span> {% endfor %}
         </div>
         {% endif %}
         {% if r.duplicates %}
-        <div class="dup-of">Possible duplicate of
+        <details class="dup-of">
+          <summary title="Show the look-alike accounts">Duplicate of {{ r.duplicates|length }} account{{ '' if r.duplicates|length == 1 else 's' }}</summary>
           <ul>{% for d in r.duplicates %}<li>{{ d }}</li>{% endfor %}</ul>
-        </div>
+        </details>
         {% endif %}
       </td>
       <td class="{{ 'cell-missing' if not a.vat_id else '' }}">{{ a.vat_id or 'missing' }}</td>
       <td class="bank {{ 'cell-missing' if not a.iban else '' }}">{{ a.iban|bank if a.iban else 'missing' }}</td>
       <td class="num {{ 'cell-terms' if r.terms_differ else '' }}">{{ a.payment_terms_days }}</td>
-      <td>{% if r.agreed_terms is not none %}{{ r.agreed_terms }}
-            <small class="muted">{{ r.agreed_source }}</small>
-            {% if r.party_found_by %}<br><small class="muted">matched to {{ r.party.canonical_name }} by {{ r.party_found_by }}</small>{% endif %}
+      <td class="num agreed">{% if r.agreed_terms is not none %}<strong class="num-inline">{{ r.agreed_terms }}</strong>
+            <div class="cell-sub">{{ r.agreed_source }}</div>
+            {% if r.party_found_by %}<div class="cell-sub">matched to {{ r.party.canonical_name }} by {{ r.party_found_by }}</div>{% endif %}
           {% else %}<span class="muted">—</span>{% endif %}</td>
-      <td>{{ a.created_by }}</td>
-      <td class="nowrap">{{ a.created_on.isoformat() }}</td>
-      <td><span class="chip chip-{{ 'ok' if a.status == 'active' else 'neutral' }}">{{ a.status }}</span></td>
+      <td class="created"><span class="nowrap">{{ a.created_on.isoformat() }}</span><div class="cell-sub">by {{ a.created_by }}</div></td>
       <td class="notes">{{ a.notes or '' }}</td>
     </tr>
     {% endfor %}

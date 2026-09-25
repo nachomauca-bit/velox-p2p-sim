@@ -1,16 +1,18 @@
 {# Extraction panel: rendered inside invoice.html and returned alone to HTMX after (re-)extraction. #}
+{% import "_icons.html" as ic %}
 <article class="panel" id="extraction-panel">
   <header class="panel-head">
-    <h2>Extraction</h2>
+    <h2>{{ ic.icon('scan') }}Extraction</h2>
     {% if doc.content_type != "email_body" %}
     <form method="post" action="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
           hx-post="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
           hx-target="#extraction-panel" hx-swap="outerHTML" hx-disabled-elt="find button">
-      <button type="submit" class="{{ 'secondary outline' if ex else '' }}">{{ ('Parse again' if is_ubl else 'Force re-extract') if ex else 'Extract now' }}</button>
+      <button type="submit" class="small-button{{ ' secondary' if ex else '' }}">{{ ic.icon('reset' if ex else 'scan') }}{{ ('Parse again' if is_ubl else 'Force re-extract') if ex else 'Extract now' }}</button>
     </form>
     {% endif %}
   </header>
 
+  <div class="panel-body">
   {% if panel_message %}
   <p class="flash flash-{{ panel_message[0] }}" role="status">{{ panel_message[1] }}</p>
   {% endif %}
@@ -30,20 +32,20 @@
     {% endif %}
     <span class="chip chip-{{ 'info' if doc_type == 'credit_note' else 'warn' if doc_type == 'other' else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
   </div>
-  <dl class="kv kv-compact">
-    <dt>Model</dt><dd><code>{{ ex.model }}</code></dd>
-    <dt>Latency</dt><dd>{{ '%d ms'|format(ex.latency_ms) if ex.latency_ms is not none else '—' }}</dd>
-    <dt>Tokens</dt><dd>{% if ex.input_tokens is not none or ex.output_tokens is not none %}{{ ex.input_tokens if ex.input_tokens is not none else '—' }} in / {{ ex.output_tokens if ex.output_tokens is not none else '—' }} out{% else %}—{% endif %}</dd>
-    <dt>Created on</dt><dd>{{ ex.created_on|dt }}</dd>
+  <dl class="meta-grid">
+    <div><dt>Model</dt><dd><code>{{ ex.model }}</code></dd></div>
+    <div><dt>Latency</dt><dd>{{ '%d ms'|format(ex.latency_ms) if ex.latency_ms is not none else '—' }}</dd></div>
+    <div><dt>Tokens</dt><dd>{% if ex.input_tokens is not none or ex.output_tokens is not none %}{{ ex.input_tokens if ex.input_tokens is not none else '—' }} in / {{ ex.output_tokens if ex.output_tokens is not none else '—' }} out{% else %}—{% endif %}</dd></div>
+    <div><dt>Created on</dt><dd>{{ ex.created_on|dt }}</dd></div>
   </dl>
 
-  <p class="legend muted">
-    Confidence below {{ threshold_pct }}% is flagged.
-    <span class="crit">critical</span> = field the gate needs;
-    <span class="crit crit-id">identity</span> = supplier identity (any one of VAT ID, IBAN or name is enough).
+  <p class="legend">
+    <span>Confidence below {{ threshold_pct }}% is flagged (the tick on each bar).</span>
+    <span><span class="crit">critical</span> = field the gate needs;</span>
+    <span><span class="crit crit-id">identity</span> = supplier identity (any one of VAT ID, IBAN or name is enough).</span>
   </p>
   <div class="overflow-auto">
-  <table class="fields">
+  <table class="fields" style="--threshold: {{ threshold_pct }}%">
     <thead><tr><th>Field</th><th>Value</th><th class="conf-col">Confidence</th></tr></thead>
     <tbody>
     {% for f in fields %}
@@ -103,4 +105,5 @@
     <pre><code>{{ raw_json }}</code></pre>
   </details>
   {% endif %}
+  </div>
 </article>

@@ -1,44 +1,70 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Control gate (new)", none), ("Inbox", "/inbox"), ("Gate run", none)] %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › Run</p>
-  <h1>Gate run <span class="muted h1-sub">{{ scenario_label }}</span></h1>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>Gate run <span class="h1-sub">{{ scenario_label }}</span></h1>
+    {% if run %}
+    <p class="lead">The step log of run <code>{{ run.run_id }}</code> and the outcome of every document it processed.</p>
+    {% else %}
+    <p class="lead">The step log of the latest run of this scenario and the outcome of every document.</p>
+    {% endif %}
+  </div>
   {% if run %}
-  <p class="lead">Run <code>{{ run.run_id }}</code> · finished {{ run.finished_on|dt }} ·
-    {{ summary.documents or 0 }} documents · {{ summary.touchless or 0 }} touchless · {{ summary.exceptions or 0 }} exceptions.
-    <a href="/gate/exceptions">Exception cockpit</a> · <a href="/gate/kpis">KPIs</a> · <a href="/gate/compare">Compare A vs B</a> · <a href="/inbox">Inbox</a></p>
+  <nav class="page-actions quick-links" aria-label="Results of the run">
+    <a href="/gate/exceptions">{{ ic.icon('alert') }}Exception cockpit</a>
+    <a href="/gate/kpis">{{ ic.icon('chart') }}KPIs</a>
+    <a href="/gate/compare">{{ ic.icon('compare') }}Compare A vs B</a>
+    <a href="/inbox">{{ ic.icon('inbox') }}Inbox</a>
+  </nav>
   {% endif %}
-</div>
+</header>
 
 {% if not run %}
 <article class="empty-state">
+  {{ m.empty_icon('terminal') }}
   <h2>{{ scenario_label }} has not been run yet</h2>
   <p>Run the scenario to send every document through the gate and watch the step log.</p>
   {{ m.run_button(scenario=scenario) }}
 </article>
 {% else %}
 
-{% if no_extraction or extraction.unavailable or extraction.failed %}
+{% if no_extraction or extraction.failed %}
 <p class="flash flash-warn">
+  <span>
   {% if no_extraction %}No extraction for {{ no_extraction|length }} document{{ '' if no_extraction|length == 1 else 's' }}:
     {{ no_extraction|join(', ') }}. The gate had no fields to read (see the outcome per document below).
     {{ no_extraction_reason }}{% endif %}
   {% if extraction.failed %}Extraction failed for {{ extraction.failed }} document{{ '' if extraction.failed == 1 else 's' }}{% if extraction.error %}: {{ extraction.error }}{% endif %}.{% endif %}
+  </span>
 </p>
 {% endif %}
-{% if unprocessed %}
-<p class="flash flash-info">Not in this run: {{ unprocessed|join(', ') }} (loaded after it). Run the scenario again to include {{ 'it' if unprocessed|length == 1 else 'them' }}.</p>
+{% if body_only %}
+<p class="flash flash-info"><span>{{ body_only|join(', ') }}: the invoice is only in the email body, so there is nothing
+  to extract; AP keys {{ 'it' if body_only|length == 1 else 'them' }} from the email text.</span></p>
 {% endif %}
+{% if unprocessed %}
+<p class="flash flash-info"><span>Not in this run: {{ unprocessed|join(', ') }} (loaded after it). Run the scenario again to include {{ 'it' if unprocessed|length == 1 else 'them' }}.</span></p>
+{% endif %}
+
+<div class="run-summary">
+  <div class="mini-stat"><span class="label">Documents</span><span class="value">{{ summary.documents or 0 }}</span></div>
+  <div class="mini-stat tone-ok"><span class="label">Touchless</span><span class="value">{{ summary.touchless or 0 }}</span></div>
+  <div class="mini-stat {{ 'tone-loop' if scenario == 'asis' else 'tone-bad' }}"><span class="label">Exceptions</span><span class="value">{{ summary.exceptions or 0 }}</span></div>
+  <div class="mini-stat"><span class="label">Finished</span><span class="value value-text">{{ run.finished_on|dt }}</span></div>
+</div>
 
 <section class="run-log-wrap">
   <header class="run-log-head">
-    <h2>Step log</h2>
+    <h2>{{ ic.icon('terminal') }}Step log</h2>
+    <span class="console-meta">{{ run.run_id }} · {{ lines|length }} lines</span>
     <a href="#run-log" class="show-all">Show all</a>
   </header>
   <div class="run-log" id="run-log" role="log" aria-label="Gate step log">
     {% for line in lines %}<div class="log-line log-{{ line.kind }}" style="animation-delay: {{ loop.index0 * step_ms }}ms"><span class="log-prefix">{{ line.prefix }}</span> {{ line.before }}<span class="log-token log-{{ line.tone }}">{{ line.token }}</span>{{ line.after }}</div>
-    {% else %}<div class="log-line muted">The run recorded no log lines.</div>{% endfor %}
+    {% else %}<div class="log-empty muted">The run recorded no log lines.</div>{% endfor %}
   </div>
   <script>
     (function () {  /* keep the newest revealed line in view while the log plays */
@@ -51,8 +77,8 @@
 </section>
 
 <section class="run-outcomes">
-  <h2>Outcome per document</h2>
-  <div class="overflow-auto">
+  <h2 class="section-title">{{ ic.icon('list') }}Outcome per document</h2>
+  <div class="overflow-auto table-card">
   <table class="gate-table striped">
     <thead>
       <tr><th>Doc</th><th>Supplier</th><th class="num">Amount</th><th>Outcome</th><th>Owner</th><th class="num">SLA</th><th class="num">Simulated days</th></tr>
@@ -62,10 +88,10 @@
       <tr id="row-{{ v.doc_id }}">
         <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
         <td>{{ v.supplier }}</td>
-        <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
+        <td class="num nowrap">{{ v.gross_total|money }} <span class="ccy">{{ v.currency or '' }}</span></td>
         <td>{{ m.outcome(v.chip_label, v.chip_tone) }}{% if v.badges %}<div class="cell-badges">{{ m.badges(v.badges) }}</div>{% endif %}</td>
         <td>{{ m.owner(v.owner_name, None, v.next_owner_name) }}</td>
-        <td class="num">{% if v.sla_days is none %}—{% else %}{{ v.sla_days }} d{% endif %}</td>
+        <td class="num">{% if v.sla_days is none %}<span class="muted">—</span>{% else %}{{ v.sla_days }} d{% endif %}</td>
         <td class="num"><strong>{{ v.days if v.days is not none else '—' }}</strong></td>
       </tr>
     {% endfor %}

@@ -1,45 +1,61 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Control gate (new)", none), ("Intake", none), ("Inbox", none)] %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › Intake</p>
-  <h1>Inbox</h1>
-  <p class="lead">
-    {% if scenario == "tobe" %}
-      Every document is registered on arrival: it gets a document ID and the ageing clock starts.
-    {% else %}
-      Documents wait in the mailboxes until AP opens ap@ or the store forwards its mail to AP.
-      {% if processed %}Each card shows when that happened: the ageing clock only started then.
-      {% else %}Nothing is registered until then; each card shows the expected registration date and why.{% endif %}
-    {% endif %}
-  </p>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>Inbox</h1>
+    <p class="lead">
+      {% if scenario == "tobe" %}
+        Every document is registered on arrival: it gets a document ID and the ageing clock starts.
+      {% else %}
+        Documents wait in the mailboxes until AP opens ap@ or the store forwards its mail to AP.
+        {% if processed %}Each card shows when that happened: the ageing clock only started then.
+        {% else %}Nothing is registered until then; each card shows the expected registration date and why.{% endif %}
+      {% endif %}
+    </p>
+  </div>
+</header>
+
+{% if total %}
+<div class="status-strip">
+  <div class="status-main">
   {% if datasets %}
-  <p class="dataset-line">Documents:
-    {% for ds in datasets %}<span class="chip chip-neutral dataset-chip" data-dataset="{{ ds.key }}">{{ ds.label }}</span>{% if ds.key == "live" %} <span class="muted">{{ ds.count }} received</span>{% endif %}{% if not loop.last %} + {% endif %}{% endfor %}
-  </p>
+  <div class="dataset-line"><span class="status-label">Documents</span>
+    {% for ds in datasets %}<span class="chip chip-neutral dataset-chip" data-dataset="{{ ds.key }}">{{ ds.label }}</span>{% if ds.key == "live" %} <span class="muted">{{ ds.count }} received</span>{% endif %}{% if not loop.last %} <span class="muted">+</span> {% endif %}{% endfor %}
+  </div>
   {% endif %}
-  {% if total %}
-  <p class="run-status">
+  <p class="run-status"><span class="status-label">Status</span>
     {% if processed %}
-      <span class="chip chip-ok">Gate run</span> {{ processed }} of {{ total }} documents processed{% if run %} on {{ run.finished_on|dt }}{% endif %}.
-      <a href="/run">Step log</a> · <a href="/gate/exceptions">Exception cockpit</a> · <a href="/gate/kpis">KPIs</a> · <a href="/gate/compare">Compare</a>
+      <span class="chip chip-ok">Gate run</span> <span>{{ processed }} of {{ total }} documents processed{% if run %} on {{ run.finished_on|dt }}{% endif %}.</span>
     {% else %}
-      <span class="chip chip-neutral">Not processed yet</span> Press <strong>Run scenario</strong> to send the {{ total }} documents through the gate.
+      <span class="chip chip-neutral">Not processed yet</span> <span>Press <strong>Run scenario</strong> to send the {{ total }} documents through the gate.</span>
     {% endif %}
   </p>
+  </div>
+  {% if processed %}
+  <nav class="quick-links" aria-label="Results of the run">
+    <a href="/run">{{ ic.icon('terminal') }}Step log</a>
+    <a href="/gate/exceptions">{{ ic.icon('alert') }}Exception cockpit</a>
+    <a href="/gate/kpis">{{ ic.icon('chart') }}KPIs</a>
+    <a href="/gate/compare">{{ ic.icon('compare') }}Compare</a>
+  </nav>
   {% endif %}
 </div>
+{% endif %}
 
 {% if total == 0 %}
 <article class="empty-state">
+  {{ m.empty_icon('inbox') }}
   <h2>No documents in the mailboxes of {{ scenario_label }}</h2>
   <p>Load a set of sample supplier documents into ap@ and the Berlin store mailbox to start: the 14 case documents,
     or test set v2 (26 documents in German, French, Spanish and English, with scans, a UBL e-invoice and an invoice
     in an email body).</p>
-  <form method="post" action="/documents/load" class="load-choices">
+  <form method="post" action="/documents/load" class="load-choices page-actions">
     <input type="hidden" name="scenario" value="{{ scenario }}">
     {% for key, label in dataset_choices.items() %}
-    <button type="submit" name="dataset" value="{{ key }}"{% if not loop.first %} class="secondary"{% endif %}>Load sample documents: {{ label }}</button>
+    <button type="submit" name="dataset" value="{{ key }}"{% if not loop.first %} class="secondary"{% endif %}>{{ ic.icon('load') }}Load {{ label[0]|lower }}{{ label[1:] }}</button>
     {% endfor %}
   </form>
 </article>
@@ -48,61 +64,61 @@
   {% for box in mailboxes %}
   <section class="mailbox" id="mailbox-{{ box.channel }}" data-count="{{ box.docs|length }}">
     <header class="mailbox-head">
-      <h2>{{ box.address }}</h2>
-      <span class="muted">{{ box.label }}</span>
+      <span class="mailbox-icon" aria-hidden="true">{{ ic.icon('mail') }}</span>
+      <div class="mailbox-title">
+        <h2>{{ box.address }}</h2>
+        <span class="muted">{{ box.label }}</span>
+      </div>
       <span class="count">{{ box.docs|length }} document{{ '' if box.docs|length == 1 else 's' }}</span>
     </header>
+    <div class="mailbox-body">
     {% if not box.docs %}
       <p class="muted">No documents in this mailbox.</p>
     {% endif %}
     {% for doc, reg, gv, doc_type in box.docs %}
-    <article class="doc-card" id="doc-{{ doc.doc_id }}">
+    {#- Registered on arrival (to-be): one quiet chip, the time in its tooltip. Otherwise (as-is) a line of its own. -#}
+    {%- set on_arrival = reg.registered and reg.date == doc.received_on -%}
+    <article class="doc-card tone-{{ gv.chip_tone if gv else 'none' }}" id="doc-{{ doc.doc_id }}">
       <div class="doc-card-top">
         <a class="doc-id" href="/invoice/{{ doc.doc_id }}">{{ doc.doc_id }}</a>
         <span class="doc-subject"><a href="/invoice/{{ doc.doc_id }}">{{ doc.subject }}</a></span>
       </div>
-      <dl class="doc-meta">
-        <dt>From</dt><dd>{{ doc.sender_email }}</dd>
-        <dt>Received</dt><dd>{{ doc.received_on|dt }}</dd>
-        {% if reg.registered %}
-          <dt>Registered</dt><dd>{{ reg.date|dt }} <span class="muted">({{ reg.reason }})</span></dd>
-        {% else %}
-          <dt>Registered</dt>
-          <dd><strong class="not-registered">Not registered yet</strong>
-            — expected {{ reg.date|d }} <span class="muted">({{ reg.reason }})</span></dd>
-        {% endif %}
-      </dl>
-      {% if gv %}
-      <div class="doc-outcome">
-        {{ m.outcome(gv.chip_label, gv.chip_tone) }}
-        {% if gv.owner_name or gv.outcome in ("exception", "human_review") %}
-        <span class="doc-owner">Owner: {% if gv.owner_name %}<strong>{{ gv.owner_name }}</strong>{% if gv.next_owner_name %}, then {{ gv.next_owner_name }}{% endif %}{% else %}—{% endif %}{% if gv.sla_days is not none %} · SLA {{ gv.sla_days }} day{{ '' if gv.sla_days == 1 else 's' }}{% endif %}</span>
-        {% endif %}
-        {% if gv.badges %}<div class="doc-badges">{{ m.badges(gv.badges) }}</div>{% endif %}
-      </div>
+      <p class="doc-from"><span class="doc-sender">{{ doc.sender_email }}</span> <span class="sep" aria-hidden="true">·</span>
+        <span class="nowrap" title="Received">{{ doc.received_on|dt }}</span></p>
+      {% if not on_arrival %}
+      <p class="doc-reg">
+        {% if reg.registered %}<span class="reg-label">Registered</span> <span class="nowrap">{{ reg.date|dt }}</span> <span class="muted">({{ reg.reason }})</span>
+        {% else %}<strong class="not-registered">Not registered yet</strong> — expected <span class="nowrap">{{ reg.date|d }}</span> <span class="muted">({{ reg.reason }})</span>{% endif %}
+      </p>
       {% endif %}
-      <div class="chips">
-        {% if reg.registered %}
-          <span class="chip chip-ok">Registered</span>
-        {% else %}
-          <span class="chip chip-warn">Not registered yet</span>
-        {% endif %}
+      <div class="chips pipeline-chips" aria-label="Intake">
+        {% if on_arrival %}<span class="chip" title="Registered {{ reg.date|dt }}">Registered on arrival</span>{% endif %}
         {% if doc.extraction %}
-          <span class="chip chip-ok">Extracted</span>
+          <span class="chip">Extracted</span>
         {% elif doc.content_type == "email_body" %}
           <span class="chip chip-warn">Nothing to extract</span>
         {% else %}
           <span class="chip chip-bad">Extraction pending</span>
         {% endif %}
-        <span class="chip chip-{{ 'info' if doc_type == 'credit_note' else 'warn' if doc_type == 'other' else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
+        <span class="chip{{ ' chip-warn' if doc_type == 'other' else '' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
         {% if doc.content_type and doc.content_type != "pdf" %}
-          <span class="chip chip-info content-chip">{{ content_labels.get(doc.content_type, doc.content_type) }}</span>
+          <span class="chip content-chip">{{ content_labels.get(doc.content_type, doc.content_type) }}</span>
         {% elif doc.email_body %}
-          <span class="chip chip-neutral content-chip">With email comment</span>
+          <span class="chip content-chip">With email comment</span>
         {% endif %}
       </div>
+      {% if gv %}
+      <div class="doc-outcome">
+        {{ m.outcome(gv.chip_label, gv.chip_tone) }}
+        {% if gv.badges %}<span class="doc-badges">{{ m.badges(gv.badges) }}</span>{% endif %}
+        {% if gv.owner_name or gv.outcome in ("exception", "human_review") %}
+        <span class="doc-owner">Owner: {% if gv.owner_name %}<strong>{{ gv.owner_name }}</strong>{% if gv.next_owner_name %}, then {{ gv.next_owner_name }}{% endif %}{% else %}—{% endif %}{% if gv.sla_days is not none %} · SLA {{ gv.sla_days }} day{{ '' if gv.sla_days == 1 else 's' }}{% endif %}</span>
+        {% endif %}
+      </div>
+      {% endif %}
     </article>
     {% endfor %}
+    </div>
   </section>
   {% endfor %}
 </div>

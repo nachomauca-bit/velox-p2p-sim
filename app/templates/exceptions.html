@@ -1,60 +1,75 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Control gate (new)", none), ("Exception cockpit", none)] %}
 {% block content %}
-<div class="page-head">
-  <p class="crumb">Control gate (new) › Exception cockpit</p>
-  <h1>Exception cockpit <span class="muted h1-sub">{{ scenario_label }}</span></h1>
-  <p class="lead">
-    {% if routing %}
-      Every exception is routed to a named owner with an SLA (business days from registration).
-      {% if as_of %}The blocking queue is a snapshot at the close of {{ as_of|d }}, the day the last open exception
-      arrived: age is counted to it (the simulation assumes every SLA is met). Info tasks and blocked duplicates
-      are listed from the whole run.{% endif %}
-      {% if has_live %}Documents received live through the intake webhook carry real dates and are aged to
-      today.{% endif %}
-    {% else %}
-      Without a gate nothing is tracked by type: every document that does not match a PO goes into the same
-      email loop, with no owner and no SLA. All {{ loop|length }} documents of the run that went through it are
-      listed.
-      {% if as_of %}Snapshot at the close of {{ as_of|d }}, when the last of them was registered: {{ loop_open }}
-      still in the loop that evening, {{ loop_sample - loop_open }} already posted. Age is counted to the snapshot,
-      or to the posting day for a document posted by then.{% endif %}
-      {% if has_live %}{{ loop_live }} of them {{ 'was' if loop_live == 1 else 'were' }} received live through the
-      intake webhook: {{ 'it carries' if loop_live == 1 else 'they carry' }} real dates, {{ 'is' if loop_live == 1
-      else 'are' }} not part of the snapshot and {{ 'is' if loop_live == 1 else 'are' }} aged to today.{% endif %}
-    {% endif %}
-  </p>
-</div>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>Exception cockpit <span class="h1-sub">{{ scenario_label }}</span></h1>
+    <p class="lead">
+      {% if routing %}Every exception is routed to a named owner with an SLA (business days from registration).
+      {% else %}Without a gate nothing is tracked by type: every document that does not match a PO goes into the same
+        email loop, with no owner and no SLA.{% endif %}
+    </p>
+  </div>
+</header>
+
+{#- How the ages are counted: a caption in the toolbar, not a paragraph before the data. -#}
+{% macro snapshot_note() -%}
+<p class="snapshot-note">{{ ic.icon('clock') }}<span>
+  {% if routing %}
+    {% if as_of %}The blocking queue is a snapshot at the close of {{ as_of|d }}, the day the last open exception
+    arrived: age is counted to it (the simulation assumes every SLA is met). Info tasks and blocked duplicates
+    are listed from the whole run.{% else %}Info tasks and blocked duplicates are listed from the whole run.{% endif %}
+    {% if has_live %}Documents received live through the intake webhook carry real dates and are aged to
+    today.{% endif %}
+  {% else %}
+    All {{ loop|length }} documents of the run that went through it are listed.
+    {% if as_of %}Snapshot at the close of {{ as_of|d }}, when the last of them was registered: {{ loop_open }}
+    still in the loop that evening, {{ loop_sample - loop_open }} already posted. Age is counted to the snapshot,
+    or to the posting day for a document posted by then.{% endif %}
+    {% if has_live %}{{ loop_live }} of them {{ 'was' if loop_live == 1 else 'were' }} received live through the
+    intake webhook: {{ 'it carries' if loop_live == 1 else 'they carry' }} real dates, {{ 'is' if loop_live == 1
+    else 'are' }} not part of the snapshot and {{ 'is' if loop_live == 1 else 'are' }} aged to today.{% endif %}
+  {% endif %}
+</span></p>
+{%- endmacro %}
 
 {% if not has_run %}
 <article class="empty-state">
+  {{ m.empty_icon('alert') }}
   <h2>{{ scenario_label }} has not been run yet</h2>
   <p>Run the scenario to fill the cockpit.</p>
   {{ m.run_button(scenario=scenario) }}
 </article>
 
 {% elif not routing %}
+<div class="cockpit-toolbar">{{ snapshot_note() }}</div>
 <section class="bucket bucket-loop" id="bucket-email_loop">
   <header class="bucket-head">
-    <h2>Email loop — untracked <span class="count">{{ loop|length }}</span></h2>
-    <span class="muted">Owner — · SLA — · nobody sees this queue as a list: it lives in personal inboxes.</span>
+    <h2>{{ ic.icon('mail') }}Email loop — untracked <span class="count">{{ loop|length }}</span></h2>
+    <span class="bucket-meta">
+      <span class="meta-item">{{ ic.icon('user') }}Owner —</span>
+      <span class="meta-item">{{ ic.icon('clock') }}SLA —</span>
+      <span class="meta-item">nobody sees this queue as a list: it lives in personal inboxes.</span>
+    </span>
   </header>
   {% if loop %}
   <div class="overflow-auto">
-  <table class="gate-table striped">
+  <table class="gate-table striped cockpit-table loop-table">
     <thead><tr><th>Document</th><th>Supplier</th><th class="num">Amount</th><th>Owner</th><th>SLA</th>
-      <th class="num">Days in loop</th><th>Posted on</th><th class="num">Age</th><th>Reason</th></tr></thead>
+      <th class="num days-col">Days in loop</th><th>Posted on</th><th class="num">Age</th><th>Reason</th></tr></thead>
     <tbody>
     {% for v in loop %}
       <tr id="loop-{{ v.doc_id }}"{% if v.posted_by_snapshot %} class="loop-closed"{% endif %}>
         <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
-        <td>{{ v.supplier }}</td>
-        <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
+        <td class="supplier">{{ v.supplier }}</td>
+        <td class="num nowrap">{{ v.gross_total|money }} <span class="ccy">{{ v.currency or '' }}</span></td>
         <td class="muted">—</td>
         <td class="muted">—</td>
         <td class="num"><strong>{{ v.email_loop_days if v.email_loop_days is not none else '—' }}</strong></td>
-        <td class="nowrap">{% if v.posted_by_snapshot %}<span class="chip chip-ok">posted {{ v.posted_on|d }}</span>
-          {%- elif v.posted_on %}{{ v.posted_on|d }} <small class="muted">after the snapshot</small>
+        <td class="posted-cell">{% if v.posted_by_snapshot %}<span class="chip chip-ok">posted {{ v.posted_on|d }}</span>
+          {%- elif v.posted_on %}<span class="nowrap">{{ v.posted_on|d }}</span> <small class="muted">after the snapshot</small>
           {%- else %}<span class="muted">not posted</span>{% endif %}</td>
         <td class="num nowrap">{{ v.age_days if v.age_days is not none else '—' }} d</td>
         <td class="reason">{{ v.reason or '' }}{% if v.badges %}<div class="cell-badges">{{ m.badges(v.badges) }}</div>{% endif %}</td>
@@ -64,39 +79,56 @@
   </table>
   </div>
   {% else %}
-  <p class="muted">No document is in the email loop.</p>
+  <p class="bucket-empty muted">No document is in the email loop.</p>
   {% endif %}
 </section>
 
 {% else %}
-<div class="owner-filter" role="navigation" aria-label="Filter by owner">
-  <span class="muted">Owner:</span>
-  <a href="/gate/exceptions" class="{{ 'active' if not owner else '' }}"{% if not owner %} aria-current="true"{% endif %}>All</a>
-  {% for name, n in owners %}
-  <a href="/gate/exceptions?owner={{ name|urlencode }}" class="{{ 'active' if owner == name else '' }}"{% if owner == name %} aria-current="true"{% endif %}>{{ name }} <span class="n">{{ n }}</span></a>
-  {% endfor %}
+<div class="cockpit-toolbar">
+  <div class="owner-filter" role="navigation" aria-label="Filter by owner">
+    <span class="filter-label">{{ ic.icon('user') }}Owner</span>
+    <a href="/gate/exceptions" class="{{ 'active' if not owner else '' }}"{% if not owner %} aria-current="true"{% endif %}>All</a>
+    {% for name, n in owners %}
+    <a href="/gate/exceptions?owner={{ name|urlencode }}" class="{{ 'active' if owner == name else '' }}"{% if owner == name %} aria-current="true"{% endif %}>{{ name }} <span class="n">{{ n }}</span></a>
+    {% endfor %}
+  </div>
+  <p class="queue-total"><strong>{{ queue_count }}</strong> blocking exception{{ '' if queue_count == 1 else 's' }}{% if owner %} for {{ owner }} (as owner or next owner){% endif %}.</p>
+  {{ snapshot_note() }}
 </div>
-
-<p class="queue-total"><strong>{{ queue_count }}</strong> blocking exception{{ '' if queue_count == 1 else 's' }}{% if owner %} for {{ owner }} (as owner or next owner){% endif %}.</p>
 
 {% for g in groups %}
 {% set t = g.type %}
+{#- Human review of an email that carries the invoice only in its body is not a low-confidence case: say so. -#}
+{% set body_rows = g.rows|selectattr("type_resolution")|list %}
+{% if not t %}{% set title, resolution = g.key, none %}
+{% elif not body_rows %}{% set title, resolution = t.label, t.resolution %}
+{% elif body_rows|length == g.rows|length %}{% set title, resolution = body_rows[0].type_label, body_rows[0].type_resolution %}
+{% else %}{% set title = "Human review — low extraction confidence or invoice only in the email body" %}
+{% set resolution = t.resolution ~ "; an invoice only in the email body: " ~ body_rows[0].type_resolution|lower %}{% endif %}
 <section class="bucket" id="bucket-{{ t.key if t else g.key }}">
   <header class="bucket-head">
-    <h2>{{ t.label if t else g.key }} <span class="count">{{ g.rows|length }}</span></h2>
-    {% if t %}<span class="muted">{{ t.owner_role }} · SLA {{ t.sla_days }} business day{{ '' if t.sla_days == 1 else 's' }} · {{ t.resolution }}</span>{% endif %}
+    <h2>{{ ic.icon('alert') }}{{ title }} <span class="count">{{ g.rows|length }}</span></h2>
+    {% if t %}
+    <span class="bucket-meta">
+      <span class="meta-item">{{ ic.icon('user') }}{{ t.owner_role }}</span>
+      <span class="meta-item">{{ ic.icon('clock') }}SLA {{ t.sla_days }} business day{{ '' if t.sla_days == 1 else 's' }}</span>
+      <span class="meta-item">{{ ic.icon('check-circle') }}{{ resolution }}</span>
+    </span>
+    {% endif %}
   </header>
   <div class="overflow-auto">
-  <table class="gate-table striped">
+  <table class="gate-table striped cockpit-table queue-table">
+    {#- the same column grid in every bucket, so the columns line up down the page -#}
+    <colgroup><col class="c-doc"><col class="c-supplier"><col class="c-amount"><col class="c-owner"><col class="c-due"><col class="c-age"><col></colgroup>
     <thead><tr><th>Document</th><th>Supplier</th><th class="num">Amount</th><th>Owner</th><th>SLA due</th>
       <th class="num">Age</th><th>Reason</th></tr></thead>
     <tbody>
     {% for v in g.rows %}
       <tr>
         <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
-        <td>{{ v.supplier }}</td>
-        <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
-        <td>{{ m.owner(v.owner_name, v.owner_role, v.next_owner_name, v.next_owner_role) }}</td>
+        <td class="supplier">{{ v.supplier }}</td>
+        <td class="num nowrap">{{ v.gross_total|money }} <span class="ccy">{{ v.currency or '' }}</span></td>
+        <td class="owner-cell">{{ m.owner(v.owner_name, v.owner_role, v.next_owner_name, v.next_owner_role) }}</td>
         <td class="nowrap">{{ v.sla_due|d }}</td>
         <td class="num nowrap">{{ v.age_days if v.age_days is not none else '—' }} d</td>
         <td class="reason">{{ v.reason or '' }}</td>
@@ -107,54 +139,54 @@
   </div>
 </section>
 {% else %}
-<p class="placeholder-box">No blocking exceptions{% if owner %} for {{ owner }}{% endif %}.</p>
+<div class="placeholder-box queue-empty">{{ ic.icon('check-circle') }}<span>No blocking exceptions{% if owner %} for {{ owner }}{% endif %}.</span></div>
 {% endfor %}
 
 <section class="bucket bucket-info" id="info-tasks">
   <header class="bucket-head">
-    <h2>Info tasks (non-blocking) <span class="count">{{ info|length }}</span></h2>
-    <span class="muted">The document was posted; the owner follows up without holding the payment. Listed from the whole run.</span>
+    <h2>{{ ic.icon('info') }}Info tasks (non-blocking) <span class="count">{{ info|length }}</span></h2>
+    <span class="bucket-meta">The document was posted; the owner follows up without holding the payment. Listed from the whole run.</span>
   </header>
   {% if info %}
   <div class="overflow-auto">
-  <table class="gate-table striped">
+  <table class="gate-table striped cockpit-table">
     <thead><tr><th>Document</th><th>Supplier</th><th>Task</th><th>Owner</th><th>Detail</th></tr></thead>
     <tbody>
     {% for item in info %}
       <tr>
         <td><a class="doc-id" href="/invoice/{{ item.view.doc_id }}">{{ item.view.doc_id }}</a></td>
-        <td>{{ item.view.supplier }}</td>
+        <td class="supplier">{{ item.view.supplier }}</td>
         <td><span class="chip chip-info">{{ item.flag.label or item.flag.type }}</span></td>
-        <td>{% if item.flag.owner_name %}<strong>{{ item.flag.owner_name }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
-        <td>{{ item.flag.detail or '' }}</td>
+        <td class="owner-cell">{% if item.flag.owner_name %}<strong>{{ item.flag.owner_name }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="reason">{{ item.flag.detail or '' }}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
   {% else %}
-  <p class="muted">No info tasks{% if owner %} for {{ owner }}{% endif %}.</p>
+  <p class="bucket-empty muted">No info tasks{% if owner %} for {{ owner }}{% endif %}.</p>
   {% endif %}
 </section>
 
 {% if blocked and not owner %}
 <section class="bucket bucket-blocked" id="blocked-duplicates">
   <header class="bucket-head">
-    <h2>Blocked duplicates <span class="count">{{ blocked|length }}</span></h2>
-    <span class="muted">Not posted. The supplier gets an automatic reply with the status of the original invoice;
+    <h2>{{ ic.icon('x-circle') }}Blocked duplicates <span class="count">{{ blocked|length }}</span></h2>
+    <span class="bucket-meta">Not posted. The supplier gets an automatic reply with the status of the original invoice;
       {{ ap_specialist }} is informed. Listed from the whole run.</span>
   </header>
   <div class="overflow-auto">
-  <table class="gate-table striped">
+  <table class="gate-table striped cockpit-table">
     <thead><tr><th>Document</th><th>Supplier</th><th class="num">Amount</th><th>Duplicate of</th><th>Owner</th><th>Reason</th></tr></thead>
     <tbody>
     {% for v in blocked %}
       <tr>
         <td><a class="doc-id" href="/invoice/{{ v.doc_id }}">{{ v.doc_id }}</a></td>
-        <td>{{ v.supplier }}</td>
-        <td class="num nowrap">{{ v.gross_total|money }} {{ v.currency or '' }}</td>
-        <td>{% if v.duplicate_of %}<a href="/invoice/{{ v.duplicate_of }}">{{ v.duplicate_of }}</a>{% else %}—{% endif %}</td>
-        <td>{{ m.owner(v.owner_name) }}</td>
+        <td class="supplier">{{ v.supplier }}</td>
+        <td class="num nowrap">{{ v.gross_total|money }} <span class="ccy">{{ v.currency or '' }}</span></td>
+        <td>{% if v.duplicate_of %}<a class="doc-id" href="/invoice/{{ v.duplicate_of }}">{{ v.duplicate_of }}</a>{% else %}—{% endif %}</td>
+        <td class="owner-cell">{{ m.owner(v.owner_name) }}</td>
         <td class="reason">{{ v.reason or '' }}</td>
       </tr>
     {% endfor %}

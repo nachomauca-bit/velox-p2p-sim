@@ -256,7 +256,8 @@ def test_browser_404_is_an_html_page_with_layout_and_footer(client, path, detail
     html = r.text
     assert config.FOOTER_TEXT in html and main.APP_TITLE in html
     assert "Velox ERP (mock, system of record)" in html and "Control gate (new)" in html
-    assert "404 · Not Found" in html and 'href="/inbox">Back to the inbox' in html
+    heading = "Document not found" if detail else "Page not found"
+    assert "Error 404" in html and f"<h1>{heading}</h1>" in html and 'href="/inbox">Back to the inbox' in html
     if detail:
         assert detail in html
 
@@ -367,7 +368,7 @@ def test_load_reports_failed_documents_without_the_key_hint(client, monkeypatch)
 
 def test_load_message_kind_and_key_hint(monkeypatch):
     base = {"extracted": 12, "from_cache": 12, "unavailable": 0, "failed": 0, "error": None}
-    assert main.load_message(12, "asis", base)[0] == "info"
+    assert main.load_message(12, "asis", base)[0] == "ok"
     monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     monkeypatch.setattr(config, "EXTRACTOR", "fixture")  # no key needed in fixture mode: no key hint
     kind, text = main.load_message(12, "asis", base | {"extracted": 11, "unavailable": 1})
@@ -545,12 +546,13 @@ def test_vendor_master_ratio_per_scenario(client):
     use_scenario(client, "asis")
     asis = client.get("/erp/vendors").text
     assert "28 accounts / 12 suppliers = 2.3" in asis
-    assert "Possible duplicate of" in asis and "Not linked to a party" in asis
+    assert 'class="dup-of"' in asis and "Duplicate of 4 accounts" in asis and "Not linked to a party" in asis
     assert 'class="rule"' in asis and "D1 spelling duplicate" in asis
     use_scenario(client, "tobe")
     tobe = client.get("/erp/vendors").text
     assert "16 accounts / 12 suppliers = 1.3" in tobe
-    assert "Possible duplicate of" not in tobe and "Not linked to a party" not in tobe
+    assert 'class="dup-of"' not in tobe and not re.search(r"Duplicate of \d+ account", tobe)
+    assert "Not linked to a party" not in tobe
     # the toggle shows the other view without switching the scenario
     assert "28 accounts / 12 suppliers = 2.3" in client.get("/erp/vendors?view=asis").text
     assert client.get("/erp/vendors?view=bogus").status_code == 400
@@ -598,7 +600,7 @@ def test_contracts_page_lists_all_contracts(client):
 
 def test_pending_invoices_empty_state(client):
     html = client.get("/erp/pending-invoices").text
-    assert "No invoices posted yet in A — As-is." in html
+    assert "<h2>No invoices posted yet in A — As-is</h2>" in html
     assert "The control gate posts here when the scenario runs." in html and 'action="/run"' in html
 
 
@@ -1121,7 +1123,7 @@ def test_invoice_b02_blocked_as_a_duplicate_of_b01(client):
     run_scenario(client, "tobe")
     panel = gate_panel(client.get("/invoice/B-02").text)
     assert ">Blocked duplicate<" in panel
-    assert "Duplicate of" in panel and '<a href="/invoice/B-01">B-01</a>' in panel
+    assert "Duplicate of" in panel and '<a class="doc-id" href="/invoice/B-01">B-01</a>' in panel
     assert "<strong>Marco Ruiz</strong>" in panel and "blocked on arrival" in panel
     assert "Reply to supplier with status" in panel
     assert "Draft message to owner" not in panel  # touchless: the supplier gets an automatic status reply
@@ -1178,9 +1180,10 @@ def test_cockpit_tobe_groups_by_type_with_owner_sla_and_age(client):
     assert 'href="/invoice/B-02"' in section(html, "blocked-duplicates")
     assert ("Not posted. The supplier gets an automatic reply with the status of the original invoice; "
             f"{world.AP_SPECIALIST.name} is informed. Listed from the whole run.") in blocked
-    lead = squash(page_text(html[html.index('class="lead"'):html.index("</p>", html.index('class="lead"'))]))
+    start = html.index('class="snapshot-note"')
+    note = squash(page_text(html[start:html.index("</p>", start)]))
     assert ("The blocking queue is a snapshot at the close of Mon 2026-10-05, the day the last open exception "
-            "arrived") in lead and "Info tasks and blocked duplicates are listed from the whole run." in lead
+            "arrived") in note and "Info tasks and blocked duplicates are listed from the whole run." in note
     assert "Email loop" not in html
 
 
@@ -1233,10 +1236,11 @@ def test_cockpit_asis_ages_stop_at_the_posting_day(client, session):
         else:
             assert marker not in row and f"{main.fmt_date(d.decided_on)} after the snapshot" in row, d.doc_id
     assert 0 < closed < len(loop)  # the snapshot shows both kinds
-    lead = squash(page_text(html[html.index('class="lead"'):html.index("</p>", html.index('class="lead"'))]))
-    assert f"All {len(loop)} documents of the run that went through it are listed." in lead
+    start = html.index('class="snapshot-note"')
+    note = squash(page_text(html[start:html.index("</p>", start)]))
+    assert f"All {len(loop)} documents of the run that went through it are listed." in note
     assert (f"Snapshot at the close of {main.fmt_date(as_of)}, when the last of them was registered: "
-            f"{len(loop) - closed} still in the loop that evening, {closed} already posted.") in lead
+            f"{len(loop) - closed} still in the loop that evening, {closed} already posted.") in note
 
 
 def test_cockpit_before_a_run_offers_the_button(client):
@@ -1251,7 +1255,7 @@ def test_kpis_show_values_and_formulas(client, session):
     assert "Upstream — process health" in html and "Downstream — automation efficiency" in html
     before = metrics.compute(session, "tobe")["kpis"].values()
     need_run = [k for k in before if k["group"] == "downstream" or k["value"] is None]
-    assert len(need_run) < len(before) and html.count(">Run the scenario<") == len(need_run)
+    assert len(need_run) < len(before) and html.count(">needs a run<") == len(need_run)
     assert 'id="kpi-accounts_per_supplier"' in html and ">1.3<" in html
     assert "chart.js@4" not in html
     run_scenario(client, "tobe")
@@ -1264,12 +1268,40 @@ def test_kpis_show_values_and_formulas(client, session):
         assert f'id="note-{i}"' in html
         assert squash(f"{kpi['label']}. {kpi['formula']}") in text, kpi["key"]  # numbered footnote
     assert len(re.findall(r'class="kpi-tile[ "]', html)) == len(kpis)
-    assert html.count('" title="') >= len(kpis)  # formula on hover
+    assert html.count('class="kpi-formula" role="tooltip"') == len(kpis)  # formula on hover and focus
+    for kpi in kpis.values():
+        start = html.index(f'id="f-{kpi["key"]}"')
+        assert squash(kpi["formula"]) in squash(page_text(html[start:html.index("</div>", start)])), kpi["key"]
+    assert len(re.findall(r'class="kpi-tile[^"]*" id="kpi-\w+" tabindex="0"', html)) == len(kpis)
     assert "https://cdn.jsdelivr.net/npm/chart.js@4" in html
     raw = re.search(r'id="chart-data" type="application/json">(.*?)</script>', html).group(1)
     data = json.loads(raw)
     assert data["outcomes"]["labels"][0] == "Posted" and sum(data["outcomes"]["values"]) == len(world.DOCUMENTS)
     assert len(data["cycle"]["labels"]) == len(world.DOCUMENTS)
+
+
+def test_kpi_layout_places_every_kpi_once(session):
+    """Headline row + group rows: no KPI dropped or shown twice, whatever the layout lists."""
+    kpis = main.ordered_kpis(metrics.compute(session, "tobe")["kpis"])
+    headline, groups = main.kpi_layout(kpis)
+    placed = [t["key"] for t in headline] + [t["key"] for g in groups for row in g["rows"] for t in row["items"]]
+    assert sorted(placed) == sorted(k["key"] for k in kpis)
+    assert [t["key"] for t in headline] == list(main.KPI_HEADLINE)
+    extra = kpis + [{"key": "new_kpi", "group": "downstream"}]  # a KPI the layout does not know yet
+    _, groups = main.kpi_layout(extra)
+    assert groups[-1]["rows"][-1]["items"][-1]["key"] == "new_kpi"
+
+
+def test_presentation_helpers():
+    assert main.value_parts("29,646.00 EUR") == [("29,646.00", "EUR")]
+    assert main.value_parts("1,800.00 EUR + 500.00 USD") == [("1,800.00", "EUR"), ("500.00", "USD")]
+    assert main.value_parts("0.5 days") == [("0.5", "days")] and main.value_parts("71.4%") is None
+    assert main.fmt_signed(300) == "+300.00" and main.fmt_signed(-12.5) == "-12.50"
+    assert main.nav_active("/run") == "/inbox" and main.nav_active("/invoice/B-01") == "/inbox"
+    # a badge that repeats the outcome pill next to it is dropped; the others stay
+    assert main.badge_chips(["credit applied", "contract match"], "Credit applied") == [("contract match", "ok")]
+    assert main.outcome_chip("blocked_duplicate", None) == ("Blocked duplicate", "blocked")
+    assert main.outcome_chip("applied_credit", None) == ("Credit applied", "vio")
 
 
 def test_kpis_and_compare_survive_a_metrics_error(client, monkeypatch):
@@ -1297,7 +1329,8 @@ def test_compare_offers_run_both_then_shows_both_columns(client):
         row = row[:row.index("</tbody>")]
         assert f'href="/invoice/A-{d.no:02d}"' in row and f'href="/invoice/B-{d.no:02d}"' in row
         assert "Designed to show:" in row
-    assert ">duplicate posting<" in html and ">blocked duplicate<" in html
+    assert ">duplicate posting<" in html and ">Blocked duplicate<" in html
+    assert ">blocked duplicate<" not in html and ">credit applied<" not in html  # no badge repeats its outcome
     tile = html[html.index('id="cmp-touchless_rate"'):]
     tile = tile[:tile.index('class="kpi-tile')]
     assert "35.7%" in tile and "71.4%" in tile and "side-tobe better" in tile

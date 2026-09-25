@@ -24,6 +24,7 @@ from xml.dom import minidom
 
 import jinja2
 import markdown
+from markupsafe import Markup
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -126,6 +127,13 @@ def fmt_date(value: Optional[date | datetime]) -> str:
     return "—" if value is None else value.strftime("%a %Y-%m-%d")
 
 
+def fmt_date_wd(value: Optional[date | datetime]) -> Markup:
+    """fmt_date with the weekday in its own span, so a narrow table can hide it: 'Thu 2026-10-01'."""
+    if value is None:
+        return Markup("—")
+    return Markup('<span class="wd">{}</span> {}').format(value.strftime("%a"), value.strftime("%Y-%m-%d"))
+
+
 def fmt_datetime(value: Optional[datetime]) -> str:
     return "—" if value is None else value.strftime("%a %Y-%m-%d %H:%M")
 
@@ -134,7 +142,26 @@ def fmt_bank(value: Optional[str]) -> str:
     return world.format_iban(value) if value else "—"
 
 
-templates.env.filters.update(money=fmt_money, qty=fmt_qty, d=fmt_date, dt=fmt_datetime, bank=fmt_bank)
+_VALUE_UNIT = re.compile(r"^([-+]?[\d,]+(?:\.\d+)?) ([A-Z]{3}|days?)$")
+
+
+def value_parts(value: Any) -> Optional[list[tuple[str, str]]]:
+    """A KPI value split into number and unit, so a tile can show the unit smaller and never break the number:
+    '29,646.00 EUR' -> [('29,646.00', 'EUR')], '1,800.00 EUR + 500.00 USD' -> two parts, '0.5 days' ->
+    [('0.5', 'days')]; None for any other text (a percentage, a ratio, a dash)."""
+    parts = [_VALUE_UNIT.match(p.strip()) for p in str(value or "").split(" + ")]
+    return [(m.group(1), m.group(2)) for m in parts] if parts and all(parts) else None
+
+
+def fmt_signed(value: Optional[float]) -> str:
+    """Money with an explicit sign for a variance: '+300.00', '-12.50', '0.00'."""
+    if value is None:
+        return "—"
+    return f"+{value:,.2f}" if value > 0 else f"{value:,.2f}"
+
+
+templates.env.filters.update(money=fmt_money, qty=fmt_qty, d=fmt_date, dwd=fmt_date_wd, dt=fmt_datetime,
+                             bank=fmt_bank, value_parts=value_parts, signed=fmt_signed)
 
 
 # --------------------------------------------------------------------------------------------
@@ -208,11 +235,12 @@ def read_flash(request: Request) -> Optional[dict[str, str]]:
     if not raw:
         return None
     kind, _, text = unquote(raw).partition("|")
-    return {"kind": kind if kind in ("info", "warn", "error") else "info", "text": text}
+    return {"kind": kind if kind in ("ok", "info", "warn", "error") else "info", "text": text}
 
 
 def nav_active(path: str) -> str:
-    return "/inbox" if path.startswith("/invoice/") else path
+    """Sidebar item to highlight: a document page and the step log of a run belong to the inbox."""
+    return "/inbox" if path.startswith("/invoice/") or path == "/run" else path
 
 
 def render(request: Request, name: str, context: dict[str, Any], status_code: int = 200) -> Response:
@@ -380,7 +408,7 @@ def load_message(loaded: int, scenario: str, summary: dict[str, Any], dataset: s
             text += "."
     if failed:
         return ("error", text)
-    return ("warn", text) if unavailable else ("info", text)
+    return ("warn", text) if unavailable else ("ok", text)
 
 
 # Pages of a single document: a reset deletes the scenario's documents (webhook uploads are not
@@ -477,7 +505,7 @@ def run_scenario(request: Request, scenario: Optional[str] = Form(None),
     """Header "Run scenario": process every document of the page's scenario, then show the step log."""
     scenario = form_scenario(request, scenario)
     run, message = run_gate(session, scenario)
-    response = redirect("/inbox", ("error", message)) if run is None else redirect("/run", ("info", message))
+    response = redirect("/inbox", ("error", message)) if run is None else redirect("/run", ("ok", message))
     set_scenario_cookie(response, scenario)
     return response
 
@@ -491,7 +519,7 @@ def run_both(session: Session = Depends(db.get_session)) -> RedirectResponse:
         if run is None:
             return redirect("/gate/compare", ("error", message))
         messages.append(message)
-    return redirect("/gate/compare", ("info", " ".join(messages)))
+    return redirect("/gate/compare", ("ok", " ".join(messages)))
 
 
 # --------------------------------------------------------------------------------------------
@@ -501,17 +529,20 @@ def run_both(session: Session = Depends(db.get_session)) -> RedirectResponse:
 EMAIL_LOOP_LABEL = "Email loop — untracked"
 OUTCOME_LABELS = {"posted": "Posted", "exception": "Exception", "blocked_duplicate": "Blocked duplicate",
                   "applied_credit": "Credit applied", "human_review": "Human review"}
-OUTCOME_TONES = {"posted": "ok", "applied_credit": "ok", "blocked_duplicate": "info", "human_review": "warn",
+# One colour per outcome, the same on every page (pills, inbox card stripes, outcome cards, charts):
+# posted = emerald, credit applied = violet, blocked duplicate = slate, human review = amber, exception = red,
+# email loop = orange. Sky ("info") is kept for info tasks and info flags only.
+OUTCOME_TONES = {"posted": "ok", "applied_credit": "vio", "blocked_duplicate": "blocked", "human_review": "warn",
                  "exception": "bad"}
 # Tone of a step result in the gate trace and the run log (css class chip-<tone>).
-RESULT_TONES = {"ok": "ok", "applied": "ok", "info": "info", "blocked": "info", "flag": "warn", "created": "warn",
-                "exception": "bad", "unapplied": "bad", "skipped": "neutral", **OUTCOME_TONES}
+RESULT_TONES = {"ok": "ok", "applied": "vio", "info": "info", "blocked": "blocked", "flag": "warn",
+                "created": "warn", "exception": "bad", "unapplied": "bad", "skipped": "neutral", **OUTCOME_TONES}
 # Short badges (same strings as metrics.compare cells) and their tone.
 BADGE_TONES = {"duplicate posting": "bad", "wrong entity": "bad", "unapplied credit": "bad",
                "vendor account created": "bad", "terms paid early": "warn", "terms paid late": "warn",
                "terms variance": "warn", "terms variance flagged": "info", "duplicate account flagged": "info",
-               "DoA auto-approved": "info", "blocked duplicate": "info", "contract match": "ok",
-               "3-way match": "ok", "credit applied": "ok", "statement posted as invoice": "bad",
+               "DoA auto-approved": "info", "blocked duplicate": "blocked", "contract match": "ok",
+               "3-way match": "ok", "credit applied": "vio", "statement posted as invoice": "bad",
                "UBL e-invoice": "info", "email body only": "warn"}
 STEP_LABELS = {"register": "Register", "extract": "Extract", "resolve_vendor": "Resolve vendor",
                "legal_entity": "Legal entity check", "duplicate_check": "Duplicate check",
@@ -539,8 +570,23 @@ def outcome_chip(outcome: Optional[str], exception_type: Optional[str]) -> tuple
     return OUTCOME_LABELS.get(outcome or "", outcome or "—"), OUTCOME_TONES.get(outcome or "", "neutral")
 
 
-def badge_chips(badges: list[str]) -> list[tuple[str, str]]:
-    return [(b, BADGE_TONES.get(b, "neutral")) for b in badges]
+def badge_chips(badges: list[str], *shown: Optional[str]) -> list[tuple[str, str]]:
+    """(label, tone) of the short badges, without the ones that repeat a label already shown next to them (the
+    outcome pill "Credit applied" makes the badge "credit applied" redundant)."""
+    seen = [s.lower() for s in shown if s]
+    return [(b, BADGE_TONES.get(b, "neutral")) for b in badges if not any(b.lower() in s for s in seen)]
+
+
+# Badge that repeats the content-type chip of an inbox card ("UBL e-invoice (XML)", "Email body, no attachment").
+CONTENT_BADGES = {"ubl_xml": "UBL e-invoice", "email_body": "email body only"}
+# An email that carries the invoice only in its body goes to human review, but not for a low extraction
+# confidence: there was nothing to extract. The pages say so instead of the taxonomy label.
+EMAIL_BODY_REVIEW_LABEL = "Human review — invoice only in the email body"
+EMAIL_BODY_REVIEW_RESOLUTION = "Key the invoice from the email text"
+
+
+def is_email_body_review(decision: GateDecision, doc: Optional[InboundDocument]) -> bool:
+    return doc is not None and doc.content_type == "email_body" and decision.exception_type == "human_review"
 
 
 def sla_due(decision: GateDecision, doc: Optional[InboundDocument]) -> Optional[datetime]:
@@ -593,14 +639,17 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
                          det.get("sample_no") or (doc.sample_no if doc else 0))
     posted = posted_on(decision)
     posted_by_snapshot = bool(as_of and posted and posted <= as_of)
+    email_body_review = is_email_body_review(decision, doc)
+    type_label = taxonomy.label(decision.exception_type) if decision.exception_type else None
     return {
         **det,
         "doc_id": decision.doc_id,
         "outcome": decision.outcome,
         "exception_type": decision.exception_type,
         "is_email_loop": decision.exception_type == "email_loop",
-        "type_label": taxonomy.label(decision.exception_type) if decision.exception_type else None,
+        "type_label": EMAIL_BODY_REVIEW_LABEL if email_body_review else type_label,
         "type_info": taxonomy.BY_KEY.get(decision.exception_type or ""),
+        "type_resolution": EMAIL_BODY_REVIEW_RESOLUTION if email_body_review else None,
         "chip_label": label,
         "chip_tone": tone,
         "owner_name": decision.owner_name,
@@ -612,7 +661,7 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
         "posted_by_snapshot": posted_by_snapshot,
         "reason": decision.reason,
         "days": None if decision.simulated_days is None else int(decision.simulated_days),
-        "badges": badge_chips(metrics.badges(decision)),
+        "badges": badge_chips(metrics.badges(decision), label),
         "flags": det.get("flags") or [],
         "supplier": det.get("supplier_name") or (spec.printed_supplier_name if spec else None) or "—",
         "path_label": PATH_LABELS.get(det.get("path") or "", det.get("path")),
@@ -692,6 +741,10 @@ def inbox(request: Request, session: Session = Depends(db.get_session)) -> Respo
                            .order_by(InboundDocument.received_on, InboundDocument.doc_id)).all()
     decisions = decisions_by_doc(session, scenario)
     views = {d.doc_id: gate_view(decisions[d.doc_id], d) for d in docs if d.doc_id in decisions}
+    for d in docs:  # an inbox card already names the content type in a chip
+        if d.doc_id in views and d.content_type in CONTENT_BADGES:
+            views[d.doc_id]["badges"] = [b for b in views[d.doc_id]["badges"]
+                                         if b[0] != CONTENT_BADGES[d.content_type]]
     mailboxes = [
         {"channel": channel, "address": address, "label": CHANNEL_LABELS[channel],
          "docs": [(d, registration_info(d), views.get(d.doc_id), doc_type_key(d)) for d in docs
@@ -739,7 +792,9 @@ def run_page(request: Request, session: Session = Depends(db.get_session)) -> Re
         "page_title": "Run", "run": run, "summary": summary, "lines": lines,
         "step_ms": max(12, min(90, LOG_REVEAL_MS // max(len(lines), 1))),
         "rows": [gate_view(decisions[d.doc_id], d) for d in docs if d.doc_id in decisions],
-        "no_extraction": [d.doc_id for d in docs if d.extraction is None],
+        # an email that carries the invoice only in its body has nothing to extract: named apart, not as missing
+        "no_extraction": [d.doc_id for d in docs if d.extraction is None and d.content_type != "email_body"],
+        "body_only": [d.doc_id for d in docs if d.extraction is None and d.content_type == "email_body"],
         "no_extraction_reason": no_extraction_reason(),
         "unprocessed": [d.doc_id for d in docs if d.doc_id not in decisions],
         "extraction": summary.get("extraction") or {},
@@ -1082,7 +1137,7 @@ def document_file(name: str, session: Session = Depends(db.get_session)) -> File
 # --------------------------------------------------------------------------------------------
 
 
-PVI_STATUS = {"pending_payment": ("pending payment", "neutral"), "credit_applied": ("credit applied", "ok"),
+PVI_STATUS = {"pending_payment": ("pending payment", "neutral"), "credit_applied": ("credit applied", "vio"),
               "unapplied_credit": ("unapplied credit", "bad")}
 
 
@@ -1381,14 +1436,52 @@ KPI_BETTER = {"po_contract_coverage": 1, "accounts_per_supplier": -1, "pct_accou
               "wrong_entity_postings": -1, "non_invoice_postings": -1, "terms_variance_paid": -1,
               "cash_leakage_amount": -1,
               "avg_cycle_days": -1, "avg_cycle_followup_days": -1, "reference_nonpo_store_days": -1}
-CYCLE_KPIS = ("avg_cycle_days", "avg_cycle_followup_days", "reference_nonpo_store_days")
 KPI_GROUPS = (("upstream", "Upstream — process health"), ("downstream", "Downstream — automation efficiency"))
-# Chart colours (light surface): outcomes use the status steps where the outcome is a state (posted = good,
-# human review = warning, exception = critical) and fixed categorical slots otherwise; cycle bars are blue
-# for "no human step" paths and orange for paths with a human step. Labels and legends always name them.
-CHART_COLOURS = {"posted": "#0ca30c", "applied_credit": "#4a3aa7", "blocked_duplicate": "#2a78d6",
-                 "human_review": "#fab219", "exception": "#d03b3b"}
-PATH_COLOURS = {"matched": "#2a78d6", "touchless": "#2a78d6", "email_loop": "#eb6834", "exception": "#eb6834"}
+# Layout of the KPI tiles on the KPIs and Compare pages: a headline row of four larger tiles, then the two groups of
+# the case deck, the downstream one in labelled rows. A KPI missing from the layout goes to the last row of its group.
+KPI_HEADLINE = ("touchless_rate", "exception_rate", "avg_cycle_days", "cash_leakage_amount")
+KPI_ROWS: dict[str, tuple[tuple[Optional[str], tuple[str, ...]], ...]] = {
+    "upstream": ((None, ("po_contract_coverage", "accounts_per_supplier", "pct_accounts_vat_iban",
+                         "pct_accounts_terms_ok", "registration_lag_days")),),
+    "downstream": (("Throughput and cycle time", ("touchless", "exceptions", "avg_cycle_followup_days",
+                                                  "reference_nonpo_store_days")),
+                   ("Duplicates and credit notes", ("duplicates_blocked", "duplicate_postings", "duplicate_invoices",
+                                                    "credit_notes_applied", "credit_notes_unapplied")),
+                   ("Posting quality", ("wrong_entity_postings", "non_invoice_postings", "terms_variance_paid"))),
+}
+
+
+def kpi_layout(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(headline tiles, groups) for KPI tiles or compare rows (dicts with "key" and "group"). Every item is placed
+    exactly once: the headline row first, then the rows of its group."""
+    by_key = {t["key"]: t for t in items}
+    headline = [by_key[k] for k in KPI_HEADLINE if k in by_key]
+    placed = {t["key"] for t in headline}
+    groups = []
+    for key, title in KPI_GROUPS:
+        rows: list[dict[str, Any]] = []
+        for row_title, keys in KPI_ROWS.get(key, ()):
+            row = [by_key[k] for k in keys if k in by_key and k not in placed]
+            placed.update(t["key"] for t in row)
+            if row:
+                rows.append({"title": row_title, "items": row})
+        rest = [t for t in items if t.get("group") == key and t["key"] not in placed]
+        placed.update(t["key"] for t in rest)
+        if rest and rows:
+            rows[-1]["items"] = rows[-1]["items"] + rest
+        elif rest:
+            rows.append({"title": None, "items": rest})
+        groups.append({"key": key, "title": title, "rows": rows})
+    return headline, groups
+# Chart colours: the outcome colours of the pills (OUTCOME_TONES, app/static/app.css), so a colour means the same
+# thing on every page: posted = emerald, credit applied = violet, blocked duplicate = slate, human review = amber,
+# exception = red, email loop = orange. Cycle bars: no human step = emerald, exception with SLA = red, email loop =
+# orange. Legends and data tables name every colour.
+CHART_COLOURS = {"posted": "#059669", "applied_credit": "#7c3aed", "blocked_duplicate": "#475569",
+                 "human_review": "#f59e0b", "exception": "#dc2626"}
+CHART_NEUTRAL = "#64748b"
+EXCEPTION_BAR_COLOURS = {"email_loop": "#ea580c"}  # every other exception type: the exception red
+PATH_COLOURS = {"matched": "#059669", "touchless": "#059669", "email_loop": "#ea580c", "exception": "#dc2626"}
 
 
 def ordered_kpis(kpis: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1419,16 +1512,18 @@ def chart_data(data: dict[str, Any]) -> dict[str, Any]:
     outcomes = data.get("outcomes") or {}
     by_type = data.get("exceptions_by_type") or {}
     cycle = data.get("cycle_by_doc") or []
-    type_labels = [EMAIL_LOOP_LABEL if k == "email_loop" else taxonomy.label(k) for k in by_type]
+    # human review covers a low extraction confidence and an invoice only in an email body: the neutral name
+    type_labels = [EMAIL_LOOP_LABEL if k == "email_loop" else OUTCOME_LABELS["human_review"] if k == "human_review"
+                   else taxonomy.label(k) for k in by_type]
     return {
         "outcomes": {"labels": [OUTCOME_LABELS.get(k, k) for k in outcomes], "values": list(outcomes.values()),
-                     "colours": [CHART_COLOURS.get(k, "#6b7280") for k in outcomes]},
+                     "colours": [CHART_COLOURS.get(k, CHART_NEUTRAL) for k in outcomes]},
         "exceptions": {"labels": type_labels, "lines": [label_lines(label) for label in type_labels],
                        "values": list(by_type.values()),
-                       "colours": ["#ec835a" if k == "email_loop" else "#d03b3b" for k in by_type]},
+                       "colours": [EXCEPTION_BAR_COLOURS.get(k, CHART_COLOURS["exception"]) for k in by_type]},
         "cycle": {"labels": [c.get("doc_id") for c in cycle], "values": [c.get("days") for c in cycle],
                   "paths": [PATH_LABELS.get(c.get("path") or "", c.get("path")) for c in cycle],
-                  "colours": [PATH_COLOURS.get(c.get("path") or "", "#6b7280") for c in cycle]},
+                  "colours": [PATH_COLOURS.get(c.get("path") or "", CHART_NEUTRAL) for c in cycle]},
     }
 
 
@@ -1460,10 +1555,10 @@ def kpis(request: Request, session: Session = Depends(db.get_session)) -> Respon
     available = bool(data and data.get("available"))
     for t in tiles:
         t["shown"] = kpi_display(t, available)
-    groups = [{"key": key, "title": title, "tiles": [t for t in tiles if t.get("group") == key]}
-              for key, title in KPI_GROUPS]
+    headline, groups = kpi_layout(tiles)
     return render(request, "kpis.html", {
         "page_title": "KPIs", "data": data, "error": error, "available": available, "groups": groups,
+        "headline": headline,
         "tiles": tiles, "charts": chart_data(data) if data and available else None,
         "partial_warning": partial_run_warning(data),
     })
@@ -1496,13 +1591,15 @@ def compare_cell(cell: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not cell:
         return None
     label, tone = outcome_chip(cell.get("outcome"), cell.get("exception_type"))
-    return {**cell, "chip_label": label, "chip_tone": tone, "badge_chips": badge_chips(cell.get("badges") or [])}
+    return {**cell, "chip_label": label, "chip_tone": tone,
+            "badge_chips": badge_chips(cell.get("badges") or [], label)}
 
 
 @app.get("/gate/compare")
 def compare(request: Request, session: Session = Depends(db.get_session)) -> Response:
     data, error = safe_metrics(lambda: metrics.compare(session), "comparison")
     kpi_rows = compare_kpi_rows(data) if data else []
+    headline, groups = kpi_layout(kpi_rows)
     rows = [{**r, "a": compare_cell(r.get("asis")), "b": compare_cell(r.get("tobe"))}
             for r in (data or {}).get("rows") or []]
     partial = [(config.SCENARIO_LABELS[s], warning) for s in config.SCENARIOS
@@ -1511,9 +1608,8 @@ def compare(request: Request, session: Session = Depends(db.get_session)) -> Res
         "page_title": "Compare", "data": data, "error": error, "rows": rows, "partial_warnings": partial,
         "both_available": bool(data and data.get("both_available")),
         "available": {s: bool(data and (data.get(s) or {}).get("available")) for s in config.SCENARIOS},
-        "groups": [{"key": key, "title": title, "rows": [r for r in kpi_rows if r.get("group") == key]}
-                   for key, title in KPI_GROUPS],
-        "cycle_rows": [r for r in kpi_rows if r["key"] in CYCLE_KPIS],
+        "headline": headline, "groups": groups,
+        "loaded": {s: (data or {}).get("datasets", {}).get(s) for s in config.SCENARIOS},
     })
 
 

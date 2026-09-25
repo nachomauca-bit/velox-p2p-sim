@@ -1,14 +1,22 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_icons.html" as ic %}
+{% set crumbs = [("Velox ERP", none), ("Accounts payable", none), ("Pending vendor invoices", none)] %}
 {% block content %}
-<div class="page-head erp-head">
-  <p class="crumb">Velox ERP › Accounts payable › Pending vendor invoices <span class="chip chip-neutral">read-only</span></p>
-  <h1>Pending vendor invoices <span class="muted h1-sub">{{ rows|length }} posted</span></h1>
-</div>
+<header class="page-head erp-head">
+  <div class="page-head-main">
+    <p class="eyebrow">{{ ic.icon('database') }}Velox ERP · Accounts payable <span class="readonly-tag">read-only</span></p>
+    <h1>Pending vendor invoices <span class="h1-sub">{{ rows|length }} posted</span></h1>
+    <p class="lead">The invoices and credit notes posted into the ERP by the run of {{ scenario_label }}, one row per
+      posting. Flags show where the payment terms came from, duplicates, wrong-entity postings, credit notes and
+      DoA auto-approvals.</p>
+  </div>
+</header>
 
 {% if not rows %}
 <article class="empty-state">
-  <h2>No invoices posted yet in {{ scenario_label }}.</h2>
+  {{ m.empty_icon('invoice') }}
+  <h2>No invoices posted yet in {{ scenario_label }}</h2>
   <p>The control gate posts here when the scenario runs.</p>
   {{ m.run_button(scenario=scenario) }}
 </article>
@@ -19,38 +27,37 @@
     <span class="tile-label">total of {{ t.count }} posting{{ '' if t.count == 1 else 's' }} in {{ t.currency }}</span></div>
   {% endfor %}
 </div>
-<p class="muted small">Totals per currency, never converted; credit notes count as negative amounts.</p>
+<p class="table-note muted">Totals per currency, never converted; credit notes count as negative amounts.</p>
 
-<div class="overflow-auto">
-<table class="erp-table striped">
+<div class="overflow-auto table-card">
+<table class="erp-table pvi-table striped">
   <thead>
-    <tr><th>Invoice ID</th><th>Document</th><th>Entity</th><th>Vendor account</th><th>Invoice number</th>
-        <th>Invoice date</th><th>Due date</th><th class="num">Total</th><th class="num">Terms</th>
+    <tr><th>Invoice ID</th><th>Entity</th><th>Vendor account</th><th>Invoice number</th>
+        <th>Invoice date<span class="th-sub">due date</span></th><th class="num">Total</th><th class="num">Terms</th>
         <th>PO</th><th>Posted on</th><th>Status</th><th>Flags</th></tr>
   </thead>
   <tbody>
   {% for item in rows %}
     {% set r = item.row %}
     <tr id="{{ r.invoice_id }}">
-      <td><code>{{ r.invoice_id }}</code></td>
-      <td>{% if r.doc_id %}<a href="/invoice/{{ r.doc_id }}">{{ r.doc_id }}</a>{% else %}—{% endif %}</td>
+      <td class="nowrap"><code>{{ r.invoice_id }}</code>
+        <div class="cell-sub">{% if r.doc_id %}from <a class="doc-id" href="/invoice/{{ r.doc_id }}">{{ r.doc_id }}</a>{% else %}<span class="muted">no document</span>{% endif %}</div></td>
       <td>{{ r.legal_entity_code }}</td>
       <td><code>{{ r.vendor_account_id }}</code></td>
-      <td>{{ r.invoice_number }}</td>
-      <td class="nowrap">{{ r.invoice_date|d }}</td>
-      <td class="nowrap">{{ r.due_date|d }}</td>
-      <td class="num nowrap">{{ r.total|money }} {{ r.currency }}</td>
+      <td class="inv-no">{{ r.invoice_number }}</td>
+      <td class="date">{{ r.invoice_date|dwd }}<div class="cell-sub">due {{ r.due_date|dwd }}</div></td>
+      <td class="num nowrap"><strong>{{ r.total|money }}</strong> <span class="ccy">{{ r.currency }}</span></td>
       <td class="num">{{ r.terms_days if r.terms_days is not none else '—' }}</td>
-      <td>{{ r.po_number or '—' }}</td>
-      <td class="nowrap">{{ r.posted_on|d }}</td>
-      <td><span class="chip chip-{{ item.status[1] }}">{{ item.status[0] }}</span></td>
-      <td class="pvi-flags">{% for c in item.chips %}{% if c.href %}<a href="{{ c.href }}" class="chip chip-{{ c.tone }}">{{ c.label }}</a>{% else %}<span class="chip chip-{{ c.tone }}">{{ c.label }}</span>{% endif %} {% endfor %}</td>
+      <td>{% if r.po_number %}<code>{{ r.po_number }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="date">{{ r.posted_on|dwd }}</td>
+      <td class="status-cell"><span class="chip chip-{{ item.status[1] }}">{{ item.status[0] }}</span></td>
+      <td class="pvi-flags"><div class="chips">{% for c in item.chips %}{% if c.href %}<a href="{{ c.href }}" class="chip chip-{{ c.tone }}">{{ c.label }}</a>{% else %}<span class="chip chip-{{ c.tone }}">{{ c.label }}</span>{% endif %} {% endfor %}</div></td>
     </tr>
   {% endfor %}
   </tbody>
   <tfoot>
     {% for t in totals %}
-    <tr><th colspan="7">Total {{ t.currency }} ({{ t.count }})</th><th class="num nowrap">{{ t.total|money }} {{ t.currency }}</th><th colspan="5"></th></tr>
+    <tr><th colspan="5">Total {{ t.currency }} ({{ t.count }})</th><th class="num nowrap">{{ t.total|money }} {{ t.currency }}</th><th colspan="5"></th></tr>
     {% endfor %}
   </tfoot>
 </table>

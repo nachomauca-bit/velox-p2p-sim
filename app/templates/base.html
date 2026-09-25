@@ -1,85 +1,163 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+{% import "_icons.html" as ic %}
+{%- set nav_icons = {
+  "/erp/pending-invoices": "invoice", "/erp/vendors": "vendors", "/erp/purchase-orders": "cart",
+  "/erp/contracts": "contract", "/inbox": "inbox", "/gate/exceptions": "alert", "/gate/kpis": "chart",
+  "/gate/compare": "compare", "/assumptions": "book",
+} -%}
+{#- What each "Load sample documents" choice holds (the same facts as the empty inbox). -#}
+{%- set dataset_notes = {
+  "v1": "The 14 supplier documents of the case.",
+  "v2": "26 documents in German, French, Spanish and English, with scans, a UBL e-invoice and an invoice in an email body.",
+} -%}
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page_title }} · {{ app_title }}</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="/static/app.css">
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2/dist/htmx.min.js" defer></script>
   {% block head %}{% endblock %}
 </head>
 <body class="scenario-{{ scenario }}">
-  <header class="topbar">
-    <a class="brand" href="/inbox">{{ app_title }}</a>
-
-    <div class="scenario-switch">
-      {% for s in scenarios %}
-      <form method="post" action="/scenario/{{ s }}">
-        <button type="submit" class="switch-{{ s }}{% if s == scenario %} active{% endif %}"
-                aria-pressed="{{ 'true' if s == scenario else 'false' }}">{{ scenario_labels[s] }}</button>
-      </form>
-      {% endfor %}
-    </div>
-
-    {# Each action carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
-    <div class="actions">
-      <form method="post" action="/documents/load" class="load-form">
-        <input type="hidden" name="scenario" value="{{ scenario }}">
-        <details class="dropdown load-menu">
-          <summary role="button">Load sample documents</summary>
+  <a class="skip-link" href="#page-start">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidenav" aria-label="Main navigation">
+      <a class="brand" href="/inbox" title="{{ app_title }}">
+        {{ ic.brand_mark() }}
+        {%- set title_parts = app_title.split(' — ', 1) %}
+        <span class="brand-text">
+          <span class="brand-name">{{ title_parts[0] }}</span>
+          {% if title_parts|length > 1 %}<span class="brand-sub">{{ title_parts[1] }}</span>{% endif %}
+        </span>
+      </a>
+      <nav class="sidenav-groups">
+        {% for title, items in nav_groups %}
+        <section class="navgroup navgroup-{{ loop.index }}">
+          <h2>{{ ic.icon('database' if loop.first else 'shield') }}<span>{{ title }}</span></h2>
           <ul>
-            {% for key, label in dataset_choices.items() %}
-            <li><button type="submit" name="dataset" value="{{ key }}" class="load-choice">{{ label }}</button></li>
+            {% for path, label in items %}
+            <li>
+              <a href="{{ path }}"{% if nav_active == path %} aria-current="page"{% endif %}>
+                {{ ic.icon(nav_icons.get(path, 'file')) }}<span>{{ label }}</span>
+              </a>
+            </li>
             {% endfor %}
-            <li class="load-note"><small>Replaces every document of {{ scenario_label }}, documents received by
-              email (live intake) included, and clears its gate results.</small></li>
           </ul>
-        </details>
-      </form>
-      <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
-        <input type="hidden" name="scenario" value="{{ scenario }}">
-        <button type="submit" class="run-button" title="Process every document of {{ scenario_label }} through the gate">Run scenario</button>
-      </form>
-      <form method="post" action="/reset"
-            onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded, the gate results are cleared and the sample documents are reloaded, unprocessed. Documents received by email (live intake) are removed.');">
-        <input type="hidden" name="scenario" value="{{ scenario }}">
-        <button type="submit" class="secondary outline">Reset</button>
-      </form>
-    </div>
-  </header>
-
-  <div class="scenario-banner" role="note">
-    <span class="scenario-pill">Scenario {{ scenario_label }}</span>
-    <span>{{ scenario_summary }}</span>
-  </div>
-
-  <div class="shell">
-    <aside class="sidenav">
-      {% for title, items in nav_groups %}
-      <section class="navgroup navgroup-{{ loop.index }}">
-        <h2>{{ title }}</h2>
-        <ul>
-          {% for path, label in items %}
-          <li>
-            <a href="{{ path }}"{% if nav_active == path %} aria-current="page"{% endif %}>
-              {{ label }}
-            </a>
-          </li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endfor %}
+        </section>
+        {% endfor %}
+      </nav>
     </aside>
 
-    <main class="content">
-      {% if flash %}
-      <div class="flash flash-{{ flash.kind }}" role="status">{{ flash.text }}</div>
-      {% endif %}
-      {% block content %}{% endblock %}
-    </main>
-  </div>
+    <div class="main-col">
+      <header class="topbar">
+        <nav class="crumbs" aria-label="Breadcrumb">
+          <ol>
+            {% for label, href in (crumbs if crumbs is defined else [(page_title, none)]) %}
+            <li>{% if loop.last %}<span aria-current="page">{{ label }}</span>{% elif href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span>{{ label }}</span>{% endif %}</li>
+            {% endfor %}
+          </ol>
+        </nav>
 
-  <footer class="site-footer">{{ footer_text }}</footer>
+        <div class="scenario-switch" role="group" aria-label="Scenario">
+          {% for s in scenarios %}
+          <form method="post" action="/scenario/{{ s }}">
+            <button type="submit" class="switch-{{ s }}{% if s == scenario %} active{% endif %}"
+                    aria-pressed="{{ 'true' if s == scenario else 'false' }}">{{ scenario_labels[s] }}</button>
+          </form>
+          {% endfor %}
+        </div>
+
+        {# Each action carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
+        <div class="actions">
+          <form method="post" action="/documents/load" class="load-form">
+            <input type="hidden" name="scenario" value="{{ scenario }}">
+            <details class="dropdown load-menu">
+              <summary role="button" class="secondary">{{ ic.icon('load') }}<span>Load sample documents</span>{{ ic.icon('chevron-down', 'chev') }}</summary>
+              <ul class="menu">
+                {% for key, label in dataset_choices.items() %}
+                <li><button type="submit" name="dataset" value="{{ key }}" class="load-choice">
+                  <span class="load-title">{{ label }}</span>
+                  {% if dataset_notes.get(key) %}<span class="load-desc">{{ dataset_notes[key] }}</span>{% endif %}
+                </button></li>
+                {% endfor %}
+                <li class="load-note">{{ ic.icon('info') }}<small>Replaces every document of {{ scenario_label }}, documents received by
+                  email (live intake) included, and clears its gate results.</small></li>
+              </ul>
+            </details>
+          </form>
+          <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
+            <input type="hidden" name="scenario" value="{{ scenario }}">
+            <button type="submit" class="run-button" data-run-tag="{{ scenario_label[0] }}" title="Process every document of {{ scenario_label }} through the gate">{{ ic.icon('play') }}Run scenario</button>
+          </form>
+          <form method="post" action="/reset"
+                onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded, the gate results are cleared and the sample documents are reloaded, unprocessed. Documents received by email (live intake) are removed.');">
+            <input type="hidden" name="scenario" value="{{ scenario }}">
+            <button type="submit" class="ghost danger reset-button" title="Re-seed the mock ERP of {{ scenario_label }} and reload its sample documents">{{ ic.icon('reset') }}Reset</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="scenario-banner" role="note">
+        <span class="scenario-pill">Scenario {{ scenario_label }}</span>
+        <span class="scenario-summary">{{ scenario_summary }}</span>
+      </div>
+
+      <main class="content">
+        <span id="page-start" tabindex="-1"></span>
+        {% if flash %}
+        <div class="flash flash-{{ flash.kind }} flash-toast" role="status" id="flash-toast">
+          <span class="flash-text">{{ flash.text }}</span>
+          <button type="button" class="flash-close" aria-label="Dismiss the message" title="Dismiss">{{ ic.icon('x') }}</button>
+        </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+
+      <footer class="site-footer">{{ footer_text }}</footer>
+    </div>
+  </div>
+  <script>
+    (function () {
+      /* "Load sample documents" menu: close on Escape or on a click outside it. */
+      document.addEventListener("click", function (e) {
+        document.querySelectorAll("details.dropdown[open]").forEach(function (d) {
+          if (!d.contains(e.target)) { d.removeAttribute("open"); }
+        });
+      });
+      document.addEventListener("keydown", function (e) {
+        if (e.key !== "Escape") { return; }
+        document.querySelectorAll("details.dropdown[open]").forEach(function (d) {
+          d.removeAttribute("open"); d.querySelector("summary").focus();
+        });
+      });
+      /* Sticky table headers need a wrapper that does not scroll sideways: a table that fits its
+         wrapper gets class "fits" (no horizontal scroll, sticky header); a wider one keeps scrolling. */
+      function fitTables() {
+        document.querySelectorAll(".overflow-auto").forEach(function (w) {
+          w.classList.remove("fits");
+          var t = w.querySelector("table");
+          if (t && t.scrollWidth <= w.clientWidth + 1) { w.classList.add("fits"); }
+        });
+      }
+      var timer;
+      window.addEventListener("resize", function () { clearTimeout(timer); timer = setTimeout(fitTables, 120); });
+      document.addEventListener("DOMContentLoaded", fitTables);
+      window.addEventListener("load", fitTables);
+      document.addEventListener("htmx:afterSettle", fitTables);
+      /* Flash toast: a close button; a success message also hides itself after a while (not while the pointer or
+         the keyboard focus is on it, and never when the viewer asked for reduced motion). */
+      var toast = document.getElementById("flash-toast");
+      if (toast) {
+        var hide = function () { toast.classList.add("is-hidden"); setTimeout(function () { toast.remove(); }, 300); };
+        toast.querySelector(".flash-close").addEventListener("click", hide);
+        var calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (toast.classList.contains("flash-ok") && !calm) {
+          var t = setTimeout(hide, 12000);
+          ["mouseenter", "focusin"].forEach(function (ev) { toast.addEventListener(ev, function () { clearTimeout(t); }); });
+        }
+      }
+    })();
+  </script>
 </body>
 </html>
