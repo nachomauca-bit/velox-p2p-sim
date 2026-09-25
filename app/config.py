@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -41,14 +42,20 @@ def _env_bool(name: str) -> bool:
 DATA_DIR = _env_path("DATA_DIR", BASE_DIR / "data")
 INVOICES_DIR = DATA_DIR / "invoices"  # the 14 case documents (v1)
 INVOICES_V2_DIR = DATA_DIR / "invoices_v2"  # test set v2 (26 documents, docs/TEST_SET_V2.md)
-INBOUND_DIR = _env_path("INBOUND_DIR", INVOICES_DIR / "inbound")  # documents received by the intake webhook
-CACHE_DIR = _env_path("CACHE_DIR", DATA_DIR / "cache")  # extraction and draft cache (never re-call the API)
-EXPORT_DIR = _env_path("EXPORT_DIR", DATA_DIR / "export")  # NDJSON export for BigQuery (app/export_bq.py)
+BUNDLED_CACHE_DIR = DATA_DIR / "cache"  # the real Gemini extractions and drafts shipped with the app
+# Optional: one folder for everything the app writes (database, webhook uploads, cache, export), e.g. a container
+# volume (the Docker image sets /data). DATABASE_URL, INBOUND_DIR, CACHE_DIR and EXPORT_DIR still override it.
+STATE_DIR: Optional[Path] = _env_path("STATE_DIR", DATA_DIR) if _env("STATE_DIR") else None
+# Documents received by the intake webhook; the extraction and draft cache (never re-call the API); the NDJSON
+# export for BigQuery (app/export_bq.py).
+INBOUND_DIR = _env_path("INBOUND_DIR", STATE_DIR / "inbound" if STATE_DIR else INVOICES_DIR / "inbound")
+CACHE_DIR = _env_path("CACHE_DIR", (STATE_DIR or DATA_DIR) / "cache")
+EXPORT_DIR = _env_path("EXPORT_DIR", (STATE_DIR or DATA_DIR) / "export")
 DOCS_DIR = BASE_DIR / "docs"
 FIXTURES_DIR = BASE_DIR / "tests" / "fixtures"
 FIXTURES_V2_DIR = BASE_DIR / "tests" / "fixtures_v2"
 
-DATABASE_URL = _env("DATABASE_URL", f"sqlite:///{(DATA_DIR / 'velox.db').as_posix()}")
+DATABASE_URL = _env("DATABASE_URL", f"sqlite:///{((STATE_DIR or DATA_DIR) / 'velox.db').as_posix()}")
 
 # --------------------------------------------------------------------------------------------
 # Gemini model access. Same google-genai SDK and the same extraction code for both backends; only the

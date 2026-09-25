@@ -48,5 +48,5 @@ validate:        ## compare the cached Gemini extractions with the ground truth 
 docker-build:    ## build the container image (run make pdfs first if data/invoices_v2 is missing)
 	docker build -t $(IMAGE) .
 
-docker-run:      ## run the image on http://127.0.0.1:$(DOCKER_PORT) with the settings in .env
-	docker run --rm -p $(DOCKER_PORT):8080 --env-file .env $(IMAGE)
+docker-run:      ## run the image on http://127.0.0.1:$(DOCKER_PORT) with the settings in .env (state in volume velox-data)
+	docker run --rm -p $(DOCKER_PORT):8080 --env-file .env -v velox-data:/data $(IMAGE)

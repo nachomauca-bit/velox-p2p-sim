@@ -1,5 +1,6 @@
-# Keep the build context small and never ship secrets, the local database, the cache or uploads.
-# (The Dockerfile copies app/, docs/, data/invoices/ and data/invoices_v2/ explicitly.)
+# Keep the build context small and never ship secrets, the local database, the export or uploads.
+# (The Dockerfile copies app/, docs/, data/invoices/, data/invoices_v2/ and data/cache/ explicitly: the cache holds
+# the real Gemini extractions and drafts of the sample documents, so the image shows them without a key.)
 .git
 .gitignore
 .gitattributes
@@ -17,7 +18,6 @@ Dockerfile
 .dockerignore
 data/velox.db
 data/velox.db-*
-data/cache
 data/export
 data/invoices/inbound
 docs/img
