@@ -137,11 +137,36 @@ def test_layout_footer_nav_groups_and_header(client):
     assert main.APP_TITLE in html
     for label in config.SCENARIO_LABELS.values():
         assert label in html
-    assert "Load sample documents" in html
-    assert 'action="/run"' in html and ">Run scenario</button>" in html
-    assert "disabled>Run scenario" not in html
-    assert 'action="/reset"' in html and "confirm(" in html
+    # brief v2 section 7: no Load menu in the header; Run scenario (offline) and one Reset demo with a confirm
+    assert "Load sample documents" not in html and 'action="/documents/load"' not in html
+    assert 'action="/run"' in html and "Run scenario</button>" in html
+    assert re.search(r"<button[^>]*\bdisabled\b[^>]*>[^<]*(<svg.*?</svg>)?Run scenario", html) is None
+    assert 'action="/reset"' in html and "confirm(" in html and "Reset demo</button>" in html
     assert "phase 2" not in html.lower()  # no "phase 2" markers left in the navigation
+    assert "webhook" not in html.lower()  # live intake is phase 3: not advertised in the UI
+    # the six stages of the deck, in order, on every page
+    strip = html[html.index('class="stage-strip"'):html.index("</nav>", html.index('class="stage-strip"'))]
+    labels = re.findall(r'class="stage-label">([^<]+)<', strip)
+    assert labels == ["Buy", "Set up the supplier", "Receive or confirm", "Invoice arrives", "Control gate",
+                      "Resolve, post and pay"]
+    assert current_stages(html) == ["Invoice arrives"]
+
+
+def current_stages(html: str) -> list[str]:
+    """Labels of the highlighted stages of the stage strip."""
+    strip = html[html.index('class="stage-strip"'):html.index("</nav>", html.index('class="stage-strip"'))]
+    return re.findall(r'aria-current="step">\s*<span class="stage-no">\d+</span><span class="stage-label">([^<]+)<',
+                      strip)
+
+
+@pytest.mark.parametrize("path, stages", [
+    ("/erp/contracts", ["Buy"]), ("/erp/vendors", ["Set up the supplier"]),
+    ("/erp/purchase-orders", ["Buy", "Receive or confirm"]),  # purchase orders and their receipts on one page
+    ("/inbox", ["Invoice arrives"]), ("/run", ["Control gate"]), ("/gate/exceptions", ["Resolve, post and pay"]),
+    ("/erp/pending-invoices", ["Resolve, post and pay"]), ("/gate/kpis", []), ("/gate/compare", []),
+    ("/assumptions", [])])
+def test_stage_strip_highlights_the_page_stage(client, path, stages):
+    assert current_stages(client.get(path).text) == stages, path
 
 
 def test_scenario_switch_sets_cookie_and_redirects_back(client):
@@ -161,29 +186,33 @@ def form_html(html: str, action: str) -> str:
 
 
 def test_header_actions_act_on_the_scenario_the_page_shows(client, session):
-    """A second tab that switched the cookie must not make this page's Run / Reset / Load hit the other scenario."""
+    """A second tab that switched the cookie must not make this page's Run hit the other scenario; Reset demo resets
+    both scenarios whatever the page shows."""
     use_scenario(client, "asis")
-    html = client.get("/inbox").text  # rendered for as-is (header forms and the empty-state Load form)
-    for action in ("/documents/load", "/run", "/reset"):
-        assert '<input type="hidden" name="scenario" value="asis">' in form_html(html, action), action
-    assert html.count('<input type="hidden" name="scenario" value="asis">') == 4
+    html = client.get("/inbox").text  # rendered for as-is
+    assert '<input type="hidden" name="scenario" value="asis">' in form_html(html, "/run")
+    assert '<input type="hidden" name="scenario"' not in form_html(html, "/reset")  # Reset demo: both scenarios
+    assert html.count('<input type="hidden" name="scenario" value="asis">') == 1
     use_scenario(client, "tobe")  # the other tab
     r = client.post("/run", data={"scenario": "asis"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/run"
-    assert "scenario=asis" in r.headers["set-cookie"]  # the step log opens on the scenario that ran
+    assert "scenario=asis" in r.headers["set-cookie"]  # the rule log opens on the scenario that ran
     assert count_rows(session, GateDecision, "asis") == len(world.DOCUMENTS)
     assert count_rows(session, GateDecision, "tobe") == 0
     assert client.cookies.get("scenario") == "asis"
-    use_scenario(client, "tobe")
     r = client.post("/reset", data={"scenario": "asis"}, follow_redirects=False)
-    assert r.status_code == 303 and client.cookies.get("scenario") == "asis"
+    assert r.status_code == 303 and r.headers["location"] == "/inbox"
+    assert client.cookies.get("scenario") == "tobe"  # the demo starts on the to-be inbox
     session.expire_all()
-    assert count_rows(session, GateDecision, "asis") == 0 and count_docs(session, "tobe") == 0
+    assert count_rows(session, GateDecision, "asis") == len(world.DOCUMENTS)
+    assert count_rows(session, GateDecision, "tobe") == len(world.DOCUMENTS) - 1  # the next email is held back
+    # the unadvertised load route (tests, CLI parity) still honours the scenario the page sent
     use_scenario(client, "asis")
     r = client.post("/documents/load", data={"scenario": "tobe"}, follow_redirects=False)
     assert r.status_code == 303 and client.cookies.get("scenario") == "tobe"
+    session.expire_all()
     assert count_docs(session, "tobe") == len(world.DOCUMENTS)
-    for action in ("/run", "/reset", "/documents/load"):
+    for action in ("/run", "/documents/load"):
         assert client.post(action, data={"scenario": "prod"}, follow_redirects=False).status_code == 400, action
 
 
@@ -279,26 +308,27 @@ def test_api_clients_and_the_webhook_get_json_errors(client, tmp_data_dir):
 
 
 # --------------------------------------------------------------------------------------------
-# Inbox and "Load sample documents"
+# Inbox, Reset demo and Receive next email (the sample-document load route is kept for tests and parity)
 # --------------------------------------------------------------------------------------------
 
 
-def test_inbox_empty_state_offers_loading(client):
+def test_inbox_empty_state_offers_the_demo_reset(client):
     html = client.get("/inbox").text
-    assert "No documents in the mailboxes" in html
-    assert 'action="/documents/load"' in html
+    body = html[html.index('<main class="content">'):]
+    assert "No documents in the mailboxes" in body
+    assert 'action="/reset"' in body and "Reset demo</button>" in body
+    assert 'action="/documents/load"' not in html  # no Load menu (brief v2 section 7)
 
 
-@pytest.mark.parametrize("scenario", config.SCENARIOS)
-def test_load_lists_documents_split_by_channel(client, session, scenario):
-    html = load_documents(client, scenario)
+def test_load_lists_asis_documents_split_by_channel(client, session):
+    html = load_documents(client, "asis")
     n = len(world.DOCUMENTS)
     assert f"{n} documents loaded" in html
     assert f"{n} extracted" in html
-    assert count_docs(session, scenario) == n
+    assert count_docs(session, "asis") == n
     for channel, mailbox in world.MAILBOX_BY_CHANNEL.items():
-        expected = [seed.doc_id_for(scenario, d.no) for d in world.DOCUMENTS if d.channel == channel]
-        others = [seed.doc_id_for(scenario, d.no) for d in world.DOCUMENTS if d.channel != channel]
+        expected = [seed.doc_id_for("asis", d.no) for d in world.DOCUMENTS if d.channel == channel]
+        others = [seed.doc_id_for("asis", d.no) for d in world.DOCUMENTS if d.channel != channel]
         section = mailbox_section(html, channel)
         assert f'data-count="{len(expected)}"' in section
         assert mailbox in section
@@ -306,8 +336,21 @@ def test_load_lists_documents_split_by_channel(client, session, scenario):
             assert f'id="doc-{doc_id}"' in section
         for doc_id in others:
             assert f'id="doc-{doc_id}"' not in section
-    assert html.count("Extraction pending") == 0
-    assert html.count(">Extracted<") == n
+    # scenario A has no model: AP keys the documents, the cards name no reading
+    assert "Read with Gemini" not in html and "Not read yet" not in html
+
+
+def test_load_lists_tobe_documents_on_the_one_intake_address(client, session):
+    html = load_documents(client, "tobe")
+    n = len(world.DOCUMENTS)
+    assert f"{n} documents loaded" in html and f"{n} extracted" in html
+    assert count_docs(session, "tobe") == n
+    assert 'id="mailbox-store_mailbox"' not in html  # one intake address in to-be
+    section = mailbox_section(html, "ap_mailbox")
+    assert f'data-count="{n}"' in section and world.AP_MAILBOX in section
+    for d in world.DOCUMENTS:
+        assert f'id="doc-{seed.doc_id_for("tobe", d.no)}"' in section
+    assert html.count(">Read with Gemini<") == n and "Not read yet" not in html
 
 
 def test_asis_inbox_shows_not_registered_with_expected_dates(client):
@@ -325,32 +368,36 @@ def test_tobe_inbox_shows_registration_dates(client):
     html = load_documents(client, "tobe")
     assert "Not registered yet" not in html
     for d in world.DOCUMENTS:
-        # received and registered on the same timestamp
+        # received and registered on the same timestamp: "Registered B-05 · Fri 2026-10-02 14:02 · ap@velox.com"
         assert html.count(main.fmt_datetime(d.received_on)) >= 2
-    assert html.count("Registered on arrival") == len(world.DOCUMENTS)
+        assert f"Registered <strong>{seed.doc_id_for('tobe', d.no)}</strong>" in html
+    assert html.count("clock started") == len(world.DOCUMENTS)
 
 
 def test_doc_type_chips_after_extraction(client):
     html = load_documents(client, "tobe")
-    n_credit = sum(1 for d in world.DOCUMENTS if d.doc_type == "credit_note")
+    n_credit = sum(1 for d in world.DOCUMENTS if d.true_doc_type == "credit_note")
+    n_reminder = sum(1 for d in world.DOCUMENTS if d.true_doc_type == "reminder")
+    assert (n_credit, n_reminder) == (1, 1)  # case documents 4 and 2
     assert html.count(">Credit note<") == n_credit
-    assert html.count(">Invoice<") == len(world.DOCUMENTS) - n_credit
+    assert html.count('<span class="chip chip-warn">Payment reminder</span>') == n_reminder
+    assert html.count(">Invoice<") == len(world.DOCUMENTS) - n_credit - n_reminder
 
 
 def test_load_without_cache_or_key_reports_pending_extraction(client, monkeypatch, tmp_cache_dir):
     monkeypatch.setattr(config, "EXTRACTOR", "gemini")
     monkeypatch.setattr(config, "GEMINI_API_KEY", "")
-    html = load_documents(client, "asis")
+    html = load_documents(client, "tobe")
     n = len(world.DOCUMENTS)
     assert f"Extraction pending for {n} documents: set GEMINI_API_KEY in .env and run make extract" in html
     assert "failed" not in html
-    assert html.count(">Extraction pending<") == n
-    page = client.get("/invoice/A-05")
+    assert html.count(">Not read yet<") == n
+    page = client.get("/invoice/B-05")
     assert page.status_code == 200
-    assert "No extraction yet" in page.text and "Extract now" in page.text
-    # the running server does not re-read .env: the hint must not say "just click Extract now"
-    assert ("add the key to .env and run make extract (it updates the database directly), "
-            "or restart the app and click Extract now.") in page.text
+    assert "Not read yet." in page.text and "Extract now" not in page.text  # no extract button (brief v2)
+    # the running server does not re-read .env: the hint names the restart
+    assert ("Running the control gate reads it from the extraction cache; if the file was never read, "
+            "GEMINI_API_KEY must be set in .env (then restart the app, or run make extract).") in page.text
     assert "afterwards" not in page.text
 
 
@@ -363,7 +410,7 @@ def test_load_reports_failed_documents_without_the_key_hint(client, monkeypatch)
     assert "1 document failed: 401 UNAUTHENTICATED: API key not valid." in html
     assert "flash-error" in html
     assert "set GEMINI_API_KEY" not in html  # the key is set: the hint would be wrong
-    assert "Extraction pending for 11 documents (retry with Extract now" in html
+    assert "Extraction pending for 11 documents (retry with make extract)." in html
 
 
 def test_load_message_kind_and_key_hint(monkeypatch):
@@ -402,17 +449,24 @@ def test_invoice_page_shows_fields_confidence_and_fixture_badge(client):
     r = client.get("/invoice/B-03")
     assert r.status_code == 200
     html = r.text
-    assert "FIXTURE — not a Gemini output" in html
+    # one provenance line (brief v2): the fixture disclaimer here, "Read by <model> (cached)" with the cache
+    assert html.count('class="provenance') == 1
+    assert "FIXTURE — ground-truth test data, not a Gemini output (EXTRACTOR=fixture)." in html
     assert 'src="/files/B-03.pdf#' in html
-    for label in main.extract.FIELD_LABELS.values():
-        assert label in html
+    for name, label in main.extract.FIELD_LABELS.items():
+        assert (label in html) == (name != "notes"), name  # fields + confidence, no free-text notes
+    assert "Supplier tax ID (VAT)" in html and "Supplier VAT ID" not in html
     spec = world.DOCUMENT_BY_NO[3]
     assert spec.invoice_number in html and spec.printed_supplier_name in html
     assert spec.po_numbers[0] in html
     assert "99%" in html and 'style="width: 99%"' in html
-    assert "Not processed by the gate yet" in html and "Run gate on this document" in html
-    assert "Raw extraction JSON" in html
-    assert "Force re-extract" in html
+    assert "Not processed yet." in html and "Run the control gate</button>" in html
+    # no latency, tokens, created-on, raw JSON, re-extract button or critical-field chips
+    for gone in ("Raw extraction JSON", "Force re-extract", "Extract now", "Latency", "Tokens", "Created on",
+                 'class="crit', "critical field missing"):
+        assert gone not in html, gone
+    # the order of the page: Document -> Gemini output -> rule log and outcome
+    assert html.index(">Document</h2>") < html.index(">Gemini output</h2>") < html.index('id="gate-panel"')
 
 
 def test_low_confidence_is_flagged(client, session):
@@ -423,7 +477,9 @@ def test_low_confidence_is_flagged(client, session):
     doc.extraction.json = data
     session.commit()
     html = client.get("/invoice/B-03").text
-    assert "42%" in html and "below 80%" in html and "row-low" in html
+    assert "42%" in html and html.count('class="row-low"') == 1 and html.count('class="conf conf-low"') == 1
+    assert "below 80%" in html  # the legend names the threshold once, no per-field chip
+    assert "chip-bad\">below" not in html
 
 
 def test_force_reextract_htmx_partial_and_no_js_fallback(client):
@@ -477,7 +533,7 @@ def test_extract_now_api_error_without_previous_extraction(client, monkeypatch, 
     assert r.status_code == 200
     assert "Gemini API error on m: 429 RESOURCE_EXHAUSTED." in r.text  # prefix not doubled
     assert "Gemini API error: Gemini" not in r.text and "was kept" not in r.text
-    assert "No extraction yet" in r.text
+    assert "Not read yet." in r.text
 
 
 def test_extract_unexpected_error_is_reported_not_500(client, monkeypatch):
@@ -545,16 +601,18 @@ def test_path_traversal_is_refused(client, session):
 def test_vendor_master_ratio_per_scenario(client):
     use_scenario(client, "asis")
     asis = client.get("/erp/vendors").text
-    assert "28 accounts / 12 suppliers = 2.3" in asis
-    assert 'class="dup-of"' in asis and "Duplicate of 4 accounts" in asis and "Not linked to a party" in asis
+    # deck A6: all records (inactive included) / unique suppliers by tax ID, two decimals
+    assert "28 accounts / 12 suppliers = 2.33" in asis
+    assert 'class="dup-of"' in asis and "Duplicate of 4 accounts" in asis and "Not linked to a supplier" in asis
     assert 'class="rule"' in asis and "D1 spelling duplicate" in asis
     use_scenario(client, "tobe")
     tobe = client.get("/erp/vendors").text
-    assert "16 accounts / 12 suppliers = 1.3" in tobe
+    assert "14 accounts / 12 suppliers = 1.17" in tobe
     assert 'class="dup-of"' not in tobe and not re.search(r"Duplicate of \d+ account", tobe)
-    assert "Not linked to a party" not in tobe
+    assert "Not linked to a supplier" not in tobe
+    assert "party" not in page_text(tobe[tobe.index('<main class="content">'):]).lower()  # "supplier" (brief v2)
     # the toggle shows the other view without switching the scenario
-    assert "28 accounts / 12 suppliers = 2.3" in client.get("/erp/vendors?view=asis").text
+    assert "28 accounts / 12 suppliers = 2.33" in client.get("/erp/vendors?view=asis").text
     assert client.get("/erp/vendors?view=bogus").status_code == 400
 
 
@@ -563,7 +621,7 @@ def test_vendor_rows_flags_terms_and_duplicates(client):
     html = client.get("/erp/vendors").text
     # D1 duplicate of Nordwind, missing identifiers (D4), terms drift (D3), inactive leftovers (D5)
     assert "V-000117 (VDE, similar name)" in html
-    assert "missing VAT ID" in html and "missing IBAN" in html
+    assert "missing tax ID" in html and "missing IBAN" in html and "VAT ID" not in html
     assert "terms ≠ agreed" in html and "CT-2025-001" in html
     assert html.count('class="chip chip-neutral">inactive<') == len(seed.D5_INACTIVE)
 
@@ -593,15 +651,34 @@ def test_receipt_status_rules():
 
 def test_contracts_page_lists_all_contracts(client):
     html = client.get("/erp/contracts").text
+    assert "Contracts &amp; catalogues" in html
     for c in world.CONTRACTS:
         assert c.contract_id in html
         assert world.PARTY_BY_ID[c.party_id].canonical_name in html
 
 
+def test_contracts_page_lists_the_catalogue_in_tobe_only(client):
+    cat = world.CATALOGUES[0]
+    use_scenario(client, "tobe")
+    tobe = client.get("/erp/contracts").text
+    row = tobe[tobe.index(f'id="{cat.catalogue_id}"'):]
+    row = row[:row.index("</tr>")]
+    assert html_lib.escape(world.PARTY_BY_ID[cat.party_id].canonical_name) in row and cat.legal_entity_code in row
+    assert "500.00" in row and "CHF" in row  # the per-invoice limit in the group currency
+    use_scenario(client, "asis")
+    asis = client.get("/erp/contracts").text
+    assert cat.catalogue_id not in asis and "No card or catalogue in this scenario" in asis
+
+
 def test_pending_invoices_empty_state(client):
+    use_scenario(client, "asis")
     html = client.get("/erp/pending-invoices").text
-    assert "<h2>No invoices posted yet in A — As-is</h2>" in html
-    assert "The control gate posts here when the scenario runs." in html and 'action="/run"' in html
+    assert "<h2>No invoices posted yet in A — As-is</h2>" in html and "<h1>Posted invoices" in html
+    assert "AP posts here when the scenario runs." in html and 'action="/run"' in html
+    assert "control gate" not in page_text(html[html.index('<main class="content">'):]).lower()  # no gate in A
+    use_scenario(client, "tobe")
+    html = client.get("/erp/pending-invoices").text
+    assert "The control gate posts here when the scenario runs." in html
 
 
 # --------------------------------------------------------------------------------------------
@@ -609,30 +686,64 @@ def test_pending_invoices_empty_state(client):
 # --------------------------------------------------------------------------------------------
 
 
-def test_reset_restores_only_the_active_scenario(client, session):
-    run_scenario(client, "tobe")
-    run_scenario(client, "asis")
-    r = client.post("/reset", headers={"referer": "http://testserver/inbox"})
-    assert r.status_code == 200 and r.url.path == "/inbox"
+def test_reset_demo_runs_both_scenarios_and_holds_back_the_next_email(client, session):
+    """Brief v2 section 7: both scenarios re-seeded, the 12 case documents loaded and run offline, case document 5
+    (FitOut) not arrived yet in to-be; the to-be inbox opens with the Receive next email button."""
+    load_documents(client, "tobe")
+    client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})  # anything loaded before is replaced
+    r = client.post("/reset")
+    assert r.status_code == 200 and r.url.path == "/inbox" and client.cookies.get("scenario") == "tobe"
     n = len(world.DOCUMENTS)
-    assert f"{n} sample documents reloaded and not processed yet; {n} extracted." in r.text
-    assert "Not processed yet" in r.text and "outcome-chip" not in r.text
+    held = world.DOCUMENT_BY_NO[seed.DEMO_HELD_BACK]
+    assert "Demo reset: both scenarios loaded and run (offline)." in r.text
+    assert "Receive next email</button>" in r.text and held.sender_email in r.text
+    assert f"{n - 1} of {n - 1} documents processed" in page_text(r.text)
     session.expire_all()
-    assert count_docs(session, "asis") == n
-    assert count_rows(session, GateDecision, "asis") == 0 and count_rows(session, Run, "asis") == 0
-    assert count_rows(session, PendingVendorInvoice, "asis") == 0
-    assert all(d.extraction is not None and not d.registered
-               for d in session.scalars(select(InboundDocument).where(InboundDocument.scenario == "asis")))
-    assert count_rows(session, GateDecision, "tobe") == n  # the other scenario is untouched
+    assert count_docs(session, "asis") == n and count_rows(session, GateDecision, "asis") == n
+    assert count_docs(session, "tobe") == n - 1 and count_rows(session, GateDecision, "tobe") == n - 1
+    assert get_doc(session, seed.doc_id_for("tobe", held.no)) is None
+    assert count_rows(session, Run, "asis") == 1 and count_rows(session, Run, "tobe") == 1
+    assert {d.dataset for d in session.scalars(select(InboundDocument))} == {"v1"}
 
 
-def test_reset_never_redirects_to_a_deleted_document(client):
+def test_receive_next_email_registers_without_running_the_gate(client, session):
+    client.post("/reset")
+    held = world.DOCUMENT_BY_NO[seed.DEMO_HELD_BACK]
+    doc_id = seed.doc_id_for("tobe", held.no)
+    r = client.post("/inbox/receive")
+    assert r.status_code == 200 and r.url.path == "/inbox"
+    stamp = held.received_on.strftime("%a %d %b %Y %H:%M")
+    assert f"Email received at {world.AP_MAILBOX}: registered as {doc_id} on {stamp}." in r.text
+    card = r.text[r.text.index(f'id="doc-{doc_id}"'):]
+    card = card[:card.index("</article>")]
+    assert squash(page_text(card)).count(f"Registered {doc_id} · {main.fmt_datetime(held.received_on)} · "
+                                         f"{world.AP_MAILBOX} · clock started") == 1
+    assert "Not read yet" in card and "Open it to run the control gate" in card and "outcome-chip" not in card
+    assert "Receive next email</button>" not in r.text  # nothing else is waiting
+    session.expire_all()
+    doc = get_doc(session, doc_id)
+    assert doc.registered and doc.registered_on == held.received_on and doc.channel == "ap_mailbox"
+    assert doc.extraction is None
+    assert session.scalar(select(GateDecision).where(GateDecision.doc_id == doc_id)) is None
+    # its page offers the gate; running it reads the cache (or fixture) only and shows the outcome
+    page = client.get(f"/invoice/{doc_id}").text
+    assert "Run the control gate</button>" in page and "Not read yet." in page
+    r = client.post(f"/invoice/{doc_id}/rerun")
+    assert r.status_code == 200 and r.url.path == f"/invoice/{doc_id}"
+    text = squash(page_text(r.text))
+    assert "Outcome → Exception" in text and "Exception: PO exists, no receipt or confirmation" in text
+    assert "Jonas Weber · Receiver / requester" in text and "2 business days" in text
+    # a second press has nothing to receive
+    r = client.post("/inbox/receive")
+    assert "No email waiting: every case document has arrived." in r.text
+
+
+def test_reset_always_opens_the_inbox(client):
     load_documents(client, "asis")
-    for referer in ("http://testserver/invoice/A-01", "http://testserver/files/A-01.pdf"):
+    for referer in ("http://testserver/invoice/A-01", "http://testserver/files/A-01.pdf",
+                    "http://testserver/erp/vendors"):
         r = client.post("/reset", headers={"referer": referer}, follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"] == "/inbox", referer
-    r = client.post("/reset", headers={"referer": "http://testserver/erp/vendors"}, follow_redirects=False)
-    assert r.headers["location"] == "/erp/vendors"  # other pages still redirect back
 
 
 def test_assumptions_page_renders_markdown_or_explains_missing(client, monkeypatch, tmp_path):
@@ -703,7 +814,7 @@ def test_webhook_accepts_pdf_registers_per_scenario_and_runs_the_gate(client, se
     use_scenario(client, "tobe")
     html = client.get("/inbox").text
     assert "Invoice 42" in html and "Live intake (webhook)" in html
-    assert ">Human review<" in mailbox_section(html, "ap_mailbox")
+    assert ">Human review: Low extraction confidence<" in mailbox_section(html, "ap_mailbox")
 
 
 def test_webhook_scenario_defaults_to_tobe_without_a_cookie(client, bucket_dir):
@@ -777,7 +888,8 @@ def test_webhook_ubl_e_invoice_is_parsed_without_a_model_and_posted(client, sess
     html = client.get("/invoice/B-W01").text
     assert "<iframe" not in html and 'class="doc-text xml-text"' in html
     assert "&lt;cbc:ID&gt;MM-2026-248&lt;/cbc:ID&gt;" in html  # escaped, never rendered as markup
-    assert "UBL e-invoice — parsed, no model call" in html and ">UBL e-invoice<" in gate_panel(html)
+    assert "Parsed from the UBL e-invoice: structured XML, no model call." in html
+    assert ">UBL e-invoice<" in gate_panel(html)
 
 
 def test_webhook_email_body_only_goes_to_human_review(client, session, bucket_dir):
@@ -796,10 +908,10 @@ def test_webhook_email_body_only_goes_to_human_review(client, session, bucket_di
     html = client.get("/invoice/B-W01").text
     assert "<iframe" not in html and 'class="doc-text email-text"' in html
     assert html_lib.escape(text, quote=False) in html
-    assert "Extract now" not in html and "there is no document to extract" in html
+    assert "Extract now" not in html and "there is no document to read" in html
     assert ">email body only<" in gate_panel(html)
     use_scenario(client, "tobe")
-    assert ">Nothing to extract<" in client.get("/inbox").text
+    assert ">Nothing to read<" in client.get("/inbox").text
 
 
 def test_webhook_keeps_the_forwarding_comment_of_an_attachment(client, session, bucket_dir):
@@ -839,7 +951,7 @@ def test_webhook_document_shows_in_the_cockpit_after_a_run(client, session, buck
     r = post_webhook(client, scenario="tobe", subject="Scan from the store")
     assert r.json()["outcome"] == "human_review"
     html = client.get("/gate/exceptions").text
-    assert "5 blocking exceptions" in page_text(html)
+    assert "4 open" in squash(page_text(html))  # B-01, B-05, B-06 and the scan
     assert 'href="/invoice/B-W01"' in section(html, "bucket-human_review")
     assert count_rows(session, GateDecision, "tobe") == len(world.DOCUMENTS) + 1
 
@@ -886,15 +998,14 @@ def _basic(user: str, password: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# Datasets: case documents (14) or test set v2 (26)
+# Datasets: the case documents (12) in the UI; test set v2 (26) from the CLI and the tests only
 # --------------------------------------------------------------------------------------------
 
 
-def test_header_offers_both_datasets(client):
-    html = form_html(client.get("/inbox").text, "/documents/load")
-    for key, label in main.DATASET_CHOICES.items():
-        assert f'name="dataset" value="{key}"' in html and label in html
-    assert main.DATASET_CHOICES == {"v1": "Case documents (14)", "v2": "Test set v2 (26)"}
+def test_datasets_are_named_and_test_set_v2_stays_out_of_the_ui(client):
+    assert main.DATASET_CHOICES == {"v1": "Case documents (12)", "v2": "Test set v2 (26)"}
+    html = client.get("/inbox").text
+    assert 'name="dataset"' not in html and "Test set v2" not in html
 
 
 def test_load_test_set_v2_and_reset_keeps_it(client, session):
@@ -907,12 +1018,11 @@ def test_load_test_set_v2_and_reset_keeps_it(client, session):
     assert "1 email with the invoice only in the body" in r.text and "Extraction pending" not in r.text
     assert "Test set v2 (26)" in r.text and 'id="doc-B2-01"' in r.text and 'id="doc-B2-26"' in r.text
     assert ">UBL e-invoice (XML)<" in r.text and ">Email body, no attachment<" in r.text
-    assert ">Not an invoice<" in r.text  # document 3, the statement
+    assert '<span class="chip chip-warn">Statement</span>' in r.text  # document 3, the account statement
     assert count_docs(session, "tobe") == n
-    r = client.post("/reset", data={"scenario": "tobe"})
-    assert "Documents: Test set v2 (26)." in r.text
+    client.post("/reset")  # Reset demo always returns to the case documents
     session.expire_all()
-    assert count_docs(session, "tobe") == n and seed.loaded_dataset(session, "tobe") == "v2"
+    assert seed.loaded_dataset(session, "tobe") == "v1" and count_docs(session, "tobe") == len(world.DOCUMENTS) - 1
     r = client.post("/documents/load", data={"scenario": "tobe", "dataset": "v1"})
     assert count_docs(session, "tobe") == len(world.DOCUMENTS) and "(case documents)" in r.text
     assert client.post("/documents/load", data={"scenario": "tobe", "dataset": "v9"},
@@ -934,6 +1044,25 @@ def test_invoice_pages_of_the_v2_formats(client):
         assert r.status_code == 200 and r.headers["content-type"] == "text/plain; charset=utf-8", url
         assert r.headers["x-content-type-options"] == "nosniff", url
         assert r.headers["content-security-policy"] == "default-src 'none'; sandbox", url
+
+
+def test_b2_14_email_body_presentation(client):
+    """Redesign review: an invoice that arrives only in the email body is shown as the email text (no frame, no
+    PDF link), the Gemini panel says there is nothing to read, and the gate sends it to Human review under its own
+    name, not "low extraction confidence"."""
+    client.post("/documents/load", data={"scenario": "tobe", "dataset": "v2"})
+    client.post("/run", data={"scenario": "tobe"})
+    html = client.get("/invoice/B2-14").text
+    body = html[html.index('<main class="content">'):]
+    assert "<iframe" not in body and "Open PDF" not in body and 'href="/files/B2-14' not in body
+    assert '<span class="chip chip-neutral">Email body, no attachment</span>' in body
+    assert html.count('class="doc-text email-text"') == 1 and 'class="email-comment"' not in body
+    assert "The invoice is only in the text of the email" in body
+    assert "Not read yet." in body and "there is no document to read" in body
+    panel = squash(page_text(gate_panel(html)))
+    assert "Human review: invoice only in the email body" in panel and "Low extraction confidence" not in panel
+    assert "Key the invoice from the email text" in panel
+    assert "Marco Ruiz · AP review" in panel and "1 business day" in panel
 
 
 def test_compare_warns_when_the_scenarios_hold_different_datasets(client):
@@ -974,9 +1103,9 @@ GATE_PAGES = NAV_PATHS + ["/run"]
 
 
 def gate_panel(html: str) -> str:
-    """HTML of the gate panel of an invoice page."""
+    """HTML of the gate panel of an invoice page (rule log, outcome card, info tasks, cycle): the last panel."""
     start = html.index('id="gate-panel"')
-    return html[start:html.index('id="extraction-panel"', start)]
+    return html[start:html.index("</article>", start)]
 
 
 def section(html: str, element_id: str) -> str:
@@ -1003,22 +1132,34 @@ def test_every_page_returns_200_before_and_after_a_run(client, scenario):
         assert config.FOOTER_TEXT in r.text, path
 
 
-def test_run_page_shows_the_step_log_and_every_document(client, session):
+def test_run_page_shows_the_rule_log_and_every_document(client, session):
     r = run_scenario(client, "tobe")
-    html, text = r.text, page_text(r.text)
+    html, text = r.text, squash(page_text(r.text))
     n = len(world.DOCUMENTS)
-    assert f"{n} documents processed, 10 touchless, 4 exceptions." in html  # flash
+    assert (f"B — To-be: {n} documents processed · Post 8 · Exception 2 · Block 1 · Human review 1 · posted with no "
+            "human touch 8.") in text  # flash
     run = session.scalar(select(Run).where(Run.scenario == "tobe"))
     log = run.summary_json["log"]
-    step = re.compile(r"^\[doc \d{2}\] step=(%s) result=\w+" % "|".join(gate.STEP_NAMES))
-    outcome = re.compile(r"^\[doc \d{2}\] outcome=\w+")
-    assert all(step.match(line) or outcome.match(line) or line.startswith("[run] ") for line in log)
+    # "[B-05] Rule → result — reason" with the deck's words; one Outcome line per document; the run summary last
+    rule = re.compile(r"^\[B-\d{2}\] (?P<rule>[^→]+?) → (?P<result>.+?)(?: — .*)?$")
+    rules = set(gate.STEP_LABELS["tobe"].values()) | {"Outcome"}
+    for line in log[:-1]:
+        m = rule.match(line)
+        assert m and m.group("rule") in rules, line
+    assert sum(1 for line in log if " Outcome → " in line) == n
+    assert {rule.match(line).group("result") for line in log if " Outcome → " in line} == {
+        "Post", "Exception", "Block", "Human review"}
+    assert log[-1].startswith(f"[run] B: {n} documents · Post 8 · Exception 2 · Block 1 · Human review 1")
     for line in log:
-        assert line in text, line
-    # the brief's example line (section 13)
-    assert "[doc 07] step=resolve_vendor result=ok party=Shopsys account=V-000105 method=vat_id" in text
-    assert f"[run] scenario=tobe documents={n} touchless=10 exceptions=4" in text
+        assert squash(line) in text, line
+    assert ("[B-07] Supplier (tax ID) → pass — Resolved to Shopsys Software Inc. by tax ID at supplier level; its "
+            "record in VUS is V-000105.") in text
+    # no code identifiers in the visible log
+    assert "[doc " not in text and "step=" not in text and "result=" not in text
+    for code in ("po_no_receipt", "price_qty_mismatch", "commitment_match", "resolve_vendor", "blocked_duplicate"):
+        assert code not in text, code
     assert html.count('class="log-line') == len(log)
+    assert "<h1>Rule log" in html and "Posted with no human touch" in html
     assert "animation-delay:" in html and 'href="#run-log"' in html and "Show all" in html
     assert html.count('id="row-B-') == n
     for link in ('href="/gate/exceptions"', 'href="/gate/kpis"', 'href="/gate/compare"'):
@@ -1028,6 +1169,15 @@ def test_run_page_shows_the_step_log_and_every_document(client, session):
 def test_run_page_before_a_run_offers_the_button(client):
     html = client.get("/run").text
     assert "has not been run yet" in html and 'action="/run"' in html
+
+
+def test_asis_run_page_never_says_gate(client):
+    html = run_scenario(client, "asis").text
+    body = squash(page_text(html[html.index('<main class="content">'):html.index("<footer")]))
+    assert "Processing run (no gate)" in body and "Processing log" in body
+    assert "[A-05] Keyed by AP → pass" in body and "[A-05] Outcome → Email loop — untracked" in body
+    for word in ("gate run", "Gate run", "Rule log", "skipped", "Not reached"):
+        assert word not in body, word
 
 
 def test_run_loads_the_sample_documents_when_the_inbox_is_empty(client, session):
@@ -1043,8 +1193,8 @@ def test_run_page_warns_about_documents_without_extraction(client, monkeypatch, 
     monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     load_documents(client, "tobe")  # no cache and no key: nothing extracted
     html = run_scenario(client, "tobe").text
-    assert f"No extraction for {len(world.DOCUMENTS)} documents" in html
-    assert "B-01" in html and "flash-warn" in html
+    assert "Not read: B-06, B-07, B-01" in html  # every document, in processing order
+    assert "B-11" in html and "flash-warn" in html
 
 
 def test_run_failure_is_reported_not_500(client, monkeypatch, capsys):
@@ -1060,12 +1210,18 @@ def test_run_failure_is_reported_not_500(client, monkeypatch, capsys):
 
 
 def test_log_line_split_and_tone():
-    line = main.log_line('[doc 12] step=commitment_match result=exception owner="Tim Koch"')
-    assert (line["prefix"], line["token"], line["tone"], line["kind"]) == (
-        "[doc 12]", "result=exception", "bad", "step")
-    assert line["before"] + line["token"] + line["after"] == 'step=commitment_match result=exception owner="Tim Koch"'
-    assert main.log_line("[doc 01] outcome=posted days=0")["kind"] == "outcome"
-    assert main.log_line("[run] scenario=tobe documents=14")["kind"] == "run"
+    line = main.log_line("[B-06] Tolerances → Exception — Line 1: 150 x 44.00 vs PO 4500109 at 42.00 (+300.00)")
+    assert (line["prefix"], line["rule"], line["result"], line["tone"], line["kind"]) == (
+        "[B-06]", "Tolerances", "Exception", "bad", "step")
+    assert line["reason"] == "Line 1: 150 x 44.00 vs PO 4500109 at 42.00 (+300.00)"
+    outcome = main.log_line("[B-02] Outcome → Block — Duplicate invoice · Marco Ruiz · SLA — · 0 simulated business days")
+    assert (outcome["kind"], outcome["result"], outcome["tone"]) == ("outcome", "Block", "blocked")
+    assert main.log_line("[B-01] Registered on arrival → pass — B-01 · Thu 01 Oct 2026")["tone"] == "ok"
+    assert main.log_line("[B-01] Approval limit → Human review — above the limit")["tone"] == "warn"
+    assert main.log_line("[A-05] PO lookup → email loop — untracked")["tone"] == "loop"
+    assert main.log_line("[run] B: 12 documents · Post 8")["kind"] == "run"
+    plain = main.log_line("[B-01] a line without an arrow")
+    assert (plain["rule"], plain["result"], plain["reason"]) == ("", "", "a line without an arrow")
 
 
 def test_inbox_shows_outcome_chips_and_owners_after_a_run(client):
@@ -1073,22 +1229,24 @@ def test_inbox_shows_outcome_chips_and_owners_after_a_run(client):
     assert "Not processed yet" in html and "outcome-chip" not in html
     run_scenario(client, "tobe")
     html = client.get("/inbox").text
-    assert html.count("outcome-chip") == len(world.DOCUMENTS)
-    assert 'data-count="11"' in mailbox_section(html, "ap_mailbox")
-    assert 'data-count="3"' in mailbox_section(html, "store_mailbox")
-    for label in ("Posted", "Blocked duplicate", "Credit applied", "Exception: Price or quantity outside tolerance",
-                  "Exception: PO exists, no receipt or service confirmation",
-                  "Exception: Billed to the wrong Velox entity"):
+    n = len(world.DOCUMENTS)
+    assert html.count("outcome-chip") == n
+    assert f'data-count="{n}"' in mailbox_section(html, "ap_mailbox") and 'id="mailbox-store_mailbox"' not in html
+    for label in ("Post", "Block", "Exception: Price or quantity mismatch",
+                  "Exception: PO exists, no receipt or confirmation", "Human review: Amount above approval limit"):
         assert f">{label}<" in html, label
-    assert "<strong>Sofia Brandt</strong>" in html and "<strong>Tim Koch</strong>, then Sofia Brandt" in html
-    assert "14 of 14 documents processed" in html
+    for gone in ("Posted<", "Blocked duplicate", "Credit applied", "Tim Koch"):
+        assert gone not in html, gone
+    assert "<strong>Sofia Brandt</strong> · Buyer" in html
+    assert "<strong>Stefan Keller</strong> · Next approver in the matrix" in html
+    assert f"{n} of {n} documents processed" in html
 
 
 def test_asis_inbox_after_a_run_shows_registration_and_the_email_loop(client):
     run_scenario(client, "asis")
     html = client.get("/inbox").text
     assert "Not registered yet" not in html
-    assert html.count(">Email loop — untracked<") == 9
+    assert html.count(">Email loop — untracked<") == 8
     assert "Forwarded by the store after 7 business days" in html
     assert "AP opened ap@ after 1 business day" in html
     for d in world.DOCUMENTS:
@@ -1099,50 +1257,74 @@ def test_invoice_b06_price_mismatch_routed_to_the_buyer(client):
     run_scenario(client, "tobe")
     panel = gate_panel(client.get("/invoice/B-06").text)
     text = squash(page_text(panel))
-    assert "Exception: Price or quantity outside tolerance" in panel
-    assert "<strong>Sofia Brandt</strong>" in panel and "Buyer" in panel
-    assert "2 business days · due Tue 2026-10-06" in text  # received Fri 2 Oct + 2 business days
-    assert "Agree correction with supplier or approve variance" in panel
-    assert panel.count('class="trace-step') == len(gate.STEP_NAMES)
-    for label in ("Register", "Resolve vendor", "Legal entity check", "Duplicate check", "Commitment match", "Post"):
-        assert f'<span class="trace-name">{label}</span>' in panel
+    assert "Exception: Price or quantity mismatch" in panel
+    assert "Sofia Brandt · Buyer" in text
+    assert "2 business days · due Wed 2026-09-30" in text  # registered Mon 28 Sep + 2 business days
+    assert "Agree a correction with the supplier or approve the variance" in panel
+    # the rule log: one line per rule that ran, in the deck's words, then the outcome
+    rules = re.findall(r'<span class="rl-rule">([^<]+)</span>', panel)
+    assert rules == ["Registered on arrival", "Screened", "Read with Gemini", "Confidence", "Document type",
+                     "Supplier (tax ID)", "Legal entity", "Duplicate", "Commitment", "Terms", "Tolerances", "Outcome"]
+    assert "Not reached" not in panel and "skipped" not in text  # a rule that did not run is not a line
+    assert "Tolerances → Exception — Line 1: 150 x 44.00 vs PO 4500109 at 42.00" in text
+    assert "Terms → pass — Master terms 60 days apply; the invoice states 30 days, which is ignored." in text
+    assert "Outcome → Exception" in text
+    assert panel.index('class="rule-log"') < panel.index('id="outcome"')  # rule log, then the outcome card
     assert "Line checks" in panel and "price" in panel
-    assert "Simulated cycle: 2 business days" in text and "Owner resolves within the SLA" in text
-    assert "Draft message to owner" in panel and "Re-run gate" in panel
+    assert "Simulated cycle: 5 business days" in text and "Resolved past the SLA" in text  # the one past SLA
+    assert "Draft message to owner" in panel and "Run again</button>" in panel
 
 
-def test_invoice_b12_routed_to_the_receiver_then_the_buyer(client):
+def test_invoice_b01_above_the_approval_limit_goes_to_the_next_approver(client):
     run_scenario(client, "tobe")
-    panel = gate_panel(client.get("/invoice/B-12").text)
-    assert "<strong>Tim Koch</strong>" in panel
-    assert "then <strong>Sofia Brandt</strong>" in panel
-    assert "due <strong>Wed 2026-10-07</strong>" in squash(panel)
+    panel = gate_panel(client.get("/invoice/B-01").text)
+    text = squash(page_text(panel))
+    assert "Human review: Amount above approval limit" in panel
+    assert "Stefan Keller · Next approver in the matrix (Finance director DE)" in text
+    assert ("Approval limit → Human review — 27,846.00 EUR ≈ CHF 26,175 (simulated rate 0.94) is above the CHF "
+            "25,000 approval limit of VDE") in text
+    assert "Contract CT-2025-001" in text and "2 business days · due" in text
+    assert "Draft message to owner" in panel
 
 
 def test_invoice_b02_blocked_as_a_duplicate_of_b01(client):
     run_scenario(client, "tobe")
     panel = gate_panel(client.get("/invoice/B-02").text)
-    assert ">Blocked duplicate<" in panel
-    assert "Duplicate of" in panel and '<a class="doc-id" href="/invoice/B-01">B-01</a>' in panel
-    assert "<strong>Marco Ruiz</strong>" in panel and "blocked on arrival" in panel
-    assert "Reply to supplier with status" in panel
-    assert "Draft message to owner" not in panel  # touchless: the supplier gets an automatic status reply
-    r = client.post("/invoice/B-02/draft", headers={"HX-Request": "true"})
-    assert "Handled automatically: the supplier gets a status reply." in r.text
-
-
-def test_invoice_b01_posted_on_master_terms_with_an_info_flag(client, session):
-    run_scenario(client, "tobe")
-    panel = gate_panel(client.get("/invoice/B-01").text)
     text = squash(page_text(panel))
-    assert ">Posted<" in panel and "contract match" in panel
-    pvi = session.scalar(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-01"))
+    assert ">Block<" in panel and "Payment reminder" in client.get("/invoice/B-02").text
+    assert "Duplicate of" in panel and '<a class="doc-id" href="/invoice/B-01">B-01</a>' in panel
+    assert "Blocked before posting; AP replies to the supplier with the status of the original invoice." in text
+    assert "<dt>SLA</dt><dd>—</dd>" in panel and "automatic" not in text.lower()
+    assert "Duplicate → Block — Invoice NWL-2026-00913" in text and "Outcome → Block" in text
+    assert "Draft message to owner" not in panel  # drafts exist for Exception and Human review only
+    r = client.post("/invoice/B-02/draft", headers={"HX-Request": "true"})
+    assert "Block: AP replies to the supplier with the status of the original invoice; there is no owner to write to." in r.text
+
+
+def test_invoice_b10_posted_on_master_terms(client, session):
+    run_scenario(client, "tobe")
+    panel = gate_panel(client.get("/invoice/B-10").text)
+    text = squash(page_text(panel))
+    assert ">Post<" in panel and "contract match" in panel
+    pvi = session.scalar(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-10"))
     assert f'href="/erp/pending-invoices#{pvi.invoice_id}"' in panel
-    assert "30 days from the master" in text and "invoice 14 days · agreed 30 days" in text
+    # the terms come from the master; the invoice's own terms are only named in the rule line (no task, no flag)
+    assert f"Payment terms {pvi.terms_days} days from the master" in text and pvi.terms_source == "master"
+    assert f"Terms → pass — Master terms: {pvi.terms_days} days." in text
     assert f"<dt>Due date</dt><dd>{main.fmt_date(pvi.due_date)}</dd>" in panel
-    assert "Contract CT-2025-001" in text
-    assert "Info tasks (non-blocking)" in panel and "Marco Ruiz" in panel
-    assert "Draft message to owner" not in panel
+    contract = session.scalar(select(GateDecision).where(GateDecision.doc_id == "B-10")).details["contract_id"]
+    assert f"Contract {contract}" in text
+    assert "Info tasks (non-blocking)" not in panel and "Draft message to owner" not in panel
+
+
+def test_invoice_b09_matches_the_card_catalogue_commitment(client):
+    run_scenario(client, "tobe")
+    panel = gate_panel(client.get("/invoice/B-09").text)
+    text = squash(page_text(panel))
+    assert ">Post<" in panel and "catalogue match" in panel
+    assert "Card / catalogue CAT-2026-001 small store purchase" in text
+    assert "Commitment → pass — Small store purchase → card / catalogue: CAT-2026-001" in text
+    assert "Approval limit → pass" in text and "CHF" in text
 
 
 def test_invoice_a02_duplicate_posting_and_asis_badges(client):
@@ -1152,39 +1334,59 @@ def test_invoice_a02_duplicate_posting_and_asis_badges(client):
     assert "Untracked manual follow-up by email" in panel
     assert "V-000117" in panel and "from the invoice" in panel
     assert "Draft message to owner" not in panel
-    # the quick-fix tool keys the document once AP opens ap@: no claim that AP keyed it by hand
-    assert "AP opens ap@ and the quick-fix tool keys it" in panel and "AP opens and keys" not in panel
-    assert ">wrong entity<" in gate_panel(client.get("/invoice/A-08").text)
+    # scenario A: AP keys every document (deck slide 4); the halted quick-fix tool is history only
+    text = squash(page_text(panel))
+    assert "Keyed by AP → pass" in text and "Processing log" in text and "quick-fix" not in text.lower()
+    assert "Today's processing (AP, no gate)" in text and "control gate" not in text.lower()
+    assert "Outcome → Email loop — untracked" in text
+    assert ">wrong entity<" in gate_panel(client.get("/invoice/A-10").text)
     assert ">unapplied credit<" in gate_panel(client.get("/invoice/A-04").text)
 
 
-def test_cockpit_tobe_groups_by_type_with_owner_sla_and_age(client):
+def queue_row(html: str, doc_id: str) -> str:
+    """Visible text of one row of the cockpit queue."""
+    row = html[html.index(">", html.index(f'id="queue-{doc_id}"')) + 1:]
+    return squash(page_text(row[:row.index("</tr>")])).strip()
+
+
+def test_cockpit_tobe_groups_by_type_with_owner_sla_and_days_open(client):
     run_scenario(client, "tobe")
     html = client.get("/gate/exceptions").text
-    assert "4 blocking exceptions" in page_text(html)
-    for key, docs in (("po_no_receipt", ["B-05"]), ("price_qty_mismatch", ["B-06", "B-12"]),
-                      ("wrong_legal_entity", ["B-08"])):
+    assert "3 open · 1 past SLA" in squash(page_text(html))
+    for key, docs in (("po_no_receipt", ["B-05"]), ("price_qty_mismatch", ["B-06"]),
+                      ("amount_above_approval_limit", ["B-01"])):
         bucket = section(html, f"bucket-{key}")
         for doc_id in docs:
             assert f'href="/invoice/{doc_id}"' in bucket, (key, doc_id)
         assert f'<span class="count">{len(docs)}</span>' in bucket
-    bucket = section(html, "bucket-price_qty_mismatch")
-    as_of = sim.cockpit_as_of(world.DOCUMENT_BY_NO[n].received_on for n in (5, 6, 8, 12))
-    assert as_of == datetime(2026, 10, 5, 17, 0)  # close of the day B-12 (the last exception) arrived
-    age = sim.business_days_between(world.DOCUMENT_BY_NO[6].received_on, as_of)
-    assert age == 1 and "Tue 2026-10-06" in bucket and f"{age} d" in bucket
+    for column in ("Document", "Supplier", "Type", "Owner", "SLA (days)", "Days open", "Past SLA"):
+        assert f"{column}</th>" in html, column
+    assert ">Age<" not in html and "SLA due" not in html
+    as_of = sim.cockpit_as_of(world.DOCUMENT_BY_NO[n].received_on for n in (1, 5, 6))
+    assert as_of == datetime(2026, 10, 2, 17, 0)  # close of the day B-05 (the last open exception) arrived
+    # exactly one open exception is past its SLA at the snapshot: B-06, with the buyer
+    days = sim.business_days_between(world.DOCUMENT_BY_NO[6].received_on, as_of)
+    assert days == 4
+    b06 = queue_row(html, "B-06")
+    assert b06.startswith("B-06 Atlas Displays SL Price or quantity mismatch Line 1: 150 x 44.00")
+    assert "Sofia Brandt · Buyer" in b06 and b06.endswith(f" 2 {days} past SLA")
+    assert "Stefan Keller · Next approver in the matrix" in queue_row(html, "B-01")
+    assert queue_row(html, "B-01").endswith("2 1 within SLA")
+    assert queue_row(html, "B-05").endswith("2 0 within SLA")
+    assert "Jonas Weber · Receiver / requester (Store development manager DE)" in queue_row(html, "B-05")
+    assert html.count('class="chip chip-bad">past SLA<') == 1
     info = section(html, "info-tasks")
-    assert 'href="/invoice/B-01"' in info and "Invoice payment terms differ from the master (info)" in info
-    assert "Listed from the whole run." in info
+    assert "No info tasks." in info and "Listed from the whole run." in info
     blocked = squash(page_text(section(html, "blocked-duplicates")))
     assert 'href="/invoice/B-02"' in section(html, "blocked-duplicates")
-    assert ("Not posted. The supplier gets an automatic reply with the status of the original invoice; "
-            f"{world.AP_SPECIALIST.name} is informed. Listed from the whole run.") in blocked
+    assert "Block — duplicate invoices · AP replies with status" in blocked
+    assert (f"Blocked before posting: no owner task and no SLA. AP ({world.AP_SPECIALIST.name}) replies to the "
+            "supplier with the status of the original invoice. Listed from the whole run.") in blocked
     start = html.index('class="snapshot-note"')
     note = squash(page_text(html[start:html.index("</p>", start)]))
-    assert ("The blocking queue is a snapshot at the close of Mon 2026-10-05, the day the last open exception "
-            "arrived") in note and "Info tasks and blocked duplicates are listed from the whole run." in note
-    assert "Email loop" not in html
+    assert ("The queue is a snapshot at the close of Fri 2026-10-02, the day the last open exception arrived: days "
+            "open are business days from registration to it; past SLA = still open after its SLA.") in note
+    assert "every SLA is met" not in html and "Email loop" not in html
 
 
 def test_cockpit_owner_filter(client):
@@ -1193,9 +1395,9 @@ def test_cockpit_owner_filter(client):
     assert 'href="/gate/exceptions?owner=Sofia%20Brandt"' in html
     html = client.get("/gate/exceptions", params={"owner": "Sofia Brandt"}).text
     queue = html[html.index('class="queue-total"'):html.index('id="info-tasks"')]
-    assert "2 blocking exceptions for Sofia Brandt" in page_text(queue)
-    assert 'href="/invoice/B-06"' in queue and 'href="/invoice/B-12"' in queue  # owner, and next owner
-    assert 'href="/invoice/B-05"' not in queue and 'href="/invoice/B-08"' not in queue
+    assert "1 open · 1 past SLA for Sofia Brandt (as owner or next owner)" in squash(page_text(queue))
+    assert 'href="/invoice/B-06"' in queue
+    assert 'href="/invoice/B-05"' not in queue and 'href="/invoice/B-01"' not in queue
     html = client.get("/gate/exceptions", params={"owner": "Jonas Weber"}).text
     queue = html[html.index('class="queue-total"'):html.index('id="info-tasks"')]
     assert 'href="/invoice/B-05"' in queue and 'href="/invoice/B-06"' not in queue
@@ -1207,8 +1409,8 @@ def test_cockpit_asis_is_a_single_email_loop_bucket(client):
     html = client.get("/gate/exceptions").text
     assert html.count('<section class="bucket') == 1
     bucket = section(html, "bucket-email_loop")
-    assert "Email loop — untracked" in bucket and '<span class="count">9</span>' in bucket
-    assert bucket.count('class="doc-id"') == 9
+    assert "Email loop — untracked" in bucket and '<span class="count">8</span>' in bucket
+    assert bucket.count('class="doc-id"') == 8
     assert "owner-filter" not in html
 
 
@@ -1225,22 +1427,30 @@ def test_cockpit_asis_ages_stop_at_the_posting_day(client, session):
     as_of = sim.cockpit_as_of(registered.values())
     closed = 0
     for d in loop:
-        row = bucket[bucket.index(f'id="loop-{d.doc_id}"'):]
-        row = squash(page_text(row[:row.index("</tr>")]))
+        raw = bucket[bucket.index(f'id="loop-{d.doc_id}"'):]
+        raw = raw[:raw.index("</tr>")]
+        row = squash(page_text(raw))
         age = sim.business_days_between(registered[d.doc_id], min(as_of, d.decided_on))
-        assert f" {age} d " in f" {row} ", (d.doc_id, row)
+        assert f'<td class="num nowrap">{age}</td>' in raw, (d.doc_id, row)  # the Days open column
         marker = f"posted {main.fmt_date(d.decided_on)}"
         if d.decided_on <= as_of:
             closed += 1
             assert marker in row, d.doc_id
         else:
             assert marker not in row and f"{main.fmt_date(d.decided_on)} after the snapshot" in row, d.doc_id
-    assert 0 < closed < len(loop)  # the snapshot shows both kinds
+    # the twelve case documents: the loop outlasts the last registration, so every one is still open that evening
+    assert closed == 0 and len(loop) == 8
     start = html.index('class="snapshot-note"')
     note = squash(page_text(html[start:html.index("</p>", start)]))
     assert f"All {len(loop)} documents of the run that went through it are listed." in note
     assert (f"Snapshot at the close of {main.fmt_date(as_of)}, when the last of them was registered: "
-            f"{len(loop) - closed} still in the loop that evening, {closed} already posted.") in note
+            f"{len(loop)} still in the loop that evening, 0 already posted.") in note
+    # a document posted by the snapshot is marked so, and its days open stop at the posting day
+    d = loop[0]
+    late = d.decided_on + (d.decided_on - registered[d.doc_id])
+    view = main.gate_view(d, get_doc(session, d.doc_id), late)
+    assert view["posted_by_snapshot"] and not view["past_sla"]
+    assert view["age_days"] == sim.business_days_between(registered[d.doc_id], d.decided_on)
 
 
 def test_cockpit_before_a_run_offers_the_button(client):
@@ -1251,18 +1461,26 @@ def test_cockpit_before_a_run_offers_the_button(client):
 
 def test_kpis_show_values_and_formulas(client, session):
     use_scenario(client, "tobe")
-    html = client.get("/gate/kpis").text  # before a run: upstream tiles, downstream asks for a run
-    assert "Upstream — process health" in html and "Downstream — automation efficiency" in html
+    html = client.get("/gate/kpis").text  # before a run: accounts per supplier; the others ask for a run
+    # the four metrics of the deck's slide 11 with their tags, then the small indicator
+    assert html.count(">Upstream · process health<") == 2 and html.count(">Downstream · automation efficiency<") == 2
+    assert html.count(">Indicator<") == 1
     before = metrics.compute(session, "tobe")["kpis"].values()
-    need_run = [k for k in before if k["group"] == "downstream" or k["value"] is None]
-    assert len(need_run) < len(before) and html.count(">needs a run<") == len(need_run)
-    assert 'id="kpi-accounts_per_supplier"' in html and ">1.3<" in html
+    need_run = [k for k in before if k["value"] is None]
+    assert len(need_run) == 4 and html.count(">needs a run<") == len(need_run)
+    assert 'id="kpi-accounts_per_supplier"' in html and ">1.17<" in html
     assert "chart.js@4" not in html
     run_scenario(client, "tobe")
     html = client.get("/gate/kpis").text
     text = squash(page_text(html))
     tile = html[html.index('id="kpi-touchless_rate"'):]
-    assert '<span class="kpi-value">71.4%</span>' in tile[:600]
+    assert '<span class="kpi-value">72.7%</span>' in tile[:800]
+    cycle = html[html.index('id="kpi-cycle_time_median"'):]
+    assert '<small class="sim-label">simulated</small>' in cycle[:800]
+    assert html.count("kpi-tile kpi-hero") == 4 and html.count("kpi-tile kpi-mini") == 1
+    for gone in ("Cash leakage", "Exception rate", "Registration lag", "Reference path", "DoA", "Designed to show",
+                 "same definitions as the case deck", "KPIs"):
+        assert gone not in html, gone
     kpis = metrics.compute(session, "tobe")["kpis"]
     for i, kpi in enumerate(kpis.values(), start=1):
         assert f'id="note-{i}"' in html
@@ -1276,20 +1494,25 @@ def test_kpis_show_values_and_formulas(client, session):
     assert "https://cdn.jsdelivr.net/npm/chart.js@4" in html
     raw = re.search(r'id="chart-data" type="application/json">(.*?)</script>', html).group(1)
     data = json.loads(raw)
-    assert data["outcomes"]["labels"][0] == "Posted" and sum(data["outcomes"]["values"]) == len(world.DOCUMENTS)
+    assert data["outcomes"]["labels"] == ["Post", "Exception", "Block", "Human review"]
+    assert sum(data["outcomes"]["values"]) == len(world.DOCUMENTS)
     assert len(data["cycle"]["labels"]) == len(world.DOCUMENTS)
+    paths = dict(zip(data["cycle"]["labels"], data["cycle"]["paths"]))
+    assert paths["B-02"] == "Blocked, not posted" and paths["B-03"] == "Touchless"  # a Block is never touchless
+    assert paths["B-06"] == "Exception with SLA"
 
 
 def test_kpi_layout_places_every_kpi_once(session):
-    """Headline row + group rows: no KPI dropped or shown twice, whatever the layout lists."""
+    """The four headline metrics in the deck's order + the small ones: none dropped or shown twice."""
     kpis = main.ordered_kpis(metrics.compute(session, "tobe")["kpis"])
-    headline, groups = main.kpi_layout(kpis)
-    placed = [t["key"] for t in headline] + [t["key"] for g in groups for row in g["rows"] for t in row["items"]]
+    headline, small = main.kpi_layout(kpis)
+    placed = [t["key"] for t in headline] + [t["key"] for t in small]
     assert sorted(placed) == sorted(k["key"] for k in kpis)
-    assert [t["key"] for t in headline] == list(main.KPI_HEADLINE)
-    extra = kpis + [{"key": "new_kpi", "group": "downstream"}]  # a KPI the layout does not know yet
-    _, groups = main.kpi_layout(extra)
-    assert groups[-1]["rows"][-1]["items"][-1]["key"] == "new_kpi"
+    assert [t["key"] for t in headline] == list(metrics.HEADLINE) == [
+        "first_pass_match_rate", "accounts_per_supplier", "touchless_rate", "cycle_time_median"]
+    assert [t["key"] for t in small] == ["registered_same_day"]
+    extra = kpis + [{"key": "new_kpi", "group": "downstream"}]  # a metric the layout does not know yet
+    assert main.kpi_layout(extra)[1][-1]["key"] == "new_kpi"
 
 
 def test_presentation_helpers():
@@ -1299,9 +1522,21 @@ def test_presentation_helpers():
     assert main.fmt_signed(300) == "+300.00" and main.fmt_signed(-12.5) == "-12.50"
     assert main.nav_active("/run") == "/inbox" and main.nav_active("/invoice/B-01") == "/inbox"
     # a badge that repeats the outcome pill next to it is dropped; the others stay
-    assert main.badge_chips(["credit applied", "contract match"], "Credit applied") == [("contract match", "ok")]
-    assert main.outcome_chip("blocked_duplicate", None) == ("Blocked duplicate", "blocked")
-    assert main.outcome_chip("applied_credit", None) == ("Credit applied", "vio")
+    assert main.badge_chips(["credit note linked", "contract match"], "Credit note linked") == [("contract match", "ok")]
+    # the four outcomes of the gate; the as-is words
+    assert main.outcome_chip("posted", None) == ("Post", "ok")
+    assert main.outcome_chip("applied_credit", None) == ("Post", "ok")
+    assert main.outcome_chip("blocked_duplicate", "duplicate_invoice") == ("Block", "blocked")
+    assert main.outcome_chip("exception", "no_po") == ("Exception: No PO", "bad")
+    assert main.outcome_chip("human_review", "amount_above_approval_limit") == (
+        "Human review: Amount above approval limit", "warn")
+    assert main.outcome_chip("posted", None, "asis") == ("Posted by AP", "ok")
+    assert main.outcome_chip("exception", "email_loop", "asis") == ("Email loop — untracked", "loop")
+    # line-check headers: never "Line None"
+    assert main.line_label({"line": 2}) == "Line 2"
+    assert main.line_label({"line": None, "po_line": None}) == "Net total"
+    assert main.line_label({"line": None, "po_line": 1}) == "PO line 1"
+    assert main.line_label({"line": None, "po_line": 1, "po_number": "4500123"}) == "PO 4500123 line 1"
 
 
 def test_kpis_and_compare_survive_a_metrics_error(client, monkeypatch):
@@ -1328,20 +1563,30 @@ def test_compare_offers_run_both_then_shows_both_columns(client):
         row = html[html.index(f'id="cmp-doc-{d.no}"'):]
         row = row[:row.index("</tbody>")]
         assert f'href="/invoice/A-{d.no:02d}"' in row and f'href="/invoice/B-{d.no:02d}"' in row
-        assert "Designed to show:" in row
-    assert ">duplicate posting<" in html and ">Blocked duplicate<" in html
-    assert ">blocked duplicate<" not in html and ">credit applied<" not in html  # no badge repeats its outcome
+    assert "Designed to show" not in html  # brief v2: no design notes on the comparison
+    assert ">duplicate posting<" in html and ">Block<" in html and ">credit note linked<" in html
+    # the four metrics, A vs B, each with its deck tag; the definition with both scenarios' own numbers
+    assert html.count("kpi-tile ab-tile kpi-hero") == 4 and html.count("kpi-tile ab-tile kpi-mini") == 1
     tile = html[html.index('id="cmp-touchless_rate"'):]
     tile = tile[:tile.index('class="kpi-tile')]
-    assert "35.7%" in tile and "71.4%" in tile and "side-tobe better" in tile
-    assert "Cycle time, shown both ways" in html and "Reference path: non-PO invoice sent to a store" in html
+    assert "0.0%" in tile and "72.7%" in tile and "side-tobe better" in tile
+    assert ">Downstream · automation efficiency<" in tile and "A: 0 of 12 · B: 8 of 11." in tile
+    first_pass = html[html.index('id="cmp-first_pass_match_rate"'):]
+    first_pass = first_pass[:first_pass.index('class="kpi-tile')]
+    assert "27.3%" in first_pass and "72.7%" in first_pass and "A: 3 of 11 · B: 8 of 11." in first_pass
+    accounts = html[html.index('id="cmp-accounts_per_supplier"'):]
+    assert "2.33" in accounts[:1500] and "1.17" in accounts[:1500] and "A: 28 ÷ 12 · B: 14 ÷ 12." in accounts
+    assert "Cycle time, shown both ways" not in html and "Reference path" not in html
 
 
 def test_rerun_gate_htmx_partial_and_no_js_fallback(client, session):
     load_documents(client, "tobe")
     r = client.post("/invoice/B-06/rerun", headers={"HX-Request": "true"})  # not processed yet: runs it
     assert r.status_code == 200 and 'id="gate-panel"' in r.text and "<footer" not in r.text
-    assert "Gate re-run: Exception: Price or quantity outside tolerance, owner Sofia Brandt." in r.text
+    # the Gemini output panel above is refreshed too (out of band): the run may have read the document first
+    assert '<article class="panel" id="extraction-panel" hx-swap-oob="true">' in r.text
+    assert r.text.index('id="gate-panel"') < r.text.index('id="extraction-panel"') and "FIXTURE" in r.text
+    assert "Control gate: Exception: Price or quantity mismatch, owner Sofia Brandt, SLA 2 days." in r.text
     r = client.post("/invoice/B-06/rerun", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/invoice/B-06"
     session.expire_all()
@@ -1363,19 +1608,20 @@ def test_rerun_error_is_reported_not_500(client, monkeypatch, capsys):
 
 def test_rerun_processes_the_earlier_unprocessed_documents_first(client, session):
     load_documents(client, "tobe")
-    r = client.post("/invoice/B-06/rerun", headers={"HX-Request": "true"})
+    r = client.post("/invoice/B-05/rerun", headers={"HX-Request": "true"})
     assert r.status_code == 200
     session.expire_all()
     docs = sorted(session.scalars(select(InboundDocument).where(InboundDocument.scenario == "tobe")),
                   key=gate.order_key)
     ids = [d.doc_id for d in docs]
-    earlier = ids[:ids.index("B-06")]
+    earlier = ids[:ids.index("B-05")]
     processed = set(session.scalars(select(GateDecision.doc_id).where(GateDecision.scenario == "tobe")))
-    assert earlier and processed == set(earlier) | {"B-06"}  # the earlier ones, then B-06; nothing later
+    assert earlier and processed == set(earlier) | {"B-05"}  # the earlier ones, then B-05; nothing later
+    assert "B-11" not in processed  # SecureNet arrives after FitOut
     text = squash(page_text(r.text))
     assert (f"{len(earlier)} earlier documents not processed yet went first, in processing order: "
             f"{', '.join(earlier)}.") in text
-    assert "Exception: Price or quantity outside tolerance" in text
+    assert "Exception: PO exists, no receipt or confirmation" in text
 
 
 def test_kpis_and_compare_warn_when_only_some_documents_are_processed(client, session):
@@ -1437,19 +1683,21 @@ def test_scenario_query_parameter_sets_the_cookie(client):
     assert r.headers["location"] == "/gate/kpis"  # the switch wins: the parameter is not carried back
 
 
-def test_pending_invoices_show_flag_chips_and_totals(client, session):
+def test_pending_invoices_show_flag_chips_and_no_totals(client, session):
     run_scenario(client, "asis")
     html = client.get("/erp/pending-invoices").text
     assert '<a href="/invoice/A-01" class="chip chip-bad">duplicate of A-01</a>' in html
     assert ">wrong entity<" in html and ">unapplied credit<" in html and ">terms: invoice<" in html
+    # brief v2: no value aggregates (no totals per currency), the document amounts stay
+    assert "pvi-totals" not in html and "<tfoot>" not in html and "Totals per currency" not in html
     rows = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.scenario == "asis")).all()
-    for currency in {r.currency for r in rows}:
-        total = sum(r.total for r in rows if r.currency == currency)
-        assert f"{main.fmt_money(total)} {currency}" in html, currency
+    for r in rows:
+        assert main.fmt_money(r.total) in html, r.invoice_id
     run_scenario(client, "tobe")
     html = client.get("/erp/pending-invoices").text
-    assert ">DoA auto-approved<" in html and ">terms: master<" in html and ">credit applied<" in html
-    assert ">terms: invoice<" not in html and "duplicate of" not in html
+    assert ">card / catalogue<" in html
+    assert ">terms: master<" in html and ">credit applied<" in html
+    assert ">terms: invoice<" not in html and "duplicate of" not in html and "DoA" not in html
 
 
 @pytest.mark.parametrize("scenario", config.SCENARIOS)
@@ -1474,7 +1722,7 @@ def test_exceptions_chart_labels_are_wrapped(client):
     for label, lines in zip(exceptions["labels"], exceptions["lines"]):
         assert " ".join(lines) == label
         assert all(len(line) <= main.CHART_LABEL_WIDTH for line in lines), lines
-    assert any(len(lines) > 1 for lines in exceptions["lines"])  # e.g. "PO exists, no receipt or service ..."
+    assert any(len(lines) > 1 for lines in exceptions["lines"])  # e.g. "PO exists, no receipt or confirmation"
     assert "labels: data.exceptions.lines" in html
     assert main.label_lines("Supercalifragilisticexpialidocious-and-more") == [
         "Supercalifragilisticexpialidocious-and-more"]  # a single long word is never split
@@ -1574,7 +1822,7 @@ def test_asis_live_documents_are_not_registered_yet_and_reported_apart_in_the_co
         decision = session.scalar(select(GateDecision).where(GateDecision.doc_id == doc_id))
         assert decision.exception_type == "email_loop"
         assert decision.details["email_loop_days"] == sim.email_loop_days(doc_id)  # seeded by its own id
-        assert decision.steps[0]["detail"].startswith("Not registered yet: expected 1 business day(s) after receipt")
+        assert decision.steps[0]["detail"].startswith("Not registered yet: expected 1 business day after receipt")
         assert get_doc(session, doc_id).registered_on > datetime.now()
         page = squash(page_text(client.get(f"/invoice/{doc_id}").text))
         assert "Registered Not registered yet — expected" in page
@@ -1601,7 +1849,8 @@ def test_every_change_of_the_gate_results_is_exported(client, session, bucket_di
     out = capsys.readouterr().out
     for event in ("run", "intake of B-W01", "re-run of B-03", "reset"):
         assert f"[export] after the tobe {event}: 1 rows in 1 tables" in out, event
-    assert len(calls) == 4
+    assert "[export] after the asis reset: 1 rows in 1 tables" in out  # Reset demo re-runs both scenarios
+    assert len(calls) == 5
 
     def broken(db_session):
         raise RuntimeError("BigQuery unreachable")
@@ -1635,13 +1884,31 @@ def test_extraction_messages_name_the_ubl_parser_and_never_none_ms(client, sessi
     assert main.run_extraction(session, doc, force=False) == ("info", "Extracted with gemini-test (from cache).")
 
 
-def test_load_and_reset_warn_that_documents_received_by_email_are_replaced(client):
+def test_reset_confirm_says_what_the_demo_reset_does(client):
     html = client.get("/inbox").text
-    load = squash(page_text(form_html(html, "/documents/load")))
-    assert "documents received by email (live intake) included" in load
     reset = html[html.index('action="/reset"'):]
     reset = html_lib.unescape(reset[:reset.index(">")])
-    assert "Documents received by email (live intake) are removed." in reset
+    assert ("Reset the demo? Both scenarios are re-seeded, the 12 case documents are loaded and run offline, and "
+            "one email waits to be received.") in reset
+    assert "live intake" not in html.lower() and "received by email" not in html.lower()
+
+
+def test_log_lines_print_on_a_legacy_code_page(monkeypatch):
+    """Found in the demo walkthrough: with the server output redirected on Windows (cp1252), printing a rule-log line
+    with "→" raised UnicodeEncodeError and "Run the control gate" returned a 500. config.utf8_output fixes the
+    streams at start-up."""
+    import io
+
+    raw = io.BytesIO()
+    legacy = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    with pytest.raises(UnicodeEncodeError):
+        print("[B-05] Commitment → Exception — ≈ CHF", file=legacy)
+    legacy = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    config.utf8_output(legacy)
+    print("[B-05] Commitment → Exception — ≈ CHF", file=legacy)
+    legacy.flush()
+    assert legacy.buffer.getvalue().decode("utf-8").splitlines() == ["[B-05] Commitment → Exception — ≈ CHF"]
+    config.utf8_output(object())  # anything that is not a text stream is left alone
 
 
 def test_startup_prints_the_columns_an_older_database_gets(session, monkeypatch, capsys):

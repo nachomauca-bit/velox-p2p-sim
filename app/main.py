@@ -1,7 +1,7 @@
 """FastAPI app: mock ERP pages (read-only), control-gate pages and intake.
 
-Server-rendered with Jinja2 + HTMX partials, Pico.css and Chart.js from a CDN. The active scenario
-("asis" | "tobe") lives in a cookie; any GET also accepts ?scenario=asis|tobe (sets the cookie).
+Server-rendered with Jinja2 + HTMX partials and app/static/app.css; htmx and Chart.js from a CDN. The active
+scenario ("asis" | "tobe") lives in a cookie; any GET also accepts ?scenario=asis|tobe (sets the cookie).
 The gate rules live in gate.py, the KPIs in metrics.py and the owner drafts in drafts.py: this module
 only calls them and renders the results.
 """
@@ -54,35 +54,49 @@ APP_DIR = Path(__file__).resolve().parent
 SCENARIO_COOKIE = "scenario"
 FLASH_COOKIE = "flash"
 SCENARIO_SUMMARY = {
-    "asis": "Dirty vendor master, weak PO discipline, two intake mailboxes, no control gate.",
-    "tobe": "Clean vendor master, POs and contracts for most spend, registration on arrival, "
-            "control gate with an exception cockpit.",
+    "asis": "Duplicate vendor records, no PO discipline, two mailboxes, no control gate.",
+    "tobe": "Clean master (one record per supplier, terms from contract), commitments by spend category, one intake "
+            "registered on arrival, the control gate.",
 }
 
 # Left navigation: two visibly separate groups (brief section 11). The split is the architecture
 # message: the ERP stays the system of record, the gate sits in front of it.
 NAV_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Velox ERP (mock, system of record)", [
-        ("/erp/pending-invoices", "Pending vendor invoices"),
+        ("/erp/pending-invoices", "Posted invoices"),
         ("/erp/vendors", "Vendor master"),
         ("/erp/purchase-orders", "Purchase orders & receipts"),
-        ("/erp/contracts", "Contracts"),
+        ("/erp/contracts", "Contracts & catalogues"),
     ]),
     ("Control gate (new)", [
         ("/inbox", "Inbox"),
         ("/gate/exceptions", "Exception cockpit"),
-        ("/gate/kpis", "KPIs"),
+        ("/gate/kpis", "Metrics"),
         ("/gate/compare", "Compare"),
         ("/assumptions", "Assumptions"),
     ]),
 ]
 
-DOC_TYPE_LABELS = {"invoice": "Invoice", "credit_note": "Credit note", "other": "Not an invoice",
-                   "unknown": "Type unknown"}
+# The six stages of the deck (slides 4 and 9), in this order, for the stage strip on top of every page:
+# (key, label, link). Pages map to the stages they show (brief v2 section 1).
+STAGES = [
+    ("buy", "Buy", "/erp/purchase-orders"),
+    ("supplier", "Set up the supplier", "/erp/vendors"),
+    ("receive", "Receive or confirm", "/erp/purchase-orders#receipts"),
+    ("arrives", "Invoice arrives", "/inbox"),
+    ("gate", "Control gate", "/run"),
+    ("resolve", "Resolve, post and pay", "/gate/exceptions"),
+]
+STAGE_PAGES = {"/erp/purchase-orders": {"buy", "receive"}, "/erp/contracts": {"buy"}, "/erp/vendors": {"supplier"},
+               "/inbox": {"arrives"}, "/run": {"gate"}, "/gate/exceptions": {"resolve"},
+               "/erp/pending-invoices": {"resolve"}}
+
+DOC_TYPE_LABELS = {"invoice": "Invoice", "credit_note": "Credit note", "reminder": "Payment reminder",
+                   "statement": "Statement", "other": "Not an invoice", "unknown": "Type unknown"}
 CHANNEL_LABELS = {"ap_mailbox": "AP shared mailbox", "store_mailbox": "Store mailbox (Berlin 01)"}
 CONTENT_LABELS = {"pdf": "PDF", "ubl_xml": "UBL e-invoice (XML)", "email_body": "Email body, no attachment"}
-# "Load sample documents" choices: the 14 case documents or test set v2 (docs/TEST_SET_V2.md).
-DATASET_CHOICES = {"v1": "Case documents (14)", "v2": "Test set v2 (26)"}
+# Sample document sets: the 12 case documents (the demo) or test set v2 (docs/TEST_SET_V2.md; CLI and tests only).
+DATASET_CHOICES = {"v1": "Case documents (12)", "v2": "Test set v2 (26)"}
 DATASET_NAMES = {**DATASET_CHOICES, seed.LIVE_DATASET: "Live intake (webhook)"}
 
 
@@ -93,14 +107,19 @@ DATASET_NAMES = {**DATASET_CHOICES, seed.LIVE_DATASET: "Live intake (webhook)"}
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create tables (never drop), add the columns an older database lacks, and seed the mock ERP if it is empty."""
+    """Create tables (never drop), add the columns an older database lacks, and seed the mock ERP if it is empty.
+    An empty database comes up demo-ready (config.DEMO_AUTOLOAD): both scenarios loaded and run offline."""
     added = db.init_db()
     if added:
         print(f"[startup] database upgraded: added {', '.join(added)}")
     with db.SessionLocal() as session:
         if session.scalar(select(func.count()).select_from(LegalEntity)) == 0:
             seed.seed_all(session)
-            print("[startup] empty database: seeded both scenarios (run `make seed` to load the mailboxes)")
+            if config.DEMO_AUTOLOAD:
+                seed.reset_demo(session)
+                print("[startup] empty database: demo ready (both scenarios loaded and run; one email to receive)")
+            else:
+                print("[startup] empty database: seeded both scenarios (run `make seed` to load the mailboxes)")
     yield
 
 
@@ -243,6 +262,11 @@ def nav_active(path: str) -> str:
     return "/inbox" if path.startswith("/invoice/") or path == "/run" else path
 
 
+def active_stages(path: str) -> set[str]:
+    """The deck stages a page shows: a document page is the control gate (the rule log of one invoice)."""
+    return {"gate"} if path.startswith("/invoice/") else STAGE_PAGES.get(path, set())
+
+
 def render(request: Request, name: str, context: dict[str, Any], status_code: int = 200) -> Response:
     """Render a full page with the shared layout context (scenario, nav, footer, flash)."""
     scenario = active_scenario(request)
@@ -256,6 +280,8 @@ def render(request: Request, name: str, context: dict[str, Any], status_code: in
         "scenario_labels": config.SCENARIO_LABELS,
         "nav_groups": NAV_GROUPS,
         "nav_active": nav_active(request.url.path),
+        "stages": STAGES,
+        "active_stages": active_stages(request.url.path),
         "footer_text": config.FOOTER_TEXT,
         "flash": flash,
         "dataset_choices": DATASET_CHOICES,
@@ -338,7 +364,7 @@ def extraction_mode_note() -> str:
 
 
 def form_dataset(value: Optional[str]) -> str:
-    """Dataset of "Load sample documents": v1 (the 14 case documents, the default) or v2 (test set v2)."""
+    """Dataset of a sample load: v1 (the 12 case documents, the default) or v2 (test set v2)."""
     if not value:
         return "v1"
     if value not in seed.DATASETS:
@@ -403,7 +429,7 @@ def load_message(loaded: int, scenario: str, summary: dict[str, Any], dataset: s
         if config.EXTRACTOR != "fixture" and not config.gemini_configured():
             text += f": set {config.gemini_missing_setting()} in .env and run make extract."
         elif config.gemini_configured():
-            text += " (retry with Extract now on the invoice page, or run make extract)."
+            text += " (retry with make extract)."
         else:
             text += "."
     if failed:
@@ -421,36 +447,43 @@ _gate_lock = threading.Lock()
 
 
 @app.post("/reset")
-def reset(request: Request, scenario: Optional[str] = Form(None),
-          session: Session = Depends(db.get_session)) -> RedirectResponse:
-    """Restore the scenario for the demo: ERP re-seeded, gate results cleared, the sample documents of the dataset
-    that was loaded (case documents by default) reloaded (unprocessed) and extracted from the cache or fixtures
-    only (never the API)."""
-    scenario = form_scenario(request, scenario)
+def reset_demo(session: Session = Depends(db.get_session)) -> RedirectResponse:
+    """Header "Reset demo" (brief v2 section 7): both scenarios re-seeded, the 12 case documents loaded and run
+    offline (extraction cache or fixtures, never the API), the demo's next email held back; opens the to-be inbox."""
     with _gate_lock:
-        gate.clear_results(session, scenario)
-        dataset = seed.reset_scenario(session, scenario) or "v1"
-        docs = seed.load_sample_documents(session, scenario, dataset)
         try:
-            summary = extract.extract_documents(session, docs, allow_api=False)
-        except Exception as exc:  # the reset itself succeeded; report the extraction problem
+            seed.reset_demo(session)
+        except Exception as exc:  # a broken rule or data problem must not end in a 500
             session.rollback()
-            summary = {"extracted": 0, "from_cache": 0, "unavailable": len(docs), "failed": 0, "error": str(exc)}
-    body_only = sum(1 for d in docs if d.content_type == "email_body" and d.extraction is None)
-    pending = max(summary["unavailable"] - body_only, 0)
-    print(f"[reset] scenario={scenario} dataset={dataset} ERP tables re-seeded, gate results cleared, {len(docs)} "
-          f"documents reloaded, extracted={summary['extracted']} unavailable={summary['unavailable']}")
-    export_after_run(session, scenario, "reset")
-    path = back_path(request)
-    if path.startswith(DOCUMENT_PAGE_PREFIXES):
-        path = "/inbox"
-    text = (f"{config.SCENARIO_LABELS[scenario]} reset: ERP tables re-seeded, gate results cleared, "
-            f"{len(docs)} sample documents reloaded and not processed yet; {summary['extracted']} extracted. "
-            f"Documents: {DATASET_CHOICES[dataset]}.")
-    if pending:
-        text += f" Extraction pending for {plural(pending, 'document')} (no cache entry)."
-    response = redirect(path, ("warn" if pending else "info", text))
-    set_scenario_cookie(response, scenario)
+            print(f"[reset] demo reset FAILED: {exc!r}")
+            return redirect("/inbox", ("error", "The demo reset failed; see the server log."))
+    for scenario in config.SCENARIOS:
+        export_after_run(session, scenario, "reset")
+    held = seed.held_back_documents(session)
+    print(f"[reset] demo: both scenarios re-seeded, loaded and run; {len(held)} email(s) to receive")
+    text = "Demo reset: both scenarios loaded and run (offline)."
+    if held:
+        text += f" One email has not arrived yet: press Receive next email ({held[0].party.canonical_name})."
+    response = redirect("/inbox", ("ok", text))
+    set_scenario_cookie(response, "tobe")
+    return response
+
+
+@app.post("/inbox/receive")
+def receive_next_email(session: Session = Depends(db.get_session)) -> RedirectResponse:
+    """Demo step 1: the next held-back case document arrives at ap@ and is registered on arrival (to-be). Nothing is
+    read or decided yet: its page offers "Run the control gate"."""
+    with _gate_lock:
+        held = seed.held_back_documents(session)
+        if not held:
+            response = redirect("/inbox", ("info", "No email waiting: every case document has arrived."))
+            set_scenario_cookie(response, "tobe")
+            return response
+        doc = seed.receive_document(session, "tobe", held[0])
+    print(f"[intake] {doc.doc_id} received on {doc.mailbox}, registered on arrival {doc.registered_on:%Y-%m-%d %H:%M}")
+    response = redirect("/inbox", ("ok", f"Email received at {doc.mailbox}: registered as {doc.doc_id} on "
+                                         f"{doc.registered_on:%a %d %b %Y %H:%M}. The clock runs from this minute."))
+    set_scenario_cookie(response, "tobe")
     return response
 
 
@@ -465,15 +498,17 @@ def run_gate(session: Session, scenario: str) -> tuple[Optional[Run], str]:
             if count_documents(session, scenario) == 0:
                 docs = seed.load_sample_documents(session, scenario)
                 loaded = f"{len(docs)} sample documents loaded first. "
-            run = gate.run_scenario(session, scenario, allow_api=config.gemini_configured())
+            run = gate.run_scenario(session, scenario, allow_api=False)  # offline: cache or fixtures only
         except Exception as exc:  # a broken rule or data problem must not end in a 500
             session.rollback()
             print(f"[run] scenario={scenario} FAILED: {exc!r}")
             return None, f"The gate run of {config.SCENARIO_LABELS[scenario]} failed; see the server log."
     export_after_run(session, scenario)
     s = run.summary_json or {}
-    return run, (f"{loaded}{config.SCENARIO_LABELS[scenario]}: {s.get('documents', 0)} documents processed, "
-                 f"{s.get('touchless', 0)} touchless, {s.get('exceptions', 0)} exceptions.")
+    words = metrics.outcome_counts_from(scenario, s.get("outcomes") or {})
+    return run, (f"{loaded}{config.SCENARIO_LABELS[scenario]}: {s.get('documents', 0)} documents processed · "
+                 + " · ".join(f"{w} {n}" for w, n in words.items())
+                 + f" · posted with no human touch {s.get('touchless', 0)}.")
 
 
 def export_after_run(session: Session, scenario: str, event: str = "run") -> None:
@@ -527,52 +562,61 @@ def run_both(session: Session = Depends(db.get_session)) -> RedirectResponse:
 # --------------------------------------------------------------------------------------------
 
 EMAIL_LOOP_LABEL = "Email loop — untracked"
-OUTCOME_LABELS = {"posted": "Posted", "exception": "Exception", "blocked_duplicate": "Blocked duplicate",
-                  "applied_credit": "Credit applied", "human_review": "Human review"}
+# The four outcomes of the gate (brief v2): Post · Exception · Block · Human review; the as-is has no gate.
+OUTCOME_LABELS = gate.OUTCOME_WORDS["tobe"]
 # One colour per outcome, the same on every page (pills, inbox card stripes, outcome cards, charts):
-# posted = emerald, credit applied = violet, blocked duplicate = slate, human review = amber, exception = red,
-# email loop = orange. Sky ("info") is kept for info tasks and info flags only.
-OUTCOME_TONES = {"posted": "ok", "applied_credit": "vio", "blocked_duplicate": "blocked", "human_review": "warn",
+# Post = emerald, Block = slate, Human review = amber, Exception = red, email loop = orange. Violet marks a credit
+# note linked to its invoice (a badge next to Post). Sky ("info") is kept for info tasks and info flags only.
+OUTCOME_TONES = {"posted": "ok", "applied_credit": "ok", "blocked_duplicate": "blocked", "human_review": "warn",
                  "exception": "bad"}
-# Tone of a step result in the gate trace and the run log (css class chip-<tone>).
+# Tone of a step result in the gate trace (css class chip-<tone>).
 RESULT_TONES = {"ok": "ok", "applied": "vio", "info": "info", "blocked": "blocked", "flag": "warn",
-                "created": "warn", "exception": "bad", "unapplied": "bad", "skipped": "neutral", **OUTCOME_TONES}
+                "created": "warn", "exception": "bad", "human_review": "warn", "email_loop": "loop",
+                "unapplied": "bad", "skipped": "neutral", **OUTCOME_TONES}
+# Tone of a result word in the rule log ("[B-05] Commitment → Exception — ...").
+LOG_WORD_TONES = {"pass": "ok", "info": "info", "flag": "warn", "account created": "warn", "skipped": "neutral",
+                  "Exception": "bad", "Human review": "warn", "Block": "blocked", "credit note linked": "vio",
+                  "unapplied": "bad", "email loop": "loop", "Post": "ok", "Posted by AP": "ok",
+                  "Email loop — untracked": "loop", "Blocked (same account)": "blocked"}
 # Short badges (same strings as metrics.compare cells) and their tone.
 BADGE_TONES = {"duplicate posting": "bad", "wrong entity": "bad", "unapplied credit": "bad",
                "vendor account created": "bad", "terms paid early": "warn", "terms paid late": "warn",
-               "terms variance": "warn", "terms variance flagged": "info", "duplicate account flagged": "info",
-               "DoA auto-approved": "info", "blocked duplicate": "blocked", "contract match": "ok",
-               "3-way match": "ok", "credit applied": "vio", "statement posted as invoice": "bad",
-               "UBL e-invoice": "info", "email body only": "warn"}
-STEP_LABELS = {"register": "Register", "extract": "Extract", "resolve_vendor": "Resolve vendor",
-               "legal_entity": "Legal entity check", "duplicate_check": "Duplicate check",
-               "credit_note": "Credit note", "commitment_match": "Commitment match", "terms": "Payment terms",
-               "post": "Post"}
+               "terms variance": "warn", "duplicate record flagged": "info", "contract match": "ok",
+               "catalogue match": "ok", "3-way match": "ok", "credit note linked": "vio",
+               "statement posted as invoice": "bad", "UBL e-invoice": "info", "email body only": "warn"}
 CYCLE_LABELS = {"store_forwarding": "Store mailbox forwarding",
-                "ap_open_and_key": "AP opens ap@ and the quick-fix tool keys it",
+                "ap_open_and_key": "AP opens ap@ and keys the invoice",
                 "email_loop": "Email loop (untracked)", "email_approval": "Approval by email",
                 "posting": "Posting", "registration": "Registration on arrival",
-                "extraction_and_gate": "Extraction and gate", "exception_sla": "Owner resolves within the SLA",
-                "workflow_approval": "Workflow approval"}
-RESOLUTION_LABELS = {"vat_id": "VAT ID", "iban": "IBAN", "name": "name similarity",
+                "extraction_and_gate": "Reading and rules", "exception_sla": "Owner resolves within the SLA",
+                "past_sla": "Resolved past the SLA", "workflow_approval": "Workflow approval"}
+RESOLUTION_LABELS = {"vat_id": "tax ID", "iban": "IBAN", "name": "name similarity",
                      "exact_name": "exact display name (first hit)", "fuzzy_name": "similar display name (first hit)",
-                     "created": "nothing: created on the fly"}
+                     "created": "nothing: AP opened a new account"}
 PATH_LABELS = {"matched": "Matched", "email_loop": "Email loop", "touchless": "Touchless",
                "exception": "Exception with SLA"}
+BLOCKED_PATH_LABEL = "Blocked, not posted"  # a blocked duplicate is never posted: not touchless
 
 
-def outcome_chip(outcome: Optional[str], exception_type: Optional[str]) -> tuple[str, str]:
-    """(label, tone) of the outcome chip: Posted / Exception: <label> / Blocked duplicate / ..."""
+def path_label(path: Optional[str], outcome: Optional[str]) -> Optional[str]:
+    """How a document went through (cycle chart, outcome card): a blocked duplicate is named apart."""
+    return BLOCKED_PATH_LABEL if outcome == "blocked_duplicate" else PATH_LABELS.get(path or "", path)
+
+
+def outcome_chip(outcome: Optional[str], exception_type: Optional[str], scenario: str = "tobe") -> tuple[str, str]:
+    """(label, tone) of the outcome chip: Post / Exception: <A3 label> / Block / Human review: <A3 label>; as-is:
+    Posted by AP / Email loop — untracked."""
     if exception_type == "email_loop":
         return EMAIL_LOOP_LABEL, "loop"
-    if outcome == "exception":
-        return f"Exception: {taxonomy.label(exception_type)}", "bad"
-    return OUTCOME_LABELS.get(outcome or "", outcome or "—"), OUTCOME_TONES.get(outcome or "", "neutral")
+    word = gate.OUTCOME_WORDS.get(scenario, OUTCOME_LABELS).get(outcome or "", outcome or "—")
+    if outcome in ("exception", "human_review") and exception_type:
+        return f"{word}: {taxonomy.label(exception_type)}", OUTCOME_TONES[outcome]
+    return word, OUTCOME_TONES.get(outcome or "", "neutral")
 
 
 def badge_chips(badges: list[str], *shown: Optional[str]) -> list[tuple[str, str]]:
-    """(label, tone) of the short badges, without the ones that repeat a label already shown next to them (the
-    outcome pill "Credit applied" makes the badge "credit applied" redundant)."""
+    """(label, tone) of the short badges, without the ones that repeat a label already shown next to them (an
+    outcome pill that already says what the badge says)."""
     seen = [s.lower() for s in shown if s]
     return [(b, BADGE_TONES.get(b, "neutral")) for b in badges if not any(b.lower() in s for s in seen)]
 
@@ -581,7 +625,7 @@ def badge_chips(badges: list[str], *shown: Optional[str]) -> list[tuple[str, str
 CONTENT_BADGES = {"ubl_xml": "UBL e-invoice", "email_body": "email body only"}
 # An email that carries the invoice only in its body goes to human review, but not for a low extraction
 # confidence: there was nothing to extract. The pages say so instead of the taxonomy label.
-EMAIL_BODY_REVIEW_LABEL = "Human review — invoice only in the email body"
+EMAIL_BODY_REVIEW_LABEL = "Human review: invoice only in the email body"
 EMAIL_BODY_REVIEW_RESOLUTION = "Key the invoice from the email text"
 
 
@@ -598,7 +642,7 @@ def sla_due(decision: GateDecision, doc: Optional[InboundDocument]) -> Optional[
 
 
 def age_days(doc: Optional[InboundDocument], as_of: Optional[datetime]) -> Optional[int]:
-    """Business days from registration to the cockpit snapshot date (sim.cockpit_as_of) or an earlier end."""
+    """Days open: business days from registration to the cockpit snapshot (sim.cockpit_as_of) or an earlier end."""
     start = doc and (doc.registered_on or doc.received_on)
     return None if start is None or as_of is None else sim.business_days_between(start, as_of)
 
@@ -634,13 +678,15 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
     posted by then (as-is: the email loop ends in a posting).
     """
     det = dict(decision.details or {})
-    label, tone = outcome_chip(decision.outcome, decision.exception_type)
+    label, tone = outcome_chip(decision.outcome, decision.exception_type, decision.scenario)
     spec = seed.spec_for(doc.dataset if doc else seed.dataset_of_doc_id(decision.doc_id),
                          det.get("sample_no") or (doc.sample_no if doc else 0))
     posted = posted_on(decision)
     posted_by_snapshot = bool(as_of and posted and posted <= as_of)
     email_body_review = is_email_body_review(decision, doc)
     type_label = taxonomy.label(decision.exception_type) if decision.exception_type else None
+    days_open = age_days(doc, posted if posted_by_snapshot else as_of)
+    open_at_snapshot = as_of is not None and not posted_by_snapshot
     return {
         **det,
         "doc_id": decision.doc_id,
@@ -650,13 +696,17 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
         "type_label": EMAIL_BODY_REVIEW_LABEL if email_body_review else type_label,
         "type_info": taxonomy.BY_KEY.get(decision.exception_type or ""),
         "type_resolution": EMAIL_BODY_REVIEW_RESOLUTION if email_body_review else None,
-        "chip_label": label,
+        "chip_label": EMAIL_BODY_REVIEW_LABEL if email_body_review else label,
         "chip_tone": tone,
         "owner_name": decision.owner_name,
         "owner_role": decision.owner_role,
         "sla_days": decision.sla_days,
         "sla_due": sla_due(decision, doc),
-        "age_days": age_days(doc, posted if posted_by_snapshot else as_of),
+        "age_days": days_open,
+        # Past its SLA at the cockpit snapshot: still open and open for more business days than its SLA.
+        "past_sla": bool(open_at_snapshot and decision.sla_days is not None and days_open is not None
+                         and days_open > decision.sla_days),
+        "owner_title": det.get("owner_title"),
         "posted_on": posted,
         "posted_by_snapshot": posted_by_snapshot,
         "reason": decision.reason,
@@ -664,7 +714,7 @@ def gate_view(decision: GateDecision, doc: Optional[InboundDocument] = None,
         "badges": badge_chips(metrics.badges(decision), label),
         "flags": det.get("flags") or [],
         "supplier": det.get("supplier_name") or (spec.printed_supplier_name if spec else None) or "—",
-        "path_label": PATH_LABELS.get(det.get("path") or "", det.get("path")),
+        "path_label": path_label(det.get("path"), decision.outcome),
     }
 
 
@@ -716,12 +766,8 @@ def registration_info(doc: InboundDocument) -> dict[str, Any]:
 
 
 def doc_type_key(doc: InboundDocument) -> str:
-    """invoice | credit_note | other | unknown: extract.py registers a document read as "other" (e.g. a supplier
-    statement) as "unknown"; the pages show what the extraction says."""
-    if doc.doc_type == "unknown" and doc.extraction is not None:
-        if ((doc.extraction.json or {}).get("doc_type") or {}).get("value") == "other":
-            return "other"
-    return doc.doc_type
+    """The document type as read (invoice, credit_note, reminder, statement, other), "unknown" before it is read."""
+    return doc.doc_type if doc.doc_type in DOC_TYPE_LABELS else "unknown"
 
 
 def dataset_summary(docs: Sequence[InboundDocument]) -> list[dict[str, Any]]:
@@ -745,16 +791,21 @@ def inbox(request: Request, session: Session = Depends(db.get_session)) -> Respo
         if d.doc_id in views and d.content_type in CONTENT_BADGES:
             views[d.doc_id]["badges"] = [b for b in views[d.doc_id]["badges"]
                                          if b[0] != CONTENT_BADGES[d.content_type]]
+    # to-be: one intake address (ap@), registered on arrival; as-is: the two mailboxes suppliers use today.
+    channels = {"ap_mailbox": world.AP_MAILBOX} if scenario == "tobe" else world.MAILBOX_BY_CHANNEL
     mailboxes = [
-        {"channel": channel, "address": address, "label": CHANNEL_LABELS[channel],
+        {"channel": channel, "address": address,
+         "label": "One intake address" if scenario == "tobe" else CHANNEL_LABELS[channel],
          "docs": [(d, registration_info(d), views.get(d.doc_id), doc_type_key(d)) for d in docs
-                  if d.channel == channel]}
-        for channel, address in world.MAILBOX_BY_CHANNEL.items()
+                  if d.channel == channel or scenario == "tobe"]}
+        for channel, address in channels.items()
     ]
+    held = seed.held_back_documents(session, scenario) if scenario == "tobe" else []
     return render(request, "inbox.html", {"page_title": "Inbox", "mailboxes": mailboxes, "total": len(docs),
                                           "processed": len(views), "doc_type_labels": DOC_TYPE_LABELS,
                                           "content_labels": CONTENT_LABELS, "datasets": dataset_summary(docs),
-                                          "run": latest_run(session, scenario)})
+                                          "run": latest_run(session, scenario), "next_email": held[0] if held else None,
+                                          "unprocessed": [d.doc_id for d in docs if d.doc_id not in views]})
 
 
 # --------------------------------------------------------------------------------------------
@@ -762,22 +813,22 @@ def inbox(request: Request, session: Session = Depends(db.get_session)) -> Respo
 # --------------------------------------------------------------------------------------------
 
 _LOG_PREFIX = re.compile(r"^(\[[^\]]*\])\s?(.*)$")
-_LOG_RESULT = re.compile(r"\b(result|outcome)=(\S+)")
+_LOG_RULE = re.compile(r"^(?P<rule>.+?) → (?P<result>.+?)(?: — (?P<reason>.*))?$")
 LOG_REVEAL_MS = 9000  # the whole log is revealed line by line in about this many milliseconds
 
 
 def log_line(text: str) -> dict[str, str]:
-    """One log line split for display: "[doc 07]", the text around the result/outcome token, its tone."""
+    """One rule-log line split for display: "[B-05]", the rule, the result word (with its tone), the reason."""
     m = _LOG_PREFIX.match(text)
     prefix, body = (m.group(1), m.group(2)) if m else ("", text)
-    kind = "run" if prefix == "[run]" else "step"
-    r = _LOG_RESULT.search(body)
+    if prefix == "[run]":
+        return {"prefix": prefix, "rule": "", "result": "", "reason": body, "tone": "neutral", "kind": "run"}
+    r = _LOG_RULE.match(body)
     if r is None:
-        return {"prefix": prefix, "before": body, "token": "", "after": "", "tone": "neutral", "kind": kind}
-    if kind == "step" and r.group(1) == "outcome":
-        kind = "outcome"
-    return {"prefix": prefix, "before": body[:r.start()], "token": r.group(0), "after": body[r.end():],
-            "tone": RESULT_TONES.get(r.group(2), "neutral"), "kind": kind}
+        return {"prefix": prefix, "rule": "", "result": "", "reason": body, "tone": "neutral", "kind": "step"}
+    kind = "outcome" if r.group("rule") == "Outcome" else "step"
+    return {"prefix": prefix, "rule": r.group("rule"), "result": r.group("result"), "reason": r.group("reason") or "",
+            "tone": LOG_WORD_TONES.get(r.group("result"), "neutral"), "kind": kind}
 
 
 @app.get("/run")
@@ -788,8 +839,13 @@ def run_page(request: Request, session: Session = Depends(db.get_session)) -> Re
     lines = [log_line(str(text)) for text in summary.get("log") or []]
     docs = scenario_documents(session, scenario)
     decisions = decisions_by_doc(session, scenario)
+    in_log = {line["prefix"][1:-1] for line in lines}
     return render(request, "run.html", {
-        "page_title": "Run", "run": run, "summary": summary, "lines": lines,
+        "page_title": "Rule log" if scenario == "tobe" else "Processing log", "run": run, "summary": summary,
+        "lines": lines, "outcome_counts": metrics.outcome_counts_from(scenario, summary.get("outcomes") or {}),
+        "outcome_tones": LOG_WORD_TONES,
+        # processed on its own after the run (e.g. the demo's next email): its lines are on its invoice page
+        "processed_after": [d.doc_id for d in docs if d.doc_id in decisions and d.doc_id not in in_log] if run else [],
         "step_ms": max(12, min(90, LOG_REVEAL_MS // max(len(lines), 1))),
         "rows": [gate_view(decisions[d.doc_id], d) for d in docs if d.doc_id in decisions],
         # an email that carries the invoice only in its body has nothing to extract: named apart, not as missing
@@ -835,16 +891,18 @@ def field_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def no_extraction_reason(doc: Optional[InboundDocument] = None) -> str:
     if doc is not None and doc.content_type == "email_body":
-        return ("The invoice is only in the email body: there is no document to extract. The AP specialist keys "
-                "it from the email text shown on this page.")
+        return ("The invoice is only in the email body: there is no document to read. AP keys it from the email "
+                "text shown on this page.")
+    if doc is not None and doc.scenario == "asis":
+        return "Processing this document keys its fields (scenario A has no model: AP types them)."
     if config.EXTRACTOR == "fixture":
         return "Fixture mode is on (EXTRACTOR=fixture) and there is no ground-truth fixture for this PDF."
     if not config.gemini_configured():
-        # the running server does not re-read .env: Extract now only works after a restart
-        return (f"This PDF is not in the extraction cache and {config.gemini_missing_setting()} is not set: add "
-                "the key to .env and run make extract (it updates the database directly), or restart the app and "
-                "click Extract now.")
-    return "Not extracted yet. Extract now calls the Gemini API once; the result is cached on disk."
+        # the running server does not re-read .env: a new key only works after a restart
+        return (f"Running the control gate reads it from the extraction cache; if the file was never read, "
+                f"{config.gemini_missing_setting()} must be set in .env (then restart the app, or run make extract).")
+    return ("Running the control gate reads it first: from the extraction cache when this file was read before, "
+            "else with one Gemini API call.")
 
 
 def is_ubl_extraction(ex: Any) -> bool:
@@ -852,13 +910,23 @@ def is_ubl_extraction(ex: Any) -> bool:
     return bool(ex) and ex.model == metrics.ubl_model()
 
 
+def provenance(ex: Any) -> tuple[str, str]:
+    """(kind, the one provenance line) of an extraction: who read the fields and from where."""
+    if extract.is_fixture_model(ex.model):
+        return ("fixture", "FIXTURE — ground-truth test data, not a Gemini output (EXTRACTOR=fixture).")
+    if is_ubl_extraction(ex):
+        return ("ubl", "Parsed from the UBL e-invoice: structured XML, no model call.")
+    return ("cache", f"Read by {ex.model} (cached).") if ex.from_cache else ("api", f"Read by {ex.model} (Gemini API).")
+
+
 def extraction_context(doc: InboundDocument, message: Optional[tuple[str, str]] = None) -> dict[str, Any]:
     ex = doc.extraction
     return {
         "doc": doc,
         "ex": ex,
-        "fields": field_rows(ex.json) if ex else [],
-        "raw_json": json.dumps(ex.json, indent=2, ensure_ascii=False) if ex else "",
+        # fields + confidence, nothing else (brief v2): the model's free-text notes are not shown
+        "fields": [f for f in field_rows(ex.json) if f["name"] != "notes"] if ex else [],
+        "provenance": provenance(ex) if ex else None,
         "is_fixture": bool(ex and extract.is_fixture_model(ex.model)),
         "is_ubl": is_ubl_extraction(ex),
         "no_extraction_reason": no_extraction_reason(doc),
@@ -874,16 +942,30 @@ def latest_decision(session: Session, doc_id: str) -> Optional[GateDecision]:
                           .order_by(GateDecision.id.desc()).limit(1))
 
 
-def trace_rows(steps: list[dict[str, Any]]) -> list[dict[str, str]]:
-    return [{"label": STEP_LABELS.get(s.get("step", ""), str(s.get("step", "")).replace("_", " ").capitalize()),
-             "result": s.get("result") or "—", "tone": RESULT_TONES.get(s.get("result") or "", "neutral"),
-             "detail": s.get("detail") or ""} for s in steps or []]
+def trace_rows(steps: list[dict[str, Any]], scenario: str = "tobe") -> list[dict[str, str]]:
+    """The rule log of one document, the same lines as the run log: rule (deck words), result word and tone,
+    reason. Quiet steps (not reached, not applicable) are left out."""
+    labels = gate.STEP_LABELS.get(scenario, {})
+    return [{"label": labels.get(s.get("step", ""), str(s.get("step", "")).replace("_", " ").capitalize()),
+             "result": gate.RESULT_WORDS.get(s.get("result") or "", s.get("result") or "—"),
+             "tone": RESULT_TONES.get(s.get("result") or "", "neutral"),
+             "detail": s.get("detail") or ""} for s in steps or [] if not s.get("quiet")]
 
 
 def cycle_rows(breakdown: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
     """Key, label and business days per activity of the simulated cycle (sim.cycle_breakdown order)."""
     return [{"key": k, "label": CYCLE_LABELS.get(k, k.replace("_", " ").capitalize()), "days": int(v or 0)}
             for k, v in (breakdown or {}).items()]
+
+
+def line_label(row: dict[str, Any]) -> str:
+    """Column header of one line check: "Line 2"; a check without an invoice line (no lines read) is the net
+    total against the PO ("Net total") or one PO line ("PO line 1", "PO 4500123 line 1")."""
+    if row.get("line") is not None:
+        return f"Line {row['line']}"
+    if row.get("po_line") is None:
+        return "Net total"
+    return f"PO {row['po_number']} line {row['po_line']}" if row.get("po_number") else f"PO line {row['po_line']}"
 
 
 # Columns of the line-check table, in this order, when the gate provides them (else every key it provides).
@@ -916,11 +998,12 @@ def gate_context(session: Session, doc: InboundDocument, message: Optional[tuple
     pvi = None
     if gv and gv.get("invoice_id"):
         pvi = session.scalar(select(PendingVendorInvoice).where(PendingVendorInvoice.invoice_id == gv["invoice_id"]))
-    checks = [c for c in (gv or {}).get("line_checks") or [] if isinstance(c, dict)]
+    checks = [{**c, "label": line_label(c)} for c in (gv or {}).get("line_checks") or [] if isinstance(c, dict)]
     return {
         "doc": doc, "gv": gv, "pvi": pvi, "gate_message": message,
-        "trace": trace_rows(decision.steps) if decision else [],
-        "line_checks": checks, "line_columns": line_columns(checks),
+        "trace": trace_rows(decision.steps, doc.scenario) if decision else [],
+        "outcome_words": gate.OUTCOME_WORDS.get(doc.scenario, OUTCOME_LABELS),
+        "line_checks": checks, "line_columns": [c for c in line_columns(checks) if c != "label"],
         "resolution_labels": RESOLUTION_LABELS,
         "cycle": cycle_rows(gv.get("cycle_breakdown")) if gv else [],
         "duplicate_link": doc_link(gv.get("duplicate_of"), session) if gv else None,
@@ -987,9 +1070,11 @@ def document_content(doc: InboundDocument) -> dict[str, Any]:
 
 
 def rerun_message(decision: GateDecision, processed_first: Sequence[str] = ()) -> tuple[str, str]:
-    label, _ = outcome_chip(decision.outcome, decision.exception_type)
+    label, _ = outcome_chip(decision.outcome, decision.exception_type, decision.scenario)
     owner = f", owner {decision.owner_name}" if decision.owner_name else ""
-    text = f"Gate re-run: {label}{owner}."
+    sla = "" if decision.sla_days is None else f", SLA {plural(int(decision.sla_days), 'day')}"
+    text = (f"{'Control gate' if decision.scenario == 'tobe' else 'Processing'}: {label}{owner}"
+            f"{sla if decision.owner_name else ''}.")
     if processed_first:
         text += (f" {plural(len(processed_first), 'earlier document')} not processed yet went first, in processing "
                  f"order: {', '.join(processed_first)}.")
@@ -1010,7 +1095,7 @@ def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_
     with _gate_lock:
         try:
             before = processed_doc_ids(session, doc.scenario)
-            decision = gate.rerun_document(session, doc, allow_api=config.gemini_configured())
+            decision = gate.rerun_document(session, doc, allow_api=False)  # offline: cache or fixtures only
             new = processed_doc_ids(session, doc.scenario) - before - {doc_id}
             message = rerun_message(decision, [d.doc_id for d in scenario_documents(session, doc.scenario)
                                                if d.doc_id in new])
@@ -1022,7 +1107,8 @@ def rerun_gate(doc_id: str, request: Request, session: Session = Depends(db.get_
     session.expire_all()
     doc = get_document(session, doc_id)
     if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(request, "_gate_panel.html", gate_context(session, doc, message))
+        return templates.TemplateResponse(request, "_gate_rerun.html",
+                                          {**extraction_context(doc), **gate_context(session, doc, message)})
     return redirect(f"/invoice/{doc.doc_id}", message)
 
 
@@ -1133,7 +1219,7 @@ def document_file(name: str, session: Session = Depends(db.get_session)) -> File
 
 
 # --------------------------------------------------------------------------------------------
-# Mock ERP: pending vendor invoices, vendor master, purchase orders & receipts, contracts
+# ERP (mock, system of record): posted invoices, vendor master, purchase orders & receipts, contracts & catalogues
 # --------------------------------------------------------------------------------------------
 
 
@@ -1143,7 +1229,7 @@ PVI_STATUS = {"pending_payment": ("pending payment", "neutral"), "credit_applied
 
 def pvi_chips(row: PendingVendorInvoice) -> list[dict[str, Optional[str]]]:
     """Flag chips of a posted invoice: terms source (only when the row has terms: not for a credit note), wrong
-    entity, duplicate of, credit, DoA."""
+    entity, duplicate of, credit, card / catalogue."""
     flags = row.flags or {}
     chips = []
     if row.terms_days is not None and row.terms_source:
@@ -1158,18 +1244,9 @@ def pvi_chips(row: PendingVendorInvoice) -> list[dict[str, Optional[str]]]:
                       "href": f"/invoice/{flags['duplicate_of']}"})
     if row.status == "unapplied_credit":
         chips.append({"label": "unapplied credit", "tone": "bad", "href": None})
-    if flags.get("doa_auto_approved"):
-        chips.append({"label": "DoA auto-approved", "tone": "info", "href": None})
+    if flags.get("catalogue"):
+        chips.append({"label": "card / catalogue", "tone": "ok", "href": None})
     return chips
-
-
-def totals_by_currency(rows: list[PendingVendorInvoice]) -> list[dict[str, Any]]:
-    totals: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        t = totals.setdefault(r.currency, {"currency": r.currency, "count": 0, "total": 0.0})
-        t["count"] += 1
-        t["total"] = round(t["total"] + (r.total or 0.0), 2)
-    return sorted(totals.values(), key=lambda t: t["currency"])
 
 
 @app.get("/erp/pending-invoices")
@@ -1178,18 +1255,18 @@ def pending_invoices(request: Request, session: Session = Depends(db.get_session
     rows = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.scenario == scenario)
                            .order_by(PendingVendorInvoice.invoice_id)).all()
     return render(request, "erp_pending_invoices.html", {
-        "page_title": "Pending vendor invoices",
+        "page_title": "Posted invoices",
         "rows": [{"row": r, "chips": pvi_chips(r), "status": PVI_STATUS.get(r.status, (r.status, "neutral"))}
                  for r in rows],
-        "totals": totals_by_currency(list(rows)), "run": latest_run(session, scenario),
+        "run": latest_run(session, scenario),
     })
 
 
 @dataclass
 class VendorRow:
     account: VendorAccount
-    party: Optional[Party]  # linked party, or the one found by VAT ID / name for unlinked accounts
-    party_found_by: Optional[str]  # None when linked; "VAT ID" | "name" when inferred
+    party: Optional[Party]  # linked supplier, or the one found by tax ID / name for unlinked accounts
+    party_found_by: Optional[str]  # None when linked; "tax ID" | "name" when inferred
     agreed_terms: Optional[int]
     agreed_source: Optional[str]  # contract id or "supplier agreement"
     duplicates: list[str] = field(default_factory=list)  # "V-000117 (VDE, similar name)"
@@ -1205,7 +1282,7 @@ class VendorRow:
         if self.duplicates:
             out.append(("possible duplicate", "dup"))
         if not acc.vat_id:
-            out.append(("missing VAT ID", "missing"))
+            out.append(("missing tax ID", "missing"))
         if not acc.iban:
             out.append(("missing IBAN", "missing"))
         if self.terms_differ:
@@ -1216,14 +1293,14 @@ class VendorRow:
 
 
 def find_party(acc: VendorAccount, parties: list[Party]) -> tuple[Optional[Party], Optional[str]]:
-    """Linked party; for unlinked accounts the party with the same VAT ID, else a matching name."""
+    """Linked supplier; for unlinked accounts the supplier with the same tax ID, else a matching name."""
     if acc.party_id:
         return next((p for p in parties if p.party_id == acc.party_id), None), None
     vat = normalize.normalise_vat(acc.vat_id)
     if vat:
         for p in parties:
             if normalize.normalise_vat(p.vat_id) == vat:
-                return p, "VAT ID"
+                return p, "tax ID"
     for p in parties:
         if normalize.names_match(acc.display_name, p.canonical_name):
             return p, "name"
@@ -1246,7 +1323,7 @@ def duplicate_reason(a: VendorAccount, b: VendorAccount) -> Optional[str]:
         return None
     vat_a = normalize.normalise_vat(a.vat_id)
     if vat_a and vat_a == normalize.normalise_vat(b.vat_id):
-        return "same VAT ID"
+        return "same tax ID"
     if normalize.names_match(a.display_name, b.display_name):
         return "similar name"
     return None
@@ -1264,7 +1341,7 @@ def vendor_rows(accounts: list[VendorAccount], parties: list[Party], contracts: 
 
 
 def group_vendor_rows(rows: list[VendorRow], parties: list[Party]) -> list[tuple[str, list[VendorRow]]]:
-    """Groups by linked party (in party order); unlinked accounts last."""
+    """Groups by linked supplier (in supplier order); unlinked accounts last."""
     groups = []
     for p in parties:
         linked = [r for r in rows if r.account.party_id == p.party_id]
@@ -1272,17 +1349,18 @@ def group_vendor_rows(rows: list[VendorRow], parties: list[Party]) -> list[tuple
             groups.append((p.canonical_name, linked))
     unlinked = [r for r in rows if not r.account.party_id]
     if unlinked:
-        groups.append(("Not linked to a party", unlinked))
+        groups.append(("Not linked to a supplier", unlinked))
     return groups
 
 
 def vendor_stats(rows: list[VendorRow], n_parties: int) -> dict[str, Any]:
+    """Tiles of the vendor master page; n_parties = unique suppliers as the metric counts them."""
     n = len(rows)
     complete = sum(1 for r in rows if r.account.vat_id and r.account.iban)
     return {
         "accounts": n,
         "suppliers": n_parties,
-        "ratio": f"{n / n_parties:.1f}" if n_parties else "—",
+        "ratio": f"{n / n_parties:.2f}" if n_parties else "—",
         "active": sum(1 for r in rows if r.account.status == "active"),
         "pct_complete": round(100 * complete / n) if n else 0,
         "terms_differ": sum(1 for r in rows if r.terms_differ),
@@ -1300,9 +1378,10 @@ def vendor_master(request: Request, view: Optional[str] = None,
     parties = session.scalars(select(Party).where(Party.scenario == view).order_by(Party.party_id)).all()
     contracts = session.scalars(select(Contract).where(Contract.scenario == view)).all()
     rows = vendor_rows(list(accounts), list(parties), list(contracts))
+    suppliers = metrics.vendor_master_stats(list(accounts), list(parties), list(contracts))["parties"]
     return render(request, "erp_vendors.html", {
         "page_title": "Vendor master", "view": view, "view_label": config.SCENARIO_LABELS[view],
-        "groups": group_vendor_rows(rows, list(parties)), "stats": vendor_stats(rows, len(parties)),
+        "groups": group_vendor_rows(rows, list(parties)), "stats": vendor_stats(rows, suppliers),
         "rule_help": seed.RULE_DESCRIPTIONS,
     })
 
@@ -1350,7 +1429,11 @@ def contracts(request: Request, session: Session = Depends(db.get_session)) -> R
     rows = session.scalars(select(Contract).where(Contract.scenario == scenario)
                            .order_by(Contract.contract_id)).all()
     parties = {p.party_id: p for p in session.scalars(select(Party).where(Party.scenario == scenario))}
-    return render(request, "erp_contracts.html", {"page_title": "Contracts", "rows": rows, "parties": parties})
+    return render(request, "erp_contracts.html", {
+        "page_title": "Contracts & catalogues", "parties": parties,
+        "rows": [r for r in rows if r.category != "catalogue"],
+        "catalogues": [r for r in rows if r.category == "catalogue"],
+    })
 
 
 # --------------------------------------------------------------------------------------------
@@ -1389,6 +1472,18 @@ def group_by_type(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return groups
 
 
+def info_task(view: dict[str, Any], flag: dict[str, Any], doc: Optional[InboundDocument],
+              as_of: Optional[datetime]) -> dict[str, Any]:
+    """One non-blocking info task of the cockpit (a duplicate vendor record): its SLA from the taxonomy and its days
+    open from registration to the snapshot (the document itself was posted)."""
+    t = taxonomy.BY_KEY.get(flag.get("type") or "")
+    sla = t.sla_days if t else None
+    days = age_days(doc, as_of)
+    days = None if days is None else max(days, 0)
+    return {"view": view, "flag": flag, "sla_days": sla, "days_open": days,
+            "past_sla": sla is not None and days is not None and days > sla}
+
+
 @app.get("/gate/exceptions")
 def exception_cockpit(request: Request, owner: Optional[str] = None,
                       session: Session = Depends(db.get_session)) -> Response:
@@ -1405,7 +1500,8 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
     now = datetime.now()
     views = [gate_view(decisions[i], d, now if i in live else as_of) for i, d in docs.items() if i in decisions]
     queue = [v for v in views if blocking_exception(v)]
-    info = [{"view": v, "flag": f} for v in views for f in v["flags"] if isinstance(f, dict)]
+    info = [info_task(v, f, docs.get(v["doc_id"]), now if v["doc_id"] in live else as_of)
+            for v in views for f in v["flags"] if isinstance(f, dict)]
     owners = owner_counts(queue, info)
     owner = owner or None
     if owner:
@@ -1417,6 +1513,7 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
         "page_title": "Exception cockpit", "has_run": bool(decisions),
         "routing": routing,
         "groups": group_by_type(queue), "queue_count": len(queue), "info": info,
+        "past_sla_count": sum(1 for v in queue if v["past_sla"]),
         # as-is: every document that went through the loop; the snapshot tells which sample documents were still in
         # it (live documents are reported apart)
         "loop": loop, "loop_sample": len(loop_sample),
@@ -1429,73 +1526,47 @@ def exception_cockpit(request: Request, owner: Optional[str] = None,
 
 
 # Direction of "better" for the comparison page: +1 higher is better, -1 lower is better.
-KPI_BETTER = {"po_contract_coverage": 1, "accounts_per_supplier": -1, "pct_accounts_vat_iban": 1,
-              "pct_accounts_terms_ok": 1, "registration_lag_days": -1, "touchless": 1, "touchless_rate": 1,
-              "exceptions": -1, "exception_rate": -1, "duplicates_blocked": 1, "duplicate_postings": -1,
-              "duplicate_invoices": -1, "credit_notes_applied": 1, "credit_notes_unapplied": -1,
-              "wrong_entity_postings": -1, "non_invoice_postings": -1, "terms_variance_paid": -1,
-              "cash_leakage_amount": -1,
-              "avg_cycle_days": -1, "avg_cycle_followup_days": -1, "reference_nonpo_store_days": -1}
-KPI_GROUPS = (("upstream", "Upstream — process health"), ("downstream", "Downstream — automation efficiency"))
-# Layout of the KPI tiles on the KPIs and Compare pages: a headline row of four larger tiles, then the two groups of
-# the case deck, the downstream one in labelled rows. A KPI missing from the layout goes to the last row of its group.
-KPI_HEADLINE = ("touchless_rate", "exception_rate", "avg_cycle_days", "cash_leakage_amount")
-KPI_ROWS: dict[str, tuple[tuple[Optional[str], tuple[str, ...]], ...]] = {
-    "upstream": ((None, ("po_contract_coverage", "accounts_per_supplier", "pct_accounts_vat_iban",
-                         "pct_accounts_terms_ok", "registration_lag_days")),),
-    "downstream": (("Throughput and cycle time", ("touchless", "exceptions", "avg_cycle_followup_days",
-                                                  "reference_nonpo_store_days")),
-                   ("Duplicates and credit notes", ("duplicates_blocked", "duplicate_postings", "duplicate_invoices",
-                                                    "credit_notes_applied", "credit_notes_unapplied")),
-                   ("Posting quality", ("wrong_entity_postings", "non_invoice_postings", "terms_variance_paid"))),
-}
+KPI_BETTER = {"first_pass_match_rate": 1, "accounts_per_supplier": -1, "touchless_rate": 1, "cycle_time_median": -1,
+              "registered_same_day": 1}
 
 
 def kpi_layout(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(headline tiles, groups) for KPI tiles or compare rows (dicts with "key" and "group"). Every item is placed
-    exactly once: the headline row first, then the rows of its group."""
+    """(the four metrics of the deck's slide 11 in its order, the small indicators) for metric tiles or compare rows
+    (dicts with "key"). Every item is placed exactly once."""
     by_key = {t["key"]: t for t in items}
-    headline = [by_key[k] for k in KPI_HEADLINE if k in by_key]
-    placed = {t["key"] for t in headline}
-    groups = []
-    for key, title in KPI_GROUPS:
-        rows: list[dict[str, Any]] = []
-        for row_title, keys in KPI_ROWS.get(key, ()):
-            row = [by_key[k] for k in keys if k in by_key and k not in placed]
-            placed.update(t["key"] for t in row)
-            if row:
-                rows.append({"title": row_title, "items": row})
-        rest = [t for t in items if t.get("group") == key and t["key"] not in placed]
-        placed.update(t["key"] for t in rest)
-        if rest and rows:
-            rows[-1]["items"] = rows[-1]["items"] + rest
-        elif rest:
-            rows.append({"title": None, "items": rest})
-        groups.append({"key": key, "title": title, "rows": rows})
-    return headline, groups
+    headline = [by_key[k] for k in metrics.HEADLINE if k in by_key]
+    return headline, [t for t in items if t["key"] not in metrics.HEADLINE]
+
+
 # Chart colours: the outcome colours of the pills (OUTCOME_TONES, app/static/app.css), so a colour means the same
-# thing on every page: posted = emerald, credit applied = violet, blocked duplicate = slate, human review = amber,
-# exception = red, email loop = orange. Cycle bars: no human step = emerald, exception with SLA = red, email loop =
-# orange. Legends and data tables name every colour.
-CHART_COLOURS = {"posted": "#059669", "applied_credit": "#7c3aed", "blocked_duplicate": "#475569",
-                 "human_review": "#f59e0b", "exception": "#dc2626"}
+# thing on every page: Post = emerald, Block = slate, Human review = amber, Exception = red, email loop = orange.
+# Cycle bars: no human step = emerald, exception with SLA = red, email loop = orange. Legends and data tables name
+# every colour.
+CHART_COLOURS = {"Post": "#059669", "Exception": "#dc2626", "Block": "#475569", "Human review": "#f59e0b",
+                 "Posted by AP": "#059669", "Email loop — untracked": "#ea580c", "Blocked (same account)": "#475569"}
 CHART_NEUTRAL = "#64748b"
-EXCEPTION_BAR_COLOURS = {"email_loop": "#ea580c"}  # every other exception type: the exception red
+EXCEPTION_BAR_COLOURS = {"email_loop": "#ea580c", "human_review": "#f59e0b", "amount_above_approval_limit": "#f59e0b"}
 PATH_COLOURS = {"matched": "#059669", "touchless": "#059669", "email_loop": "#ea580c", "exception": "#dc2626"}
 
 
 def ordered_kpis(kpis: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """KPIs in metrics' display order, each with its footnote number."""
+    """Metrics in metrics' display order, each with its footnote number."""
     return [{**kpi, "key": key, "note": i} for i, (key, kpi) in enumerate(kpis.items(), start=1)]
 
 
 def kpi_display(kpi: Optional[dict[str, Any]], available: bool) -> str:
-    """Display text of one KPI tile; downstream KPIs (and upstream ones computed from decisions) need a run."""
+    """Display text of one metric tile; every metric but accounts per supplier needs a run."""
     if kpi is None:
         return "—"
-    if not available and (kpi.get("group") == "downstream" or kpi.get("value") is None):
+    if not available and kpi.get("value") is None:
         return "Run the scenario"
     return str(kpi.get("display") if kpi.get("display") not in (None, "") else "—")
+
+
+def split_formula(formula: Optional[str]) -> tuple[str, str]:
+    """(definition, numbers) of a metric's formula text: '... Here: 8 of 11.' -> ('...', '8 of 11.')."""
+    definition, _, numbers = (formula or "").partition(" Here: ")
+    return definition, numbers
 
 
 CHART_LABEL_WIDTH = 22  # characters per line of a category label on a chart axis
@@ -1512,18 +1583,17 @@ def chart_data(data: dict[str, Any]) -> dict[str, Any]:
     outcomes = data.get("outcomes") or {}
     by_type = data.get("exceptions_by_type") or {}
     cycle = data.get("cycle_by_doc") or []
-    # human review covers a low extraction confidence and an invoice only in an email body: the neutral name
-    type_labels = [EMAIL_LOOP_LABEL if k == "email_loop" else OUTCOME_LABELS["human_review"] if k == "human_review"
-                   else taxonomy.label(k) for k in by_type]
+    type_labels = [EMAIL_LOOP_LABEL if k == "email_loop" else taxonomy.label(k) for k in by_type]  # deck A3 words
     return {
-        "outcomes": {"labels": [OUTCOME_LABELS.get(k, k) for k in outcomes], "values": list(outcomes.values()),
+        "outcomes": {"labels": list(outcomes), "values": list(outcomes.values()),
                      "colours": [CHART_COLOURS.get(k, CHART_NEUTRAL) for k in outcomes]},
         "exceptions": {"labels": type_labels, "lines": [label_lines(label) for label in type_labels],
                        "values": list(by_type.values()),
-                       "colours": [EXCEPTION_BAR_COLOURS.get(k, CHART_COLOURS["exception"]) for k in by_type]},
+                       "colours": [EXCEPTION_BAR_COLOURS.get(k, CHART_COLOURS["Exception"]) for k in by_type]},
         "cycle": {"labels": [c.get("doc_id") for c in cycle], "values": [c.get("days") for c in cycle],
-                  "paths": [PATH_LABELS.get(c.get("path") or "", c.get("path")) for c in cycle],
-                  "colours": [PATH_COLOURS.get(c.get("path") or "", CHART_NEUTRAL) for c in cycle]},
+                  "paths": [path_label(c.get("path"), c.get("outcome")) for c in cycle],
+                  "colours": [CHART_COLOURS["Block"] if c.get("outcome") == "blocked_duplicate"
+                              else PATH_COLOURS.get(c.get("path") or "", CHART_NEUTRAL) for c in cycle]},
     }
 
 
@@ -1555,9 +1625,9 @@ def kpis(request: Request, session: Session = Depends(db.get_session)) -> Respon
     available = bool(data and data.get("available"))
     for t in tiles:
         t["shown"] = kpi_display(t, available)
-    headline, groups = kpi_layout(tiles)
+    headline, small = kpi_layout(tiles)
     return render(request, "kpis.html", {
-        "page_title": "KPIs", "data": data, "error": error, "available": available, "groups": groups,
+        "page_title": "Metrics", "data": data, "error": error, "available": available, "small": small,
         "headline": headline,
         "tiles": tiles, "charts": chart_data(data) if data and available else None,
         "partial_warning": partial_run_warning(data),
@@ -1574,14 +1644,19 @@ def better_side(key: str, a: Optional[dict[str, Any]], b: Optional[dict[str, Any
 
 
 def compare_kpi_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per metric, A vs B; the tooltip is the definition with each scenario's own numbers."""
     a_data, b_data = data.get("asis") or {}, data.get("tobe") or {}
     a_kpis, b_kpis = a_data.get("kpis") or {}, b_data.get("kpis") or {}
     rows = []
     for tile in ordered_kpis(a_kpis or b_kpis):  # same keys in both scenarios
         key = tile["key"]
         a, b = a_kpis.get(key), b_kpis.get(key)
-        comparable = tile.get("group") != "downstream" or data.get("both_available")
-        rows.append({**tile, "asis": kpi_display(a, bool(a_data.get("available"))),
+        comparable = key == "accounts_per_supplier" or data.get("both_available")
+        definition, a_numbers = split_formula((a or {}).get("formula"))
+        b_numbers = split_formula((b or {}).get("formula"))[1]
+        numbers = " · ".join(f"{side}: {n.rstrip('.')}" for side, n in (("A", a_numbers), ("B", b_numbers)) if n)
+        rows.append({**tile, "formula": definition + (f" {numbers}." if numbers else ""),
+                     "asis": kpi_display(a, bool(a_data.get("available"))),
                      "tobe": kpi_display(b, bool(b_data.get("available"))),
                      "better": better_side(key, a, b) if comparable else None})
     return rows
@@ -1590,7 +1665,8 @@ def compare_kpi_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 def compare_cell(cell: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not cell:
         return None
-    label, tone = outcome_chip(cell.get("outcome"), cell.get("exception_type"))
+    scenario = "asis" if str(cell.get("doc_id") or "").startswith("A") else "tobe"
+    label, tone = outcome_chip(cell.get("outcome"), cell.get("exception_type"), scenario)
     return {**cell, "chip_label": label, "chip_tone": tone,
             "badge_chips": badge_chips(cell.get("badges") or [], label)}
 
@@ -1599,7 +1675,7 @@ def compare_cell(cell: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 def compare(request: Request, session: Session = Depends(db.get_session)) -> Response:
     data, error = safe_metrics(lambda: metrics.compare(session), "comparison")
     kpi_rows = compare_kpi_rows(data) if data else []
-    headline, groups = kpi_layout(kpi_rows)
+    headline, small = kpi_layout(kpi_rows)
     rows = [{**r, "a": compare_cell(r.get("asis")), "b": compare_cell(r.get("tobe"))}
             for r in (data or {}).get("rows") or []]
     partial = [(config.SCENARIO_LABELS[s], warning) for s in config.SCENARIOS
@@ -1608,7 +1684,7 @@ def compare(request: Request, session: Session = Depends(db.get_session)) -> Res
         "page_title": "Compare", "data": data, "error": error, "rows": rows, "partial_warnings": partial,
         "both_available": bool(data and data.get("both_available")),
         "available": {s: bool(data and (data.get(s) or {}).get("available")) for s in config.SCENARIOS},
-        "headline": headline, "groups": groups,
+        "headline": headline, "small": small,
         "loaded": {s: (data or {}).get("datasets", {}).get(s) for s in config.SCENARIOS},
     })
 

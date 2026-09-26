@@ -1,7 +1,7 @@
 """SQLAlchemy models.
 
-Mock ERP tables are named after Dynamics 365 Finance *concepts* (plain names, not D365 entity
-API names). Every mock-ERP row carries a `scenario` column: "asis" | "tobe". Business keys
+Mock ERP tables are named after standard accounts-payable concepts (vendor account, pending vendor invoice,
+purchase order, product receipt), not after any product's API. Every mock-ERP row carries a `scenario` column: "asis" | "tobe". Business keys
 (account_id, po_number, ...) are unique per scenario; a surrogate integer `id` is the primary key.
 """
 from __future__ import annotations
@@ -223,7 +223,7 @@ class InboundDocument(Base):
     subject: Mapped[str] = mapped_column(String(200))
     registered: Mapped[bool] = mapped_column(Boolean, default=False)
     registered_on: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    doc_type: Mapped[str] = mapped_column(String(12), default="unknown")  # invoice | credit_note | unknown
+    doc_type: Mapped[str] = mapped_column(String(12), default="unknown")  # as read: invoice | credit_note | reminder | statement | other | unknown
     dataset: Mapped[str] = mapped_column(String(8), default="v1")  # v1 (case documents) | v2 (test set) | live
     content_type: Mapped[str] = mapped_column(String(16), default="pdf")  # pdf | ubl_xml | email_body
     # The email text: the invoice itself for content_type email_body, else the sender's comment (e.g. forwarding).

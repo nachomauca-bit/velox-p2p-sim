@@ -1,21 +1,24 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% import "_icons.html" as ic %}
-{% set crumbs = [("Control gate (new)", none), ("Inbox", "/inbox"), ("Gate run", none)] %}
+{%- set tobe = scenario == "tobe" -%}
+{%- set log_name = "Rule log" if tobe else "Processing log" -%}
+{% set crumbs = [("Control gate (new)", none), ("Inbox", "/inbox"), (log_name, none)] %}
 {% block content %}
 <header class="page-head">
   <div class="page-head-main">
-    <h1>Gate run <span class="h1-sub">{{ scenario_label }}</span></h1>
-    {% if run %}
-    <p class="lead">The step log of run <code>{{ run.run_id }}</code> and the outcome of every document it processed.</p>
-    {% else %}
-    <p class="lead">The step log of the latest run of this scenario and the outcome of every document.</p>
-    {% endif %}
+    <h1>{{ log_name if tobe else "Processing run (no gate)" }} <span class="h1-sub">{{ scenario_label }}</span></h1>
+    <p class="lead">
+      {% if tobe %}Every rule writes one line: <code>Rule → result — reason</code>; the last line of each document is its
+        outcome (Post, Exception, Block or Human review).
+      {% else %}Today's process, step by step: AP keys each document, looks the supplier up by name and posts it or
+        starts an email loop. There is no gate.{% endif %}
+    </p>
   </div>
   {% if run %}
   <nav class="page-actions quick-links" aria-label="Results of the run">
     <a href="/gate/exceptions">{{ ic.icon('alert') }}Exception cockpit</a>
-    <a href="/gate/kpis">{{ ic.icon('chart') }}KPIs</a>
+    <a href="/gate/kpis">{{ ic.icon('chart') }}Metrics</a>
     <a href="/gate/compare">{{ ic.icon('compare') }}Compare A vs B</a>
     <a href="/inbox">{{ ic.icon('inbox') }}Inbox</a>
   </nav>
@@ -26,7 +29,7 @@
 <article class="empty-state">
   {{ m.empty_icon('terminal') }}
   <h2>{{ scenario_label }} has not been run yet</h2>
-  <p>Run the scenario to send every document through the gate and watch the step log.</p>
+  <p>Run the scenario to send every document through {{ "the control gate" if tobe else "today's process" }} and watch the log.</p>
   {{ m.run_button(scenario=scenario) }}
 </article>
 {% else %}
@@ -34,36 +37,42 @@
 {% if no_extraction or extraction.failed %}
 <p class="flash flash-warn">
   <span>
-  {% if no_extraction %}No extraction for {{ no_extraction|length }} document{{ '' if no_extraction|length == 1 else 's' }}:
-    {{ no_extraction|join(', ') }}. The gate had no fields to read (see the outcome per document below).
-    {{ no_extraction_reason }}{% endif %}
-  {% if extraction.failed %}Extraction failed for {{ extraction.failed }} document{{ '' if extraction.failed == 1 else 's' }}{% if extraction.error %}: {{ extraction.error }}{% endif %}.{% endif %}
+  {% if no_extraction %}Not read: {{ no_extraction|join(', ') }}. There were no fields to check (see the outcome per
+    document below). {{ no_extraction_reason }}{% endif %}
+  {% if extraction.failed %}Reading failed for {{ extraction.failed }} document{{ '' if extraction.failed == 1 else 's' }}{% if extraction.error %}: {{ extraction.error }}{% endif %}.{% endif %}
   </span>
 </p>
 {% endif %}
 {% if body_only %}
 <p class="flash flash-info"><span>{{ body_only|join(', ') }}: the invoice is only in the email body, so there is nothing
-  to extract; AP keys {{ 'it' if body_only|length == 1 else 'them' }} from the email text.</span></p>
+  to read; AP keys {{ 'it' if body_only|length == 1 else 'them' }} from the email text.</span></p>
+{% endif %}
+{% if processed_after %}
+<p class="flash flash-info"><span>Processed on {{ 'its' if processed_after|length == 1 else 'their' }} own after this run:
+  {% for d in processed_after %}<a href="/invoice/{{ d }}">{{ d }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  (the {{ log_name|lower }} of {{ 'that document' if processed_after|length == 1 else 'those documents' }} is on {{ 'its' if processed_after|length == 1 else 'their' }} invoice page).</span></p>
 {% endif %}
 {% if unprocessed %}
-<p class="flash flash-info"><span>Not in this run: {{ unprocessed|join(', ') }} (loaded after it). Run the scenario again to include {{ 'it' if unprocessed|length == 1 else 'them' }}.</span></p>
+<p class="flash flash-info"><span>Not processed yet: {% for d in unprocessed %}<a href="/invoice/{{ d }}">{{ d }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  (received after this run). Open it to {{ "run the control gate" if tobe else "process it" }}.</span></p>
 {% endif %}
 
 <div class="run-summary">
   <div class="mini-stat"><span class="label">Documents</span><span class="value">{{ summary.documents or 0 }}</span></div>
-  <div class="mini-stat tone-ok"><span class="label">Touchless</span><span class="value">{{ summary.touchless or 0 }}</span></div>
-  <div class="mini-stat {{ 'tone-loop' if scenario == 'asis' else 'tone-bad' }}"><span class="label">Exceptions</span><span class="value">{{ summary.exceptions or 0 }}</span></div>
-  <div class="mini-stat"><span class="label">Finished</span><span class="value value-text">{{ run.finished_on|dt }}</span></div>
+  {% for word, n in outcome_counts.items() %}
+  <div class="mini-stat tone-{{ outcome_tones.get(word, 'neutral') }}"><span class="label">{{ word }}</span><span class="value">{{ n }}</span></div>
+  {% endfor %}
+  <div class="mini-stat"><span class="label">Posted with no human touch</span><span class="value">{{ summary.touchless or 0 }}</span></div>
 </div>
 
 <section class="run-log-wrap">
   <header class="run-log-head">
-    <h2>{{ ic.icon('terminal') }}Step log</h2>
-    <span class="console-meta">{{ run.run_id }} · {{ lines|length }} lines</span>
+    <h2>{{ ic.icon('terminal') }}{{ log_name }}</h2>
+    <span class="console-meta">{{ run.run_id }} · {{ run.finished_on|dt }} · {{ lines|length }} lines</span>
     <a href="#run-log" class="show-all">Show all</a>
   </header>
-  <div class="run-log" id="run-log" role="log" aria-label="Gate step log">
-    {% for line in lines %}<div class="log-line log-{{ line.kind }}" style="animation-delay: {{ loop.index0 * step_ms }}ms"><span class="log-prefix">{{ line.prefix }}</span> {{ line.before }}<span class="log-token log-{{ line.tone }}">{{ line.token }}</span>{{ line.after }}</div>
+  <div class="run-log" id="run-log" role="log" aria-label="{{ log_name }}" tabindex="0">
+    {% for line in lines %}<div class="log-line log-{{ line.kind }}" style="animation-delay: {{ loop.index0 * step_ms }}ms"><span class="log-prefix">{{ line.prefix }}</span> {% if line.rule %}<span class="log-rule">{{ line.rule }}</span> → <span class="log-token log-{{ line.tone }}">{{ line.result }}</span>{% if line.reason %} — {% endif %}{% endif %}{{ line.reason }}</div>
     {% else %}<div class="log-empty muted">The run recorded no log lines.</div>{% endfor %}
   </div>
   <script>
@@ -90,7 +99,7 @@
         <td>{{ v.supplier }}</td>
         <td class="num nowrap">{{ v.gross_total|money }} <span class="ccy">{{ v.currency or '' }}</span></td>
         <td>{{ m.outcome(v.chip_label, v.chip_tone) }}{% if v.badges %}<div class="cell-badges">{{ m.badges(v.badges) }}</div>{% endif %}</td>
-        <td>{{ m.owner(v.owner_name, None, v.next_owner_name) }}</td>
+        <td>{{ m.owner(v.owner_name, v.owner_role, v.next_owner_name) }}</td>
         <td class="num">{% if v.sla_days is none %}<span class="muted">—</span>{% else %}{{ v.sla_days }} d{% endif %}</td>
         <td class="num"><strong>{{ v.days if v.days is not none else '—' }}</strong></td>
       </tr>

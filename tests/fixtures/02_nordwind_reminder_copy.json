@@ -7,7 +7,7 @@
   "usage": null,
   "extraction": {
     "doc_type": {
-      "value": "invoice",
+      "value": "reminder",
       "confidence": 0.99
     },
     "supplier_name": {

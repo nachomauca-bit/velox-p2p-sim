@@ -1,20 +1,21 @@
 {% extends "base.html" %}
 {% import "_icons.html" as ic %}
-{% set crumbs = [("Velox ERP", none), ("Procurement", none), ("Contracts", none)] %}
+{% set crumbs = [("Velox ERP", none), ("Procurement", none), ("Contracts & catalogues", none)] %}
 {% block content %}
 <header class="page-head erp-head">
   <div class="page-head-main">
     <p class="eyebrow">{{ ic.icon('database') }}Velox ERP · Procurement <span class="readonly-tag">read-only</span></p>
-    <h1>Contracts <span class="h1-sub">{{ rows|length }} contract rows (one per legal entity)</span></h1>
-    <p class="lead">Supplier contracts with their agreed payment terms and the expected monthly amount range: the
-      commitment an invoice without a PO can be matched to.</p>
+    <h1>Contracts &amp; catalogues <span class="h1-sub">{{ rows|length }} contract row{{ '' if rows|length == 1 else 's' }} (one per legal entity){% if catalogues %}, {{ catalogues|length }} catalogue{{ '' if catalogues|length == 1 else 's' }}{% endif %}</span></h1>
+    <p class="lead">The commitments an invoice without a PO can be matched to: a recurring contract with its agreed
+      payment terms and expected monthly range, or a card / catalogue for small store purchases up to a per-invoice
+      limit in the group currency (CHF).</p>
   </div>
 </header>
 
 <div class="overflow-auto table-card">
 <table class="erp-table contracts-table striped">
   <thead>
-    <tr><th>Contract</th><th>Party</th><th>Entity</th><th>Description</th><th class="num">Terms (days)</th>
+    <tr><th>Contract</th><th>Supplier</th><th>Entity</th><th>Description</th><th class="num">Terms (days)</th>
         <th>Recurring</th><th class="num">Expected monthly range</th><th>Owner</th></tr>
   </thead>
   <tbody>
@@ -32,6 +33,32 @@
     </tr>
   {% else %}
     <tr><td colspan="8" class="muted table-empty">No contracts in this scenario.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2 class="section-title" id="catalogues">{{ ic.icon('list') }}Card / catalogue <span class="muted">small store purchases</span></h2>
+<div class="overflow-auto table-card">
+<table class="erp-table contracts-table catalogue-table striped">
+  <thead>
+    <tr><th>Catalogue</th><th>Supplier</th><th>Entity</th><th>Description</th><th class="num">Terms (days)</th>
+        <th class="num">Per-invoice limit</th><th>Owner</th></tr>
+  </thead>
+  <tbody>
+  {% for c in catalogues %}
+    <tr id="{{ c.contract_id }}">
+      <td><code>{{ c.contract_id }}</code></td>
+      <td class="party"><strong class="party-name">{{ parties[c.party_id].canonical_name if c.party_id in parties else c.party_id }}</strong>
+        <br><small class="muted">{{ c.party_id }}</small></td>
+      <td>{{ c.legal_entity_code }}</td>
+      <td class="desc">{{ c.description }}</td>
+      <td class="num">{{ c.payment_terms_days }}</td>
+      <td class="num nowrap">{{ c.expected_monthly_max|money }} <span class="ccy">{{ c.currency }}</span></td>
+      <td class="owner">{{ c.owner_name }}<br><small class="muted">{{ c.owner_email }}</small></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted table-empty">No card or catalogue in this scenario{{ ": small purchases go into the email loop" if scenario == "asis" else "" }}.</td></tr>
   {% endfor %}
   </tbody>
 </table>

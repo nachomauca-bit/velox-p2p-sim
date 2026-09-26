@@ -1,0 +1,4 @@
+{# HTMX answer to "Run the control gate": the gate panel, plus the Gemini output panel swapped out of band, because
+   running the gate reads a document that was not read yet. #}
+{% include "_gate_panel.html" %}
+{% with oob = true %}{% include "_extraction_panel.html" %}{% endwith %}

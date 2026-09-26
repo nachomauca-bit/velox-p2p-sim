@@ -1,4 +1,4 @@
-"""Control gate (brief section 8; app/gate.py): pure rules, then single documents and whole runs on the seed.
+"""Control gate (brief v2 section 2; app/gate.py): pure rules, then single documents and whole runs on the seed.
 
 Database tests use the conftest `session` fixture (fresh seed, empty inboxes) and the fixture extractor.
 """
@@ -28,7 +28,8 @@ from app.models import (
 from app.normalize import normalise_name
 
 ENTITIES = [(e.code, e.name, e.vat_id) for e in world.LEGAL_ENTITIES]
-STEP_RESULTS = {"ok", "info", "flag", "exception", "blocked", "skipped", "created", "applied", "unapplied"}
+STEP_RESULTS = {"ok", "info", "flag", "exception", "human_review", "email_loop", "blocked", "skipped", "created",
+                "applied", "unapplied"}
 
 
 def quiet(_line: str) -> None:
@@ -58,6 +59,11 @@ def count(session: Session, model, scenario: str) -> int:
     return session.scalar(select(func.count()).select_from(model).where(model.scenario == scenario))
 
 
+def step(d: GateDecision, name: str) -> dict[str, str]:
+    """The trace entry of one step of a decision."""
+    return next(s for s in d.steps if s["step"] == name)
+
+
 # --------------------------------------------------------------------------------------------
 # Scenario configuration
 # --------------------------------------------------------------------------------------------
@@ -68,7 +74,8 @@ def test_both_scenarios_configure_the_same_flags() -> None:
     assert set(gate.SCENARIOS["asis"]) == set(gate.SCENARIOS["tobe"])
     assert gate.SCENARIOS["tobe"]["confidence_threshold"] == config.CONFIDENCE_THRESHOLD
     assert gate.SCENARIOS["asis"]["confidence_threshold"] is None
-    assert gate.SCENARIOS["tobe"]["doa_auto_approve_limit"] == 500.0
+    for flag in ("screening", "approval_matrix", "catalogue_matching", "entity_check", "exception_routing"):
+        assert (gate.SCENARIOS["tobe"][flag], gate.SCENARIOS["asis"][flag]) == (True, False), flag
     assert (gate.SCENARIOS["tobe"]["doc_type_check"], gate.SCENARIOS["asis"]["doc_type_check"]) == (True, False)
     assert (gate.SCENARIOS["tobe"]["po_vendor_match"], gate.SCENARIOS["asis"]["po_vendor_match"]) == (
         "party", "account")
@@ -236,7 +243,7 @@ def test_low_confidence_fields() -> None:
     assert gate.low_confidence_fields(_fields(supplier_vat_id=("DE1", 0.4), supplier_iban=(None, 0.0)), 0.8) == []
     low = gate.low_confidence_fields(_fields(supplier_vat_id=("DE1", 0.4), supplier_iban=(None, 0.0),
                                              supplier_name=("Acme", 0.7)), 0.8)
-    assert low == ["supplier identity (VAT ID, IBAN or name)"]
+    assert low == ["supplier identity (tax ID, IBAN or name)"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -356,10 +363,23 @@ def test_check_po_header_when_no_lines_were_read() -> None:
 
 
 def test_log_line_format() -> None:
-    line = gate.log_line(7, "step=resolve_vendor result=ok", party="Shopsys", account="V-000105", method="vat_id",
-                         skipped=None)
-    assert line == "[doc 07] step=resolve_vendor result=ok party=Shopsys account=V-000105 method=vat_id"
-    assert gate.log_line(5, "outcome=exception", owner="Jonas Weber") == '[doc 05] outcome=exception owner="Jonas Weber"'
+    """Brief v2: the rule log reads "rule X → result", with the reason."""
+    line = gate.log_line("B-07", "Supplier (tax ID)", "pass", "Resolved to Shopsys Software Inc. by tax ID.")
+    assert line == "[B-07] Supplier (tax ID) → pass — Resolved to Shopsys Software Inc. by tax ID."
+    assert gate.log_line("B-05", "Outcome", "Exception") == "[B-05] Outcome → Exception"
+
+
+def test_the_as_is_has_no_gate_steps() -> None:
+    """Brief v2 section 4: no gate in the as-is. Screening, confidence, document type, legal entity and approval
+    limit are to-be rules only, and the as-is step labels describe AP's manual work."""
+    tobe = [n for n in gate.STEP_NAMES if gate.applies("tobe", n)]
+    asis = [n for n in gate.STEP_NAMES if gate.applies("asis", n)]
+    assert tobe == list(gate.STEP_NAMES)
+    assert asis == ["register", "extract", "resolve_vendor", "duplicate_check", "credit_note", "commitment_match",
+                    "terms", "tolerances", "post"]
+    assert set(gate.STEP_LABELS["asis"]) == set(asis) and set(gate.STEP_LABELS["tobe"]) == set(tobe)
+    assert gate.STEP_LABELS["tobe"]["extract"] == "Read with Gemini" and gate.STEP_LABELS["asis"]["extract"] == "Keyed by AP"
+    assert set(gate.OUTCOME_WORDS["tobe"].values()) == {"Post", "Exception", "Block", "Human review"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -367,7 +387,7 @@ def test_log_line_format() -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def test_every_decision_has_all_detail_keys_and_the_nine_steps(session: Session) -> None:
+def test_every_decision_has_all_detail_keys_and_the_steps_of_its_scenario(session: Session) -> None:
     for scenario in config.SCENARIOS:
         load(session, scenario)
         gate.run_scenario(session, scenario, log=quiet)
@@ -375,7 +395,7 @@ def test_every_decision_has_all_detail_keys_and_the_nine_steps(session: Session)
     assert len(decisions) == 2 * len(world.DOCUMENTS)
     for d in decisions:
         assert set(d.details) == set(gate.DETAIL_KEYS), d.doc_id
-        assert tuple(s["step"] for s in d.steps) == gate.STEP_NAMES, d.doc_id
+        assert tuple(s["step"] for s in d.steps) == tuple(n for n in gate.STEP_NAMES if gate.applies(d.scenario, n))
         assert {s["result"] for s in d.steps} <= STEP_RESULTS, d.doc_id
         assert d.reason and d.decided_on is not None and d.details["path"] in sim.PATHS
         assert d.simulated_days == sum(d.details["cycle_breakdown"].values())
@@ -392,15 +412,22 @@ def test_run_log_lines(session: Session) -> None:
     lines: list[str] = []
     run = gate.run_scenario(session, "tobe", log=lines.append)
     assert run.summary_json["log"] == lines
-    assert "[doc 07] step=resolve_vendor result=ok party=Shopsys account=V-000105 method=vat_id" in lines
-    assert lines[-1].startswith("[run] scenario=tobe documents=14 touchless=10 exceptions=4 ")
-    doc_line = re.compile(r'^\[doc \d{2}\] (step=[a-z_]+ result=[a-z]+|outcome=[a-z_]+)( [a-z_]+=("[^"]*"|\S+))*$')
+    assert ("[B-07] Supplier (tax ID) → pass — Resolved to Shopsys Software Inc. by tax ID at supplier level; its "
+            "record in VUS is V-000105.") in lines
+    assert lines[-1] == ("[run] B: 12 documents · Post 8 · Exception 2 · Block 1 · Human review 1 · posted with no "
+                         "human touch 8")
+    doc_line = re.compile(r"^\[B-\d{2}\] [A-Z][A-Za-z ()]+ → [A-Za-z ]+( — \S.*)?$")
     assert all(doc_line.match(line) for line in lines[:-1])
-    outcome_lines = [line for line in lines if " outcome=" in line]
-    assert len(outcome_lines) == 14
-    assert "[doc 06] outcome=exception exception=price_qty_mismatch owner=\"Sofia Brandt\" sla=2 days=2 " \
-           "touchless=no" in lines
-    assert run.summary_json["outcomes"] == {"posted": 8, "exception": 4, "blocked_duplicate": 1, "applied_credit": 1}
+    assert not any("step=" in line or "_" in line.split(" — ")[0] for line in lines)  # deck words, no code names
+    outcome_lines = [line for line in lines if " Outcome → " in line]
+    assert len(outcome_lines) == 12
+    assert ("[B-06] Outcome → Exception — Price or quantity mismatch · Sofia Brandt · SLA 2 days · 5 simulated "
+            "business days") in lines
+    assert ("[B-01] Outcome → Human review — Amount above approval limit · Stefan Keller · SLA 2 days · 2 simulated "
+            "business days") in lines
+    assert "[B-02] Outcome → Block — Duplicate invoice · Marco Ruiz · SLA — · 0 simulated business days" in lines
+    assert run.summary_json["outcomes"] == {"posted": 7, "exception": 2, "human_review": 1, "blocked_duplicate": 1,
+                                            "applied_credit": 1}
 
 
 def test_registration_per_scenario_and_clear_results(session: Session) -> None:
@@ -471,13 +498,19 @@ def test_postings_and_credit_applications(session: Session) -> None:
     gate.run_scenario(session, "tobe", log=quiet)
     postings = {p.doc_id: p for p in session.scalars(select(PendingVendorInvoice).where(
         PendingVendorInvoice.scenario == "tobe"))}
-    assert sorted(p.invoice_id for p in postings.values()) == [f"PVI-B-{n:04d}" for n in range(1, 10)]
+    assert sorted(p.invoice_id for p in postings.values()) == [f"PVI-B-{n:04d}" for n in range(1, 9)]
+    assert "B-01" not in postings  # Human review above the approval limit: not posted
     assert postings["B-04"].total == -1800.0 and postings["B-04"].status == "credit_applied"
     assert postings["B-04"].terms_days is None and not postings["B-04"].terms_source  # a credit note has no terms
-    assert postings["B-01"].terms_source == "master" and postings["B-01"].due_date == date(2026, 10, 30)
-    assert postings["B-01"].flags == {"wrong_entity": False, "duplicate_of": None, "terms_variance": True,
-                                      "doa_auto_approved": False}
-    assert postings["B-10"].flags["doa_auto_approved"] is True
+    assert postings["B-10"].terms_source == "master" and postings["B-10"].due_date == date(2026, 10, 30)
+    assert postings["B-10"].flags == {"wrong_entity": False, "duplicate_of": None, "terms_variance": False,
+                                      "catalogue": False}
+    assert postings["B-09"].flags["catalogue"] is True
+    # Master terms apply; the invoice's own terms are logged in the rule line only (no task, no flag).
+    b01 = decision(session, "B-01")
+    assert step(b01, "terms") == {"step": "terms", "result": "ok",
+                                  "detail": "Master terms 30 days apply; the invoice states 14 days, which is ignored."}
+    assert b01.details["flags"] == []
     credit = session.scalars(select(CreditNoteApplication).where(CreditNoteApplication.scenario == "tobe")).one()
     assert (credit.credit_note_id, credit.doc_id, credit.status) == ("CN-2026-0031", "B-04", "applied")
     assert credit.applied_to_invoice_id == postings["B-03"].invoice_id
@@ -501,7 +534,7 @@ def test_rerun_document_keeps_the_rest_of_the_run(session: Session) -> None:
     before = _snapshot(session, "tobe")
     # Document 1 comes before its resent copy (document 2): re-running it must not see the copy as the original.
     again = gate.rerun_document(session, docs[1], log=quiet)
-    assert again.outcome == "posted" and again.details["duplicate_of"] is None
+    assert again.outcome == "human_review" and again.details["duplicate_of"] is None
     assert gate.rerun_document(session, docs[2], log=quiet).details["duplicate_of"] == "B-01"
     gate.rerun_document(session, docs[3], log=quiet)  # the invoice the credit note is applied to
     assert _snapshot(session, "tobe") == before
@@ -512,11 +545,11 @@ def test_rerun_document_processes_earlier_unprocessed_documents_first(session: S
     processes, in order, every earlier document of the scenario that has no decision yet."""
     docs = load(session, "tobe")
     lines: list[str] = []
-    resend = gate.rerun_document(session, docs[2], log=lines.append)  # document 2 is the last one to arrive
+    resend = gate.rerun_document(session, docs[2], log=lines.append)  # the reminder arrives on Fri 2 Oct, 08:15
     assert (resend.outcome, resend.details["duplicate_of"]) == ("blocked_duplicate", "B-01")
-    assert count(session, GateDecision, "tobe") == 14
-    order = [int(line[5:7]) for line in lines if " outcome=" in line]
-    assert order == [7, 1, 3, 9, 10, 5, 14, 11, 6, 4, 8, 13, 12, 2]  # processing order, the document last
+    assert count(session, GateDecision, "tobe") == 8
+    order = [int(line[3:5]) for line in lines if " Outcome → " in line]
+    assert order == [6, 7, 1, 3, 8, 9, 12, 2]  # processing order (registration), the document last
 
 
 def test_rerun_document_leaves_later_documents_alone(session: Session) -> None:
@@ -524,7 +557,7 @@ def test_rerun_document_leaves_later_documents_alone(session: Session) -> None:
     credit = gate.rerun_document(session, docs[4], log=quiet)  # the credit note: invoice 3 is processed first
     assert (credit.outcome, credit.details["credit_status"]) == ("applied_credit", "applied")
     assert credit.details["applied_to"] == decision(session, "B-03").details["invoice_id"]
-    assert count(session, GateDecision, "tobe") == 10  # documents 7, 1, 3, 9, 10, 5, 14, 11, 6 and 4
+    assert count(session, GateDecision, "tobe") == 10  # documents 6, 7, 1, 3, 8, 9, 12, 2, 10 and 4
     assert gate.rerun_document(session, docs[4], log=quiet).details["applied_to"] == credit.details["applied_to"]
     assert count(session, GateDecision, "tobe") == 10
 
@@ -534,7 +567,7 @@ def test_rerun_document_extracts_what_is_missing(session: Session, scenario: str
     docs = {d.sample_no: d for d in seed.load_sample_documents(session, scenario)}  # not extracted
     d = gate.rerun_document(session, docs[3], log=quiet)
     assert d.details["invoice_number"] == "INV-2026-0457"
-    assert all(docs[n].extraction is not None for n in (7, 1, 3))  # document 3 and the two before it
+    assert all(docs[n].extraction is not None for n in (6, 7, 1, 3))  # document 3 and the three before it
     assert docs[4].extraction is None
 
 
@@ -550,9 +583,12 @@ def test_low_confidence_goes_to_human_review_in_tobe_only(session: Session) -> N
     tobe = decision(session, "B-03")
     assert (tobe.outcome, tobe.exception_type, tobe.owner_name, tobe.sla_days, tobe.simulated_days) == (
         "human_review", "human_review", "Marco Ruiz", 1, 1)
-    assert "invoice number" in tobe.reason and tobe.details["posted"] is False
-    assert [s["result"] for s in tobe.steps][:2] == ["ok", "exception"]
-    assert all(s["result"] == "skipped" for s in tobe.steps[2:])
+    assert tobe.reason.startswith("Invoice number missing or below 0.80: Human review") and not tobe.details["posted"]
+    assert [(s["step"], s["result"]) for s in tobe.steps][:4] == [
+        ("register", "ok"), ("screen", "ok"), ("extract", "ok"), ("confidence", "human_review")]
+    assert all(s["result"] == "skipped" for s in tobe.steps[4:])
+    # The model only reads: its step passes; the confidence rule decides.
+    assert step(tobe, "extract")["detail"].startswith("Read by fixture")
     assert decision(session, "A-03").outcome == "posted"  # as-is has no confidence threshold
 
 
@@ -563,11 +599,11 @@ def test_missing_extraction(session: Session) -> None:
     session.commit()
     review = gate.process(session, tobe, log=quiet)
     assert (review.outcome, review.owner_name, review.sla_days) == ("human_review", "Marco Ruiz", 1)
-    assert "No extraction" in review.reason
+    assert "nothing was read" in review.reason and step(review, "extract")["result"] == "info"
     loop = gate.process(session, asis, log=quiet)
     assert (loop.outcome, loop.exception_type, loop.owner_name, loop.details["posted"]) == (
         "exception", "email_loop", None, False)
-    assert loop.details["email_loop_days"] == sim.email_loop_days("10")
+    assert loop.details["email_loop_days"] == sim.email_loop_days("11")  # Cleanspace keeps its loop key
 
 
 UNKNOWN_SUPPLIER = dict(supplier_name=("Blue Ocean Supplies Ltd", 0.99), supplier_vat_id=("DE111222333", 0.99),
@@ -588,14 +624,15 @@ def test_unknown_vendor_gets_an_account_on_the_fly_in_asis(session: Session) -> 
     patch(doc, **UNKNOWN_SUPPLIER)
     n_accounts = count(session, VendorAccount, "asis")
     d = gate.process(session, doc, log=quiet)
-    assert (d.details["resolution_method"], d.details["account_id"], d.details["posted"]) == ("created", "V-000129", True)
+    assert (d.details["resolution_method"], d.details["account_id"], d.details["posted"]) == ("created", "V-000131", True)
     assert d.details["true_party_id"] is None and d.details["party_id"] is None
     created = session.scalars(select(VendorAccount).where(VendorAccount.scenario == "asis",
-                                                          VendorAccount.account_id == "V-000129")).one()
+                                                          VendorAccount.account_id == "V-000131")).one()
     assert (created.created_by, created.display_name, created.legal_entity_code, created.payment_terms_days,
             created.corruption_rules, created.notes) == (
-        gate.ON_THE_FLY_CREATOR, "Blue Ocean Supplies Ltd", "VDE", 14, ["gate"], gate.ON_THE_FLY_NOTE)
-    assert gate.process(session, doc, log=quiet).details["account_id"] == "V-000129"  # re-run: no second account
+        gate.ON_THE_FLY_CREATOR, "Blue Ocean Supplies Ltd", "VFR", 30, ["gate"], gate.ON_THE_FLY_NOTE)
+    assert gate.process(session, doc, log=quiet).details["account_id"] == "V-000131"  # re-run: no second account
+    assert "AP opened V-000131 in VFR to pay the invoice" in step(d, "resolve_vendor")["detail"]
     assert count(session, VendorAccount, "asis") == n_accounts + 1
     gate.clear_results(session, "asis")
     assert count(session, VendorAccount, "asis") == n_accounts
@@ -610,43 +647,61 @@ def test_credit_note_without_a_known_invoice(session: Session) -> None:
     # Pending, not unapplied: nothing is posted, so it is neither an unapplied credit nor cash leakage.
     assert d.details["credit_status"] is None and count(session, CreditNoteApplication, "tobe") == 0
     a = gate.process(session, asis, log=quiet)
-    assert (a.outcome, a.details["credit_status"], a.details["touchless"]) == ("posted", "unapplied", True)
+    assert (a.outcome, a.details["credit_status"], a.details["touchless"]) == ("posted", "unapplied", False)
 
 
-def test_resolution_by_name_when_identifiers_are_missing(session: Session) -> None:
+def test_a_name_alone_never_resolves_the_supplier_in_tobe(session: Session) -> None:
+    """Brief v2: the supplier is resolved by tax ID (then IBAN) at supplier level; guessing by name is the as-is."""
     doc = load(session, "tobe")[1]
     patch(doc, supplier_vat_id=(None, 0.0), supplier_iban=(None, 0.0), supplier_name=("Nordwind Logistics", 0.95))
     d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.details["resolution_method"]) == (
+        "exception", "unknown_vendor", "Lena Fischer", None)
+    assert "matches no supplier record by tax ID or IBAN" in d.reason
+    patch(doc, supplier_iban=(world.PARTY_BY_ID["P-0001"].bank, 0.95))  # the IBAN alone does resolve it
+    d = gate.process(session, doc, log=quiet)
     assert (d.details["resolution_method"], d.details["party_id"], d.details["account_id"]) == (
-        "name", "P-0001", "V-000101")
+        "iban", "P-0001", "V-000101")
 
 
 def test_duplicate_vendor_account_is_an_info_flag_in_tobe(session: Session) -> None:
-    doc = load(session, "tobe")[1]
-    session.add(VendorAccount(scenario="tobe", account_id="V-000140", legal_entity_code="VDE", party_id=None,
-                              display_name="NORDWIND LOGISTICS", vat_id="DE281947305", iban=None,
+    doc = load(session, "tobe")[10]  # Cleanspace, billed to VFR
+    session.add(VendorAccount(scenario="tobe", account_id="V-000140", legal_entity_code="VFR", party_id=None,
+                              display_name="CLEANSPACE FACILITIES", vat_id="NL859374612B01", iban=None,
                               payment_terms_days=14, created_by="test", created_on=date(2026, 1, 1)))
     session.commit()
     d = gate.process(session, doc, log=quiet)
-    assert d.outcome == "posted" and d.details["touchless"] is True and d.details["account_id"] == "V-000101"
+    assert d.outcome == "posted" and d.details["touchless"] is True and d.details["account_id"] == "V-000113"
     flags = {f["type"]: f for f in d.details["flags"]}
-    assert set(flags) == {"duplicate_vendor_account", "terms_variance"}
+    assert set(flags) == {"duplicate_vendor_account"}
+    assert flags["duplicate_vendor_account"]["label"] == "Duplicate vendor record (info)"
     assert flags["duplicate_vendor_account"]["owner_name"] == "Lena Fischer"
+    assert flags["duplicate_vendor_account"]["owner_role"] == "Master data owner"
     assert "V-000140" in flags["duplicate_vendor_account"]["detail"]
 
 
-def test_doa_limit_is_strict(session: Session) -> None:
-    doc = load(session, "tobe")[10]
-    patch(doc, gross_total=(500.0, 0.99))
+def test_catalogue_limit_is_in_chf_and_strict(session: Session) -> None:
+    """Small store purchase -> card / catalogue up to CHF 500 per invoice (simulated rate EUR 0.94); above it there
+    is no commitment: No PO to the requester, then the budget owner."""
+    doc = load(session, "tobe")[9]  # Kaffee & Co, Store Berlin 01
+    patch(doc, gross_total=(531.90, 0.99))  # ~ CHF 499.99
     d = gate.process(session, doc, log=quiet)
-    assert (d.outcome, d.exception_type, d.owner_name, d.sla_days) == ("exception", "no_po", "Paul Neumann", 2)
+    assert (d.outcome, d.details["commitment"], d.details["catalogue_id"], d.details["gross_chf"]) == (
+        "posted", "catalogue", "CAT-2026-001", 499.99)
+    assert "within the CHF 500 per-invoice limit of CAT-2026-001" in step(d, "tolerances")["detail"]
+    patch(doc, gross_total=(532.0, 0.99))  # ~ CHF 500.08
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.sla_days) == (
+        "exception", "no_po", "Paul Neumann", "Requester, then budget owner", 2)
     assert d.simulated_days == 3  # SLA 2 + workflow approval 1
     assert d.details["cycle_breakdown"]["workflow_approval"] == 1
+    assert "then the budget owner approves" in d.reason
 
 
 def test_contract_period_is_matched_once(session: Session) -> None:
     docs = load(session, "tobe")
-    patch(docs[2], invoice_number=("NWL-2026-00999", 0.99))  # a second Nordwind invoice for September
+    patch(docs[2], invoice_number=("NWL-2026-00999", 0.99), net_total=(21000.0, 0.99),
+          gross_total=(24990.0, 0.99))  # a second Nordwind invoice for September (another amount: no duplicate)
     gate.run_scenario(session, "tobe", log=quiet)
     d = decision(session, "B-02")
     assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "no_po", "Nina Hoffmann")  # contract owner
@@ -670,12 +725,12 @@ def test_an_unreadable_invoice_date_never_claims_a_contract_period(session: Sess
 
 @pytest.mark.parametrize("printed", ["30.09.2026", "30/09/2026"])
 def test_day_first_invoice_dates_are_read(session: Session, printed: str) -> None:
-    doc = load(session, "tobe")[11]
+    doc = load(session, "tobe")[10]
     patch(doc, invoice_date=(printed, 0.95))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.details["contract_id"], d.details["invoice_date"], d.details["contract_period"]) == (
         "posted", "CT-2025-003", "2026-09-30", "2026-09")
-    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-11")).one()
+    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-10")).one()
     assert (posting.invoice_date, posting.due_date) == (date(2026, 9, 30), date(2026, 10, 30))
 
 
@@ -705,7 +760,8 @@ def test_documents_in_human_review_still_count_for_duplicates_and_credit_notes(s
 def test_a_document_in_human_review_claims_its_contract_period(session: Session) -> None:
     docs = load(session, "tobe")
     patch(docs[1], gross_total=(27846.0, 0.79))  # in human review, never reaches the contract match
-    patch(docs[2], invoice_number=("NWL-2026-00999", 0.99))  # a second Nordwind invoice for September
+    patch(docs[2], invoice_number=("NWL-2026-00999", 0.99), net_total=(21000.0, 0.99),
+          gross_total=(24990.0, 0.99))  # a second Nordwind invoice for September
     gate.run_scenario(session, "tobe", log=quiet)
     d = decision(session, "B-02")
     assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "no_po", "Nina Hoffmann")
@@ -722,15 +778,16 @@ def test_the_lookup_party_is_to_be_only(session: Session) -> None:
 # Commitment match: line reconciliation, split / repeated / reordered / missing lines, PO numbers
 # --------------------------------------------------------------------------------------------
 
-LUMEN_LINES = [{"description": "LED track spotlight 30W", "quantity": 80, "unit_price": 40.0, "amount": 3200.0},
-               {"description": "LED panel 600x600 40W", "quantity": 40, "unit_price": 50.0, "amount": 2000.0}]
+QUICKPRINT_LINES = [{"description": "A2 in-store posters, 4-colour", "quantity": 400, "unit_price": 3.5,
+                     "amount": 1400.0},
+                    {"description": "A5 leaflets, double-sided", "quantity": 10000, "unit_price": 0.1, "amount": 1000.0}]
 
 
 def test_a_dropped_line_is_not_posted(session: Session) -> None:
-    """Document 12 read without its panel line: the spotlight line alone would match and be received in full,
-    but the lines no longer add up to the 5,200.00 net total."""
-    doc = load(session, "tobe")[12]
-    patch(doc, lines=(LUMEN_LINES[:1], 0.9))
+    """Document 8 (QuickPrint) read without its leaflet line: the poster line alone would match and be received in
+    full, but the lines no longer add up to the 2,400.00 net total."""
+    doc = load(session, "tobe")[8]
+    patch(doc, lines=(QUICKPRINT_LINES[:1], 0.9))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name, d.details["posted"]) == (
         "human_review", "human_review", "Marco Ruiz", False)
@@ -739,8 +796,8 @@ def test_a_dropped_line_is_not_posted(session: Session) -> None:
 
 
 def test_a_dropped_line_is_an_email_loop_in_asis(session: Session) -> None:
-    """PO 4500112 is not in the as-is ERP, so this uses document 9 (PO 4500114 exists in both scenarios)."""
-    doc = load(session, "asis")[9]
+    """Document 8 (PO 4500114 exists in both scenarios)."""
+    doc = load(session, "asis")[8]
     patch(doc, lines=([{"description": "A2 in-store posters, 4-colour", "quantity": 400, "unit_price": 3.5,
                         "amount": 1400.0}], 0.9))
     d = gate.process(session, doc, log=quiet)
@@ -750,21 +807,25 @@ def test_a_dropped_line_is_an_email_loop_in_asis(session: Session) -> None:
 
 
 def test_split_lines_are_checked_together(session: Session) -> None:
-    doc = load(session, "tobe")[12]
-    half = dict(LUMEN_LINES[1], quantity=20, amount=1000.0)
-    patch(doc, lines=([LUMEN_LINES[0], half, dict(half)], 0.95))
+    """The leaflet line split in two halves of 6,000 (each alone within the PO): 12,000 invoiced on a PO for 10,000
+    -> quantity mismatch, to the buyer only (deck A3), decided by the tolerances rule."""
+    doc = load(session, "tobe")[8]
+    half = dict(QUICKPRINT_LINES[1], quantity=6000, amount=600.0)
+    patch(doc, lines=([QUICKPRINT_LINES[0], half, dict(half)], 0.95), net_total=(2600.0, 0.95),
+          gross_total=(3120.0, 0.95))
     d = gate.process(session, doc, log=quiet)
-    assert (d.outcome, d.exception_type, d.owner_name, d.details["next_owner_name"]) == (
-        "exception", "price_qty_mismatch", "Tim Koch", "Sofia Brandt")
-    assert "Lines 2 and 3 (PO line 2): 40 invoiced but only 20 received" in d.reason
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.details["next_owner_name"]) == (
+        "exception", "price_qty_mismatch", "Julien Moreau", "Buyer", None)
+    assert "Lines 2 and 3 (PO line 2): 12,000 invoiced but only 10,000 ordered on PO 4500114" in d.reason
+    assert (step(d, "commitment_match")["result"], step(d, "tolerances")["result"]) == ("ok", "exception")
 
 
 def test_a_repeated_line_is_caught(session: Session) -> None:
-    """Document 13's line read twice. With the totals doubled it is a quantity issue for the buyer; with the printed
+    """Document 11's line read twice. With the totals doubled it is a quantity issue for the buyer; with the printed
     totals, the lines do not add up."""
     firewall = {"description": "Managed firewall service Q3 2026", "quantity": 1, "unit_price": 4800.0,
                 "amount": 4800.0}
-    doc = load(session, "tobe")[13]
+    doc = load(session, "tobe")[11]
     patch(doc, lines=([firewall, dict(firewall)], 0.95), net_total=(9600.0, 0.95), gross_total=(9600.0, 0.95))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "price_qty_mismatch", "Sofia Brandt")
@@ -775,7 +836,7 @@ def test_a_repeated_line_is_caught(session: Session) -> None:
 
 
 def test_reordered_lines_are_mapped_by_description(session: Session) -> None:
-    doc = load(session, "tobe")[9]
+    doc = load(session, "tobe")[8]
     patch(doc, lines=(list(reversed(doc.extraction.json["lines"]["value"])), 0.99))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.details["touchless"]) == ("posted", True)
@@ -783,9 +844,9 @@ def test_reordered_lines_are_mapped_by_description(session: Session) -> None:
 
 
 @pytest.mark.parametrize("no, outcome, owner", [
-    (9, "posted", None),  # goods: the net total is the PO total, received in full
+    (8, "posted", None),  # goods: the net total is the PO total, received in full
     (3, "posted", None),  # service: confirmed
-    (12, "exception", "Tim Koch"),  # the net total is the PO total, but PO line 2 is only half received
+    (5, "exception", "Jonas Weber"),  # the net total is the PO total, but the service is not confirmed
 ])
 def test_no_lines_read_checks_the_po_at_header_level(session: Session, no: int, outcome: str, owner) -> None:
     doc = load(session, "tobe")[no]
@@ -795,25 +856,31 @@ def test_no_lines_read_checks_the_po_at_header_level(session: Session, no: int, 
     assert "None" not in d.reason
     assert d.details["line_checks"][0]["description"].startswith("No invoice lines read")
     if outcome == "posted":
-        assert "no invoice lines read, net total within tolerance of the PO total" in d.reason
+        assert "no invoice lines read, net total within tolerance of the total of PO" in d.reason
 
 
 def test_no_lines_and_a_partial_net_total_go_to_human_review(session: Session) -> None:
-    doc = load(session, "tobe")[12]
-    patch(doc, lines=(None, 0.0), net_total=(3200.0, 0.95), gross_total=(3200.0, 0.95))
+    doc = load(session, "tobe")[8]
+    patch(doc, lines=(None, 0.0), net_total=(1400.0, 0.95), gross_total=(1680.0, 0.95))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.owner_name) == ("human_review", "Marco Ruiz")
     assert "the invoice lines could not be read" in d.reason and "None" not in d.reason
 
 
 def test_received_in_full_only_when_the_whole_po_is_received(session: Session) -> None:
-    """Document 12 invoicing only the spotlights (received in full); the panels are only half received."""
+    """Document 8 invoicing only the posters (received in full) while the leaflets are only half received."""
     docs = load(session, "tobe")
-    patch(docs[12], lines=(LUMEN_LINES[:1], 0.95), net_total=(3200.0, 0.95), gross_total=(3200.0, 0.95))
-    d = gate.process(session, docs[12], log=quiet)
+    full = gate.process(session, docs[8], log=quiet)
+    assert step(full, "commitment_match")["detail"] == "Goods → PO + receipt: PO 4500114, received in full."
+    receipt = session.scalars(select(ProductReceipt).where(ProductReceipt.scenario == "tobe",
+                                                           ProductReceipt.po_number == "4500114",
+                                                           ProductReceipt.line_no == 2)).one()
+    receipt.qty_received = 5000
+    patch(docs[8], lines=(QUICKPRINT_LINES[:1], 0.95), net_total=(1400.0, 0.95), gross_total=(1680.0, 0.95))
+    session.commit()
+    d = gate.process(session, docs[8], log=quiet)
     assert d.outcome == "posted"
-    assert "received in full" not in d.reason and "the invoiced quantities received" in d.reason
-    assert "and received in full" in gate.process(session, docs[9], log=quiet).reason
+    assert step(d, "commitment_match")["detail"] == "Goods → PO + receipt: PO 4500114, goods receipt recorded."
 
 
 @pytest.mark.parametrize("printed", [["PO 4500117"], ["P.O. #4500117"], ["po-4500117"], ["4599999", "PO 4500117"]])
@@ -824,14 +891,20 @@ def test_po_numbers_are_normalised_and_each_is_tried(session: Session, printed: 
     assert (d.outcome, d.details["commitment"], d.details["po_number"]) == ("posted", "po", "4500117")
 
 
-def test_po_not_found_goes_to_ap_because_no_requester_can_be_derived(session: Session) -> None:
-    doc = load(session, "tobe")[3]
-    patch(doc, po_numbers=(["4599999", "4599998"], 0.95))
-    d = gate.process(session, doc, log=quiet)
+def test_po_not_found_goes_to_the_requester_of_the_suppliers_latest_po(session: Session) -> None:
+    """Deck A3: PO not found or wrong vendor -> requester. Bright Agency's latest PO in VFR is 4500121 (Camille
+    Martin); a supplier with no PO in the billed entity (Nordwind) goes to AP, and the reason says why."""
+    docs = load(session, "tobe")
+    patch(docs[3], po_numbers=(["4599999", "4599998"], 0.95))
+    d = gate.process(session, docs[3], log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name, d.owner_role) == (
-        "exception", "po_not_found", "Marco Ruiz", "AP specialist")
-    assert "no requester can be derived: AP gets the correct PO from the supplier" in d.reason
+        "exception", "po_not_found", "Camille Martin", "Requester")
+    assert "routed to the requester Camille Martin (latest PO of this supplier in the billed entity)" in d.reason
     assert "4599999, 4599998" in d.reason
+    patch(docs[1], po_numbers=(["4599999"], 0.95))
+    d = gate.process(session, docs[1], log=quiet)
+    assert (d.exception_type, d.owner_name) == ("po_not_found", "Marco Ruiz")
+    assert "AP (Marco Ruiz), since the supplier has no PO in the billed entity" in d.reason
 
 
 # --------------------------------------------------------------------------------------------
@@ -850,7 +923,7 @@ def test_currency_is_normalised(session: Session, printed: str) -> None:
 
 
 def test_net_is_derived_when_missing(session: Session) -> None:
-    doc = load(session, "tobe")[11]
+    doc = load(session, "tobe")[10]
     patch(doc, net_total=(None, 0.0))  # gross 3,200 - tax 0
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.details["net_total"], d.details["contract_id"]) == ("posted", 3200.0, "CT-2025-003")
@@ -863,38 +936,38 @@ def test_net_is_derived_when_missing(session: Session) -> None:
 
 
 def test_a_negative_invoice_is_a_probable_credit_note(session: Session) -> None:
-    doc = load(session, "tobe")[10]
+    doc = load(session, "tobe")[9]
     patch(doc, gross_total=(-150.0, 0.99), net_total=(-126.05, 0.99))
     d = gate.process(session, doc, log=quiet)
-    assert (d.outcome, d.owner_name, d.details["doa_auto_approved"], d.details["posted"]) == (
-        "human_review", "Marco Ruiz", False, False)
-    assert "negative total, probable credit note" in d.reason
+    assert (d.outcome, d.owner_name, d.details["commitment"], d.details["posted"]) == (
+        "human_review", "Marco Ruiz", None, False)
+    assert "probable credit note" in d.reason and step(d, "document_type")["result"] == "human_review"
 
 
-def test_doa_auto_approval_needs_a_positive_amount(session: Session) -> None:
-    doc = load(session, "tobe")[10]
+def test_a_catalogue_match_needs_a_positive_amount(session: Session) -> None:
+    doc = load(session, "tobe")[9]
     patch(doc, gross_total=(0.0, 0.99))
     d = gate.process(session, doc, log=quiet)
-    assert (d.outcome, d.exception_type, d.owner_name, d.details["doa_auto_approved"]) == (
-        "exception", "no_po", "Paul Neumann", False)
+    assert (d.outcome, d.exception_type, d.owner_name, d.details["commitment"]) == (
+        "exception", "no_po", "Paul Neumann", "none")
 
 
 def test_bill_to_with_an_attention_line_maps_to_its_entity(session: Session) -> None:
-    """Document 10 prints no bill-to VAT ID; the model may append the attention line to the entity name."""
+    """Document 9 prints no bill-to VAT ID; the model may append the attention line to the entity name."""
     for scenario in config.SCENARIOS:
-        patch(load(session, scenario)[10], bill_to_name=("Velox Retail GmbH Store Berlin 01", 0.95))
+        patch(load(session, scenario)[9], bill_to_name=("Velox Retail GmbH Store Berlin 01", 0.95))
         gate.run_scenario(session, scenario, log=quiet)
-    tobe, asis = decision(session, "B-10"), decision(session, "A-10")
-    assert (tobe.outcome, tobe.details["bill_to_entity"], tobe.details["doa_auto_approved"]) == ("posted", "VDE", True)
+    tobe, asis = decision(session, "B-09"), decision(session, "A-09")
+    assert (tobe.outcome, tobe.details["bill_to_entity"], tobe.details["commitment"]) == ("posted", "VDE", "catalogue")
     assert (asis.details["bill_to_entity"], asis.details["wrong_entity_posting"]) == ("VDE", False)
 
 
 def test_an_unmapped_bill_to_is_not_counted_as_a_wrong_entity_posting(session: Session) -> None:
-    doc = load(session, "asis")[10]
+    doc = load(session, "asis")[9]
     patch(doc, bill_to_name=("Velox Retail", 0.95))  # could be any of the three entities
     d = gate.process(session, doc, log=quiet)
     assert (d.details["posted"], d.details["bill_to_entity"], d.details["wrong_entity_posting"]) == (True, None, False)
-    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "A-10")).one()
+    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "A-09")).one()
     assert posting.flags["wrong_entity"] is False
 
 
@@ -912,21 +985,47 @@ def test_labelled_or_copy_invoice_numbers_are_still_duplicates(session: Session,
 # --------------------------------------------------------------------------------------------
 
 
+def read_as(doc: InboundDocument, doc_type: str, conf: float = 0.97) -> None:
+    """The extraction reads the document as this type (extract.py stores the type as read)."""
+    patch(doc, doc_type=(doc_type, conf))
+    doc.doc_type = doc_type
+
+
 def read_as_other(doc: InboundDocument, conf: float = 0.97) -> None:
-    """The extraction reads the document as doc_type "other" (extract.py then registers it as "unknown")."""
-    patch(doc, doc_type=("other", conf))
-    doc.doc_type = "unknown"
+    read_as(doc, "other", conf)
 
 
-def test_a_document_that_is_not_an_invoice_is_filed_in_tobe(session: Session) -> None:
+def test_a_document_that_is_not_an_invoice_goes_to_human_review_in_tobe(session: Session) -> None:
     doc = load(session, "tobe")[1]
     read_as_other(doc)
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.sla_days) == (
-        "exception", "not_an_invoice", "Marco Ruiz", "AP specialist", 1)
+        "human_review", "human_review", "Marco Ruiz", "AP review", 1)
     assert (d.details["doc_type"], d.details["posted"], d.details["contract_period"]) == ("other", False, None)
-    assert "neither an invoice nor a credit note" in d.reason and count(session, PendingVendorInvoice, "tobe") == 0
-    assert [s["step"] for s in d.steps if s["result"] != "skipped"] == ["register", "extract"]
+    assert "not an invoice or credit note, so nothing is posted" in d.reason
+    assert count(session, PendingVendorInvoice, "tobe") == 0
+    assert [s["step"] for s in d.steps if s["result"] != "skipped"] == [
+        "register", "screen", "extract", "confidence", "document_type"]
+
+
+def test_a_statement_is_a_supplier_payment_status_query(session: Session) -> None:
+    doc = load(session, "tobe")[1]
+    read_as(doc, "statement")
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.sla_days, d.details["posted"]) == (
+        "exception", "payment_status_query", "Marco Ruiz", "Agent drafts, AP approves", None, False)
+    assert "the agent drafts the reply with the status of the open items" in d.reason
+
+
+def test_a_reminder_is_checked_as_the_invoice_it_copies(session: Session) -> None:
+    """Case document 2 is read as a reminder: the document-type rule lets it through and the duplicate rule blocks
+    it; alone (the original never arrived), it is processed like the invoice it reproduces."""
+    docs = load(session, "tobe")
+    assert docs[2].doc_type == "reminder"  # the fixture reads it as a reminder
+    gate.run_scenario(session, "tobe", log=quiet)
+    d = decision(session, "B-02")
+    assert (d.outcome, step(d, "document_type")["result"]) == ("blocked_duplicate", "ok")
+    assert "Payment reminder reproducing invoice NWL-2026-00913" in step(d, "document_type")["detail"]
 
 
 def test_asis_posts_a_document_that_is_not_an_invoice(session: Session) -> None:
@@ -942,18 +1041,19 @@ def test_an_uncertain_other_document_type_goes_to_human_review(session: Session)
     read_as_other(doc, 0.5)
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type) == ("human_review", "human_review")
-    assert "document type (not recognised as an invoice or credit note)" in d.reason
+    assert "Read as 'other': not an invoice or credit note" in d.reason
 
 
 def test_a_filed_statement_is_never_the_original_of_a_duplicate_nor_claims_a_contract(session: Session) -> None:
     """Document 1 read as a statement: the reminder (document 2, same number) is not its duplicate, and it takes
-    the contract period that the statement never claimed."""
+    the contract period that the statement never claimed (then its amount goes above the approval limit)."""
     docs = load(session, "tobe")
-    read_as_other(docs[1])
+    read_as(docs[1], "statement")
     gate.run_scenario(session, "tobe", log=quiet)
-    assert decision(session, "B-01").exception_type == "not_an_invoice"
+    assert decision(session, "B-01").exception_type == "payment_status_query"
     d = decision(session, "B-02")
-    assert (d.outcome, d.details["duplicate_of"], d.details["contract_id"]) == ("posted", None, "CT-2025-001")
+    assert (d.outcome, d.exception_type, d.details["duplicate_of"], d.details["contract_id"]) == (
+        "human_review", "amount_above_approval_limit", None, "CT-2025-001")
 
 
 def _email_body_only(doc: InboundDocument) -> None:
@@ -984,17 +1084,17 @@ PENTEST = {"description": "Penetration test — e-commerce platform (PO 4500130)
 
 
 def _multi_po(doc: InboundDocument, lines: Any = (FIREWALL, PENTEST)) -> None:
-    """Document 13 (SecureNet) invoicing both of its POs."""
+    """Document 11 (SecureNet) invoicing both of its POs."""
     patch(doc, po_numbers=(["PO 4500128", "PO 4500130"], 0.97), lines=(list(lines) if lines else None, 0.97),
           net_total=(8300.0, 0.97), gross_total=(8300.0, 0.97))
 
 
 def test_multi_po_invoice_routes_the_unconfirmed_po_to_its_requester(session: Session) -> None:
-    doc = load(session, "tobe")[13]
+    doc = load(session, "tobe")[11]
     _multi_po(doc)
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name, d.owner_role) == (
-        "exception", "po_no_receipt", "Felix Braun", "Requester")
+        "exception", "po_no_receipt", "Felix Braun", "Receiver / requester")
     assert (d.details["commitment"], d.details["po_number"], d.details["po_numbers"]) == (
         "po", "4500130", ["4500128", "4500130"])
     assert "PO 4500130 exists but no service confirmation is recorded for line 1 (3,500.00 EUR invoiced on it)" \
@@ -1004,18 +1104,18 @@ def test_multi_po_invoice_routes_the_unconfirmed_po_to_its_requester(session: Se
 
 
 def test_multi_po_invoice_posts_when_every_po_is_matched(session: Session) -> None:
-    doc = load(session, "tobe")[13]
+    doc = load(session, "tobe")[11]
     _multi_po(doc)
     _confirm_pentest(session)
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.details["touchless"], d.details["po_number"]) == ("posted", True, "4500128")
     assert "Multi-PO match on POs 4500128 and 4500130: 2 lines within tolerance" in d.reason
-    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-13")).one()
+    posting = session.scalars(select(PendingVendorInvoice).where(PendingVendorInvoice.doc_id == "B-11")).one()
     assert posting.po_number == "4500128"
 
 
 def test_multi_po_invoice_without_lines_is_checked_against_the_pos_total(session: Session) -> None:
-    doc = load(session, "tobe")[13]
+    doc = load(session, "tobe")[11]
     _multi_po(doc, lines=None)
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name) == ("exception", "po_no_receipt", "Felix Braun")
@@ -1035,7 +1135,7 @@ def _confirm_pentest(session: Session) -> None:
 
 
 def test_multi_po_line_on_neither_po_goes_to_the_buyer(session: Session) -> None:
-    doc = load(session, "tobe")[13]
+    doc = load(session, "tobe")[11]
     _confirm_pentest(session)
     extra = {"description": "Consulting day, on site", "quantity": 1, "unit_price": 1200.0, "amount": 1200.0}
     _multi_po(doc, lines=(FIREWALL, PENTEST, extra))
@@ -1073,18 +1173,19 @@ def test_credit_note_without_a_reference_says_so(session: Session) -> None:
     for doc in (tobe, asis):
         patch(doc, referenced_invoice_number=(None, 0.0))
     d, a = gate.process(session, tobe, log=quiet), gate.process(session, asis, log=quiet)
-    assert "references no invoice: routed to the AP specialist" in d.reason and d.details["credit_status"] is None
+    assert "references no invoice: credit note without invoice, routed to AP (Marco Ruiz)" in d.reason
+    assert d.details["credit_status"] is None
     assert "references no invoice and was posted to" in a.reason and a.details["credit_status"] == "unapplied"
     assert "None" not in a.reason + " ".join(s["detail"] for s in a.steps)
 
 
 def test_log_lines_of_a_live_document_carry_its_id(session: Session) -> None:
-    assert gate.log_line("B-W01", "outcome=posted") == "[doc B-W01] outcome=posted"
+    assert gate.log_line("B-W01", "Outcome", "Post") == "[B-W01] Outcome → Post"
     doc = load(session, "tobe")[3]
     doc.sample_no = 0
     lines: list[str] = []
     gate.process(session, doc, log=lines.append)
-    assert lines and all(line.startswith("[doc B-03] ") for line in lines)
+    assert lines and all(line.startswith("[B-03] ") for line in lines)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1130,21 +1231,20 @@ def test_multi_po_invoice_with_the_suppliers_po_of_another_entity_is_a_wrong_leg
           gross_total=(11495.4, 0.95))
     d = gate.process(session, doc, log=quiet)
     assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.details["po_number"]) == (
-        "exception", "wrong_legal_entity", "Marco Ruiz", "AP specialist", "4500105")
+        "exception", "wrong_legal_entity", "Marco Ruiz", "AP", "4500105")
     assert ("Billed to Velox Retail GmbH (VDE) with PO 4500109, but the invoice also quotes PO 4500105 of the same "
             "supplier, which belongs to VFR") in d.reason
 
 
 def test_multi_po_invoice_names_the_po_of_another_entity_whatever_the_print_order(session: Session) -> None:
-    """Shopsys billed to VDE, quoting its VUS PO 4500131 first and its VDE PO 4500107 second."""
-    doc = load(session, "tobe")[7]
-    patch(doc, po_numbers=(["4500131", "4500107"], 0.95), bill_to_name=("Velox Retail GmbH", 0.95),
-          bill_to_vat_id=("DE 298 765 431", 0.95), currency=("EUR", 0.95))
+    """Atlas Displays billed to VDE, quoting its VFR PO 4500105 first and its VDE PO 4500109 second."""
+    doc = load(session, "tobe")[6]
+    patch(doc, po_numbers=(["4500105", "4500109"], 0.95))
     d = gate.process(session, doc, log=quiet)
-    assert (d.exception_type, d.owner_name, d.details["po_number"]) == ("wrong_legal_entity", "Marco Ruiz", "4500131")
-    assert "with PO 4500107, but the invoice also quotes PO 4500131 of the same supplier, which belongs to VUS" \
+    assert (d.exception_type, d.owner_name, d.details["po_number"]) == ("wrong_legal_entity", "Marco Ruiz", "4500105")
+    assert "with PO 4500109, but the invoice also quotes PO 4500105 of the same supplier, which belongs to VFR" \
         in d.reason
-    assert "invoiced" not in d.reason  # not a missing service confirmation on the VDE PO
+    assert "invoiced" not in d.reason  # not a price mismatch on the VDE PO
 
 
 @pytest.mark.parametrize("printed", [["4500128", "4500105"], ["4500105", "4500128"]])
@@ -1199,3 +1299,82 @@ def test_live_asis_documents_get_their_own_email_loop_length(session: Session) -
         assert d.details["email_loop_days"] == sim.email_loop_days(docs[no].doc_id), no
     keys = {sim.email_loop_days(k) for k in ("A-W01", "A-W02", "A-W03", "A-W04")}
     assert len(keys) > 1  # live documents no longer share one loop length
+
+
+# --------------------------------------------------------------------------------------------
+# Brief v2: screening, approval limit in CHF, the duplicate's second leg, the past-SLA overrun, one intake
+# --------------------------------------------------------------------------------------------
+
+
+def test_every_tobe_document_is_screened_before_the_model(session: Session) -> None:
+    load(session, "tobe")
+    gate.run_scenario(session, "tobe", log=quiet)
+    for d in session.scalars(select(GateDecision).where(GateDecision.scenario == "tobe")):
+        assert [s["step"] for s in d.steps][:3] == ["register", "screen", "extract"], d.doc_id
+        assert step(d, "screen")["result"] == "ok" and "no hidden instructions" in step(d, "screen")["detail"]
+        assert d.details["registration_lag_days"] == 0 and d.doc_id in step(d, "register")["detail"]
+        assert "ap@velox.com" in step(d, "register")["detail"]  # one intake address (brief v2 section 4)
+
+
+def test_amount_above_the_approval_limit_is_a_human_review_by_the_next_approver(session: Session) -> None:
+    """Document 1: 27,846.00 EUR ~ CHF 26,175 (simulated rate 0.94) > CHF 25,000 (VDE) -> Human review, next approver
+    Stefan Keller, SLA 2. Just under the limit it posts."""
+    docs = load(session, "tobe")
+    d = gate.process(session, docs[1], log=quiet)
+    assert (d.outcome, d.exception_type, d.owner_name, d.owner_role, d.sla_days, d.simulated_days) == (
+        "human_review", "amount_above_approval_limit", "Stefan Keller", "Next approver in the matrix", 2, 2)
+    assert (d.details["gross_chf"], d.details["owner_title"], d.details["posted"]) == (
+        26175.24, "Finance director DE", False)
+    assert step(d, "approval_limit")["result"] == "human_review"
+    assert ("27,846.00 EUR ≈ CHF 26,175 (simulated rate 0.94) is above the CHF 25,000 approval limit of VDE: Human "
+            "review by the next approver in the matrix, Stefan Keller (Finance director DE).") == d.reason
+    patch(docs[1], gross_total=(26595.0, 0.99))  # ~ CHF 24,999.30
+    d = gate.process(session, docs[1], log=quiet)
+    assert (d.outcome, d.details["touchless"]) == ("posted", True)
+    assert "within the CHF 25,000 approval limit of VDE" in step(d, "approval_limit")["detail"]
+
+
+def test_the_approval_limit_converts_other_currencies_at_the_simulated_rate(session: Session) -> None:
+    """Document 12 (Harbor, 17,250.00 USD ~ CHF 13,800 at 0.80) posts; at 31,300 USD (~ CHF 25,040) it goes to the
+    US next approver."""
+    doc = load(session, "tobe")[12]
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.details["gross_chf"]) == ("posted", 13800.0)
+    patch(doc, gross_total=(31300.0, 0.99))
+    d = gate.process(session, doc, log=quiet)
+    assert (d.outcome, d.owner_name) == ("human_review", "Michael Grant")
+
+
+def test_the_duplicate_rule_also_matches_the_same_amount_and_date(session: Session) -> None:
+    """Brief v2: same supplier + invoice number, or same amount + date (billed to the same entity) -> Block. The
+    reason names the leg that matched."""
+    docs = load(session, "tobe")
+    patch(docs[2], invoice_number=("NWL-2026-00999", 0.99))  # a new number, same amount and date as B-01
+    gate.run_scenario(session, "tobe", log=quiet)
+    d = decision(session, "B-02")
+    assert (d.outcome, d.details["duplicate_of"], d.sla_days) == ("blocked_duplicate", "B-01", None)
+    assert d.details["duplicate_leg"] == "same amount 27,846.00 EUR and date 30 Sep 2026"
+    assert "Block before posting; AP replies to the supplier with the status (Marco Ruiz)" in d.reason
+    assert "automatic" not in d.reason
+
+
+def test_the_past_sla_item_is_resolved_late_in_the_simulation(session: Session) -> None:
+    """Document 6 (Atlas) is the demo cockpit's one item past its SLA: resolved 3 business days after its 2-day
+    SLA, so its simulated cycle time is 5 (brief v2 section 7, step 3)."""
+    load(session, "tobe")
+    gate.run_scenario(session, "tobe", log=quiet)
+    d = decision(session, "B-06")
+    assert d.details["cycle_breakdown"] == {"registration": 0, "extraction_and_gate": 0, "exception_sla": 2,
+                                           "past_sla": 3, "posting": 0}
+    assert d.simulated_days == 5 and decision(session, "B-05").simulated_days == 2
+
+
+def test_nothing_is_touchless_in_the_asis(session: Session) -> None:
+    """Deck slide 11: touchless ~0% today. AP keys every as-is document, clean ones included."""
+    load(session, "asis")
+    gate.run_scenario(session, "asis", log=quiet)
+    decisions = list(session.scalars(select(GateDecision).where(GateDecision.scenario == "asis")))
+    assert decisions and not any(d.details["touchless"] for d in decisions)
+    posted = [d for d in decisions if d.outcome == "posted" and d.details["doc_type"] != "credit_note"]
+    assert posted and all("AP keyed it and posted it" in d.reason for d in posted)
+    assert all("quick-fix" not in (d.reason or "") for d in decisions)

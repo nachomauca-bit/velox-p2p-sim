@@ -33,6 +33,9 @@ def assert_round_trip(spec: world.DocumentSpec) -> dict:
     for name in FIELDS:
         if name == "notes":
             continue
+        if name == "doc_type" and spec.read_as:  # UBL has no reminder or statement: it is rendered as its layout type
+            assert parsed[name]["value"] == spec.doc_type, name
+            continue
         assert parsed[name]["value"] == truth[name]["value"], name
         assert parsed[name]["confidence"] == (1.0 if truth[name]["value"] is not None else 0.0), name
     assert parsed["notes"] == {"value": ubl.UBL_NOTES, "confidence": 1.0}
@@ -125,11 +128,11 @@ def test_render_writes_a_credit_note_with_positive_amounts():
     (3, "S", "20"),  # French VAT 20%
     (5, "AE", "0"),  # reverse charge
     (6, "K", "0"),  # intra-Community supply
-    (12, "G", "0"),  # export
+    ("v2-15", "G", "0"),  # export (Lumen, test set v2: no export among the twelve case documents)
     (7, "O", None),  # US: outside the scope of VAT, no rate
 ])
 def test_tax_category_follows_the_rate_and_the_legal_mention(no, category, percent):
-    spec = world.DOCUMENT_BY_NO[no]
+    spec = world.document_for("v2", 15) if no == "v2-15" else world.DOCUMENT_BY_NO[no]
     root = ET.fromstring(ubl.render_ubl(spec))
     tax = root.find("cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory", NS)
     assert tax.findtext("cbc:ID", namespaces=NS) == category
@@ -147,7 +150,7 @@ def test_render_keeps_us_and_attention_details():
     assert supplier.findtext("cac:PartyTaxScheme/cac:TaxScheme/cbc:ID", namespaces=NS) == "TAX"  # an EIN
     assert supplier.findtext("cac:PostalAddress/cbc:CountrySubentity", namespaces=NS) == "CA"
     assert shopsys.findtext("cac:PaymentMeans/cbc:PaymentMeansCode", namespaces=NS) == "30"  # not SEPA
-    kaffee = ET.fromstring(ubl.render_ubl(world.DOCUMENT_BY_NO[10]))
+    kaffee = ET.fromstring(ubl.render_ubl(world.DOCUMENT_BY_NO[9]))
     customer = kaffee.find("cac:AccountingCustomerParty/cac:Party", NS)
     assert customer.findtext("cac:Contact/cbc:Name", namespaces=NS) == "Store Berlin 01"
     assert customer.findtext("cac:PostalAddress/cbc:StreetName", namespaces=NS) == "Rosenthaler Strasse 40"

@@ -3,17 +3,17 @@
   "file_sha256": "1360d3ff1c9afe867e5be53e7820c612d3115681dafc64dfb15b596878a56eb5",
   "model": "gemini-3.8-flash",
   "backend": "aistudio",
-  "created_on": "2026-09-25T18:01:54",
-  "latency_ms": 5078,
+  "created_on": "2026-09-26T09:55:35",
+  "latency_ms": 4984,
   "usage": {
-    "input_tokens": 1495,
-    "output_tokens": 1317,
-    "thinking_tokens": 825
+    "input_tokens": 1522,
+    "output_tokens": 1188,
+    "thinking_tokens": 695
   },
   "extraction": {
     "doc_type": {
-      "value": "invoice",
-      "confidence": 0.95
+      "value": "reminder",
+      "confidence": 0.99
     },
     "supplier_name": {
       "value": "NORDWIND LOGISTICS",
@@ -97,7 +97,7 @@
       "confidence": 0.99
     },
     "notes": {
-      "value": "Payment reminder and copy of invoice with COPY watermark. Contract ref: CT-2025-001.",
+      "value": "Payment reminder — copy of invoice. Contract ref. CT-2025-001. Watermark COPY.",
       "confidence": 0.95
     }
   }

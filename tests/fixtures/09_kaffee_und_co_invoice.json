@@ -1,5 +1,5 @@
 {
-  "file_name": "12_lumen_lighting_invoice.pdf",
+  "file_name": "09_kaffee_und_co_invoice.pdf",
   "file_sha256": null,
   "model": "fixture (ground truth, no API call)",
   "created_on": "2026-10-01T00:00:00",
@@ -11,19 +11,19 @@
       "confidence": 0.99
     },
     "supplier_name": {
-      "value": "Lumen Store Lighting Ltd",
+      "value": "Kaffee & Co OHG",
       "confidence": 0.99
     },
     "supplier_vat_id": {
-      "value": "GB618273940",
+      "value": "DE274619385",
       "confidence": 0.99
     },
     "supplier_iban": {
-      "value": "GB07LOYD30963412345678",
+      "value": "DE75120300001020304050",
       "confidence": 0.99
     },
     "supplier_country": {
-      "value": "GB",
+      "value": "DE",
       "confidence": 0.99
     },
     "bill_to_name": {
@@ -31,11 +31,11 @@
       "confidence": 0.99
     },
     "bill_to_vat_id": {
-      "value": "DE298765431",
-      "confidence": 0.99
+      "value": null,
+      "confidence": 0.0
     },
     "invoice_number": {
-      "value": "LSL-INV-5521",
+      "value": "2026/117",
       "confidence": 0.99
     },
     "invoice_date": {
@@ -43,11 +43,11 @@
       "confidence": 0.99
     },
     "due_date": {
-      "value": "2026-10-30",
+      "value": "2026-10-14",
       "confidence": 0.99
     },
     "payment_terms_days": {
-      "value": 30,
+      "value": 14,
       "confidence": 0.99
     },
     "currency": {
@@ -55,22 +55,20 @@
       "confidence": 0.99
     },
     "net_total": {
-      "value": 5200.0,
+      "value": 151.26,
       "confidence": 0.99
     },
     "tax_total": {
-      "value": 0.0,
+      "value": 28.74,
       "confidence": 0.99
     },
     "gross_total": {
-      "value": 5200.0,
+      "value": 180.0,
       "confidence": 0.99
     },
     "po_numbers": {
-      "value": [
-        "4500112"
-      ],
-      "confidence": 0.99
+      "value": null,
+      "confidence": 0.0
     },
     "referenced_invoice_number": {
       "value": null,
@@ -79,16 +77,22 @@
     "lines": {
       "value": [
         {
-          "description": "LED track spotlight 30W",
-          "quantity": 80,
-          "unit_price": 40.0,
-          "amount": 3200.0
+          "description": "Coffee beans, espresso blend 1 kg",
+          "quantity": 6,
+          "unit_price": 18.5,
+          "amount": 111.0
         },
         {
-          "description": "LED panel 600x600 40W",
-          "quantity": 40,
-          "unit_price": 50.0,
-          "amount": 2000.0
+          "description": "Oat milk 1 l, carton of 12",
+          "quantity": 2,
+          "unit_price": 14.98,
+          "amount": 29.96
+        },
+        {
+          "description": "Delivery",
+          "quantity": 1,
+          "unit_price": 10.3,
+          "amount": 10.3
         }
       ],
       "confidence": 0.99

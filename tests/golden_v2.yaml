@@ -1,153 +1,227 @@
 # Expected control-gate result per document of test set v2 (docs/TEST_SET_V2.md) and scenario, with the
 # ground-truth fixtures in tests/fixtures_v2/ (scans carry simulated confidences), the UBL parser for document
 # 11 and no extraction for document 14 (email body). Same keys as tests/golden.yaml. Drives tests/test_golden_v2.py.
+#
+# Brief v2 (25 Sep 2026) changed these results, each for a stated rule:
+#   as-is: AP keys every document, so nothing is touchless; the account AP opens for doc 26 is V-000131
+#   1, 12 to-be: above the CHF 25,000 approval limit (27,846 EUR, 40,000 EUR) -> Human review, next approver
+#   2 to-be: Block has no SLA ("—") and is not touchless (never posted)
+#   3 to-be: a statement -> Supplier payment-status query (agent drafts, AP approves), no SLA
+#   20, 25 to-be: Shopsys and QuickPrint keep one record each (VUS, VFR); billed to VDE -> Wrong legal entity
+#   22 to-be: Kaffee & Co small store purchase -> card / catalogue CAT-2026-001 (was a DoA auto-approval)
+#   24 to-be: PO not found -> the requester of the supplier's latest PO in VDE (A3: requester)
 
 documents:
   1:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000101, posted: true, posted_entity: VDE,
-           wrong_entity_posting: false, touchless: false}
-    tobe: {outcome: posted, exception_type: null, account: V-000101, posted: true, posted_entity: VDE,
-           commitment: contract, contract_id: CT-2025-001, flags: [], touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000101,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 15}
+    tobe: {outcome: human_review, exception_type: amount_above_approval_limit, owner_name: Stefan Keller,
+           sla_days: 2, account: V-000101, resolution_method: vat_id, posted: false, commitment: contract,
+           contract_id: CT-2025-001, touchless: false, first_pass_match: true, terms_source: master,
+           terms_days: 30, simulated_days: 2}
   2:
-    asis: {outcome: blocked_duplicate, exception_type: duplicate_invoice, owner_name: null, account: V-000101,
-           posted: false, duplicate_of: A2-01, touchless: false}
-    tobe: {outcome: blocked_duplicate, exception_type: duplicate_invoice, owner_name: Marco Ruiz, sla_days: 0,
-           account: V-000101, posted: false, duplicate_of: B2-01, touchless: true}
+    asis: {outcome: blocked_duplicate, exception_type: duplicate_invoice, owner_name: null, sla_days: null,
+           account: V-000101, resolution_method: exact_name, posted: false, duplicate_of: A2-01, touchless: false,
+           first_pass_match: false, simulated_days: 9}
+    tobe: {outcome: blocked_duplicate, exception_type: duplicate_invoice, owner_name: Marco Ruiz, sla_days: null,
+           account: V-000101, resolution_method: vat_id, posted: false, duplicate_of: B2-01, touchless: false,
+           first_pass_match: false, simulated_days: 0}
   3:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000101, posted: true, posted_entity: VDE,
-           touchless: false}
-    tobe: {outcome: exception, exception_type: not_an_invoice, owner_name: Marco Ruiz, sla_days: 1, posted: false,
-           touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000101,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: master, terms_days: 30, simulated_days: 18}
+    tobe: {outcome: exception, exception_type: payment_status_query, owner_name: Marco Ruiz, sla_days: null,
+           account: null, posted: false, touchless: false, first_pass_match: false, simulated_days: 0}
   4:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000104, posted: true, posted_entity: VDE,
-           wrong_entity_posting: false}
-    tobe: {outcome: posted, account: V-000104, posted_entity: VDE, commitment: contract, contract_id: CT-2025-002,
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000104,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 21}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000104,
+           resolution_method: vat_id, posted: true, posted_entity: VDE, commitment: contract,
+           contract_id: CT-2025-002, touchless: true, first_pass_match: true, terms_source: master, terms_days: 30,
+           simulated_days: 0}
   5:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000104, posted: true, posted_entity: VDE,
-           wrong_entity_posting: true}
-    tobe: {outcome: posted, account: V-000113, posted_entity: VFR, commitment: contract, contract_id: CT-2025-003,
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000104,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, wrong_entity_posting: true,
+           commitment: none, touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 30,
+           simulated_days: 16}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000113,
+           resolution_method: vat_id, posted: true, posted_entity: VFR, commitment: contract,
+           contract_id: CT-2025-003, touchless: true, first_pass_match: true, terms_source: master, terms_days: 30,
+           simulated_days: 0}
   6:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000102, posted: true, posted_entity: VFR}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000102,
+           resolution_method: exact_name, posted: true, posted_entity: VFR, commitment: none, po_number: "4500121",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 45, simulated_days: 16}
     tobe: {outcome: exception, exception_type: po_no_receipt, owner_name: Camille Martin, sla_days: 2,
-           account: V-000102, posted: false, commitment: po, po_number: "4500121", touchless: false}
+           account: V-000102, resolution_method: vat_id, posted: false, commitment: po, po_number: "4500121",
+           touchless: false, first_pass_match: false, simulated_days: 2}
   7:
-    asis: {outcome: posted, account: V-000108, posted: true, posted_entity: VFR, credit_status: unapplied,
-           touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000108,
+           resolution_method: exact_name, posted: true, posted_entity: VFR, credit_status: unapplied,
+           touchless: false, first_pass_match: false, simulated_days: 2}
     tobe: {outcome: exception, exception_type: credit_note_without_invoice, owner_name: Marco Ruiz, sla_days: 2,
-           account: V-000108, posted: false, touchless: false}
+           account: V-000108, resolution_method: vat_id, posted: false, touchless: false, first_pass_match: false,
+           simulated_days: 2}
   8:
-    asis: {outcome: posted, exception_type: null, account: V-000108, posted: true, posted_entity: VFR,
-           commitment: po, po_number: "4500114", touchless: true}
-    tobe: {outcome: posted, account: V-000108, posted_entity: VFR, commitment: po, po_number: "4500114",
-           touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000108,
+           resolution_method: exact_name, posted: true, posted_entity: VFR, commitment: po, po_number: "4500114",
+           touchless: false, first_pass_match: true, terms_source: invoice, terms_days: 30, simulated_days: 2}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000108,
+           resolution_method: vat_id, posted: true, posted_entity: VFR, commitment: po, po_number: "4500114",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 30, simulated_days: 0}
   9:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000106, posted: true, posted_entity: VDE,
-           wrong_entity_posting: true, touchless: false}
-    tobe: {outcome: posted, account: V-000115, posted_entity: VFR, commitment: po, po_number: "4500105",
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000106,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, wrong_entity_posting: true,
+           commitment: none, po_number: "4500105", touchless: false, first_pass_match: false,
+           terms_source: invoice, terms_days: 60, simulated_days: 20}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000115,
+           resolution_method: vat_id, posted: true, posted_entity: VFR, commitment: po, po_number: "4500105",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 60, simulated_days: 0}
   10:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000106, posted: true, posted_entity: VDE,
-           wrong_entity_posting: false}
-    tobe: {outcome: posted, account: V-000106, posted_entity: VDE, commitment: po, po_number: "4500109",
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000106,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, po_number: "4500109",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 60, simulated_days: 20}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000106,
+           resolution_method: vat_id, posted: true, posted_entity: VDE, commitment: po, po_number: "4500109",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 60, simulated_days: 0}
   11:
-    asis: {outcome: posted, exception_type: null, account: V-000107, posted: true, posted_entity: VDE,
-           commitment: po, po_number: "4500126", touchless: true}
-    tobe: {outcome: posted, account: V-000107, posted_entity: VDE, commitment: po, po_number: "4500126",
-           touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000107,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: po, po_number: "4500126",
+           touchless: false, first_pass_match: true, terms_source: invoice, terms_days: 30, simulated_days: 2}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000107,
+           resolution_method: vat_id, posted: true, posted_entity: VDE, commitment: po, po_number: "4500126",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 30, simulated_days: 0}
   12:
-    asis: {outcome: posted, exception_type: null, account: V-000103, posted: true, posted_entity: VDE,
-           commitment: po, po_number: "4500101", touchless: true}
-    tobe: {outcome: posted, account: V-000103, posted_entity: VDE, commitment: po, po_number: "4500101",
-           touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000103,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: po, po_number: "4500101",
+           touchless: false, first_pass_match: true, terms_source: invoice, terms_days: 30, simulated_days: 2}
+    tobe: {outcome: human_review, exception_type: amount_above_approval_limit, owner_name: Stefan Keller,
+           sla_days: 2, account: V-000103, resolution_method: vat_id, posted: false, commitment: po,
+           po_number: "4500101", touchless: false, first_pass_match: true, terms_source: master, terms_days: 30,
+           simulated_days: 2}
   13:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000109, posted: true, posted_entity: VDE}
-    tobe: {outcome: human_review, exception_type: human_review, owner_name: Marco Ruiz, sla_days: 1, posted: false,
-           touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000109,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 14, simulated_days: 22}
+    tobe: {outcome: human_review, exception_type: human_review, owner_name: Marco Ruiz, sla_days: 1, account: null,
+           posted: false, touchless: false, first_pass_match: false, simulated_days: 1}
   14:
-    asis: {outcome: exception, exception_type: email_loop, account: null, posted: false, touchless: false}
-    tobe: {outcome: human_review, exception_type: human_review, owner_name: Marco Ruiz, sla_days: 1, posted: false,
-           touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: null,
+           posted: false, touchless: false, first_pass_match: false, simulated_days: 22}
+    tobe: {outcome: human_review, exception_type: human_review, owner_name: Marco Ruiz, sla_days: 1, account: null,
+           posted: false, touchless: false, first_pass_match: false, simulated_days: 1}
   15:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000112, posted: true, posted_entity: VDE}
-    tobe: {outcome: posted, account: V-000112, posted_entity: VDE, commitment: po, po_number: "4500112",
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000112,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, po_number: "4500112",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 15}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000112,
+           resolution_method: vat_id, posted: true, posted_entity: VDE, commitment: po, po_number: "4500112",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 30, simulated_days: 0}
   16:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000110, posted: true, posted_entity: VDE}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000110,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, po_number: "4500128",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 20}
     tobe: {outcome: exception, exception_type: po_no_receipt, owner_name: Felix Braun, sla_days: 2,
-           account: V-000110, posted: false, commitment: po, touchless: false}
+           account: V-000110, resolution_method: vat_id, posted: false, commitment: po, po_number: "4500130",
+           touchless: false, first_pass_match: false, simulated_days: 2}
   17:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000105, posted: true, posted_entity: VUS}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000105,
+           resolution_method: exact_name, posted: true, posted_entity: VUS, commitment: po, po_number: "4500131",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 20}
     tobe: {outcome: exception, exception_type: price_qty_mismatch, owner_name: Daniel Price, sla_days: 2,
-           account: V-000105, posted: false, commitment: po, po_number: "4500131", touchless: false}
+           account: V-000105, resolution_method: vat_id, posted: false, commitment: po, po_number: "4500131",
+           touchless: false, first_pass_match: false, terms_source: master, terms_days: 30, simulated_days: 2}
   18:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000111, posted: true, posted_entity: VUS}
-    tobe: {outcome: posted, account: V-000111, posted_entity: VUS, commitment: contract, contract_id: CT-2025-004,
-           touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000111,
+           resolution_method: exact_name, posted: true, posted_entity: VUS, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 22}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000111,
+           resolution_method: vat_id, posted: true, posted_entity: VUS, commitment: contract,
+           contract_id: CT-2025-004, touchless: true, first_pass_match: true, terms_source: master, terms_days: 30,
+           simulated_days: 0}
   19:
-    asis: {outcome: posted, account: V-000111, posted: true, posted_entity: VUS, credit_status: applied,
-           touchless: true}
-    tobe: {outcome: applied_credit, account: V-000111, credit_status: applied, touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000111,
+           resolution_method: exact_name, posted: true, posted_entity: VUS, credit_status: applied,
+           touchless: false, first_pass_match: false, simulated_days: 2}
+    tobe: {outcome: applied_credit, exception_type: null, owner_name: null, sla_days: null, account: V-000111,
+           resolution_method: vat_id, posted: true, posted_entity: VUS, credit_status: applied, touchless: true,
+           first_pass_match: false, simulated_days: 0}
   20:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000105, posted: true, posted_entity: VUS,
-           wrong_entity_posting: true}
-    tobe: {outcome: exception, exception_type: po_no_receipt, owner_name: Felix Braun, sla_days: 2,
-           account: V-000114, posted: false, commitment: po, po_number: "4500107", touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000105,
+           resolution_method: exact_name, posted: true, posted_entity: VUS, wrong_entity_posting: true,
+           commitment: none, po_number: "4500107", touchless: false, first_pass_match: false,
+           terms_source: invoice, terms_days: 30, simulated_days: 18}
+    tobe: {outcome: exception, exception_type: wrong_legal_entity, owner_name: Marco Ruiz, sla_days: 1,
+           account: V-000105, resolution_method: vat_id, posted: false, po_number: "4500107", touchless: false,
+           first_pass_match: false, simulated_days: 1}
   21:
-    asis: {outcome: posted, exception_type: null, account: V-000102, posted: true, posted_entity: VFR,
-           commitment: po, po_number: "4500117", touchless: true}
-    tobe: {outcome: posted, account: V-000102, posted_entity: VFR, commitment: po, po_number: "4500117",
-           touchless: true}
+    asis: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000102,
+           resolution_method: exact_name, posted: true, posted_entity: VFR, commitment: po, po_number: "4500117",
+           touchless: false, first_pass_match: true, terms_source: invoice, terms_days: 45, simulated_days: 2}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000102,
+           resolution_method: vat_id, posted: true, posted_entity: VFR, commitment: po, po_number: "4500117",
+           touchless: true, first_pass_match: true, terms_source: master, terms_days: 45, simulated_days: 0}
   22:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000109, posted: true, posted_entity: VDE}
-    tobe: {outcome: posted, account: V-000109, posted_entity: VDE, commitment: none, doa_auto_approved: true,
-           requester_name: Paul Neumann, touchless: true}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000109,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 14, simulated_days: 21}
+    tobe: {outcome: posted, exception_type: null, owner_name: null, sla_days: null, account: V-000109,
+           resolution_method: vat_id, posted: true, posted_entity: VDE, commitment: catalogue,
+           catalogue_id: CAT-2026-001, touchless: true, first_pass_match: true, terms_source: master,
+           terms_days: 14, simulated_days: 0}
   23:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000101, posted: true, posted_entity: VDE}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000101,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 18}
     tobe: {outcome: exception, exception_type: no_po, owner_name: Nina Hoffmann, sla_days: 2, account: V-000101,
-           posted: false, touchless: false, simulated_days: 3}
+           resolution_method: vat_id, posted: false, commitment: none, touchless: false, first_pass_match: false,
+           simulated_days: 3}
   24:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000112, posted: true, posted_entity: VDE}
-    tobe: {outcome: exception, exception_type: po_not_found, owner_name: Marco Ruiz, sla_days: 2,
-           account: V-000112, posted: false, touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000112,
+           resolution_method: exact_name, posted: true, posted_entity: VDE, commitment: none, po_number: "4500999",
+           touchless: false, first_pass_match: false, terms_source: invoice, terms_days: 30, simulated_days: 19}
+    tobe: {outcome: exception, exception_type: po_not_found, owner_name: Jonas Weber, sla_days: 2,
+           account: V-000112, resolution_method: vat_id, posted: false, commitment: none, po_number: "4500999",
+           touchless: false, first_pass_match: false, simulated_days: 2}
   25:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000108, posted: true, posted_entity: VFR,
-           wrong_entity_posting: true}
-    tobe: {outcome: exception, exception_type: po_no_receipt, owner_name: Anna Schulz, sla_days: 2,
-           account: V-000116, posted: false, commitment: po, po_number: "4500119", touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000108,
+           resolution_method: exact_name, posted: true, posted_entity: VFR, wrong_entity_posting: true,
+           commitment: none, po_number: "4500119", touchless: false, first_pass_match: false,
+           terms_source: invoice, terms_days: 30, simulated_days: 15}
+    tobe: {outcome: exception, exception_type: wrong_legal_entity, owner_name: Marco Ruiz, sla_days: 1,
+           account: V-000108, resolution_method: vat_id, posted: false, po_number: "4500119", touchless: false,
+           first_pass_match: false, simulated_days: 1}
   26:
-    asis: {outcome: exception, exception_type: email_loop, account: V-000129, resolution_method: created,
-           posted: true, posted_entity: VDE}
-    tobe: {outcome: exception, exception_type: unknown_vendor, owner_name: Lena Fischer, sla_days: 2, posted: false,
-           touchless: false}
+    asis: {outcome: exception, exception_type: email_loop, owner_name: null, sla_days: null, account: V-000131,
+           resolution_method: created, posted: true, posted_entity: VDE, commitment: none, touchless: false,
+           first_pass_match: false, terms_source: invoice, terms_days: 14, simulated_days: 21}
+    tobe: {outcome: exception, exception_type: unknown_vendor, owner_name: Lena Fischer, sla_days: 2,
+           account: null, posted: false, touchless: false, first_pass_match: false, simulated_days: 2}
 
+# Scenario-level numbers: the four metrics of deck slide 11 (A6 definitions, metrics.py) and the fifth indicator;
+# documents, touchless and exceptions are the run summary counts.
 kpis:
   asis:
     documents: 26
-    touchless: 6              # docs 7, 8, 11, 12, 19, 21
-    touchless_rate: 23.1
+    touchless: 0              # AP keys every document
     exceptions: 19            # all in the untracked email loop
     exceptions_by_type: {email_loop: 19}
-    duplicates_blocked: 1     # doc 2: same account, so even the naive check catches it
-    duplicate_postings: 0
-    credit_notes_applied: 1   # doc 19: same account as its invoice
-    credit_notes_unapplied: 1 # doc 7: no reference
-    wrong_entity_postings: 4  # docs 5, 9, 20, 25
-    non_invoice_postings: 1   # doc 3: the statement posted as an invoice
-    cash_leakage_amount: 56765.0  # unapplied credit 240.00 + statement posted 56,525.00
+    first_pass_match_rate: 16.7   # 4 of 24 invoices (credit notes excluded)
+    accounts_per_supplier: 2.23   # 29 records (28 + V-000131 opened by AP for doc 26) / 13 suppliers (Berliner Blumen too)
+    touchless_rate: 0.0
+    cycle_time_median: 18.0
+    registered_same_day: 0.0
   tobe:
     documents: 26
-    touchless: 14             # docs 1, 2, 4, 5, 8, 9, 10, 11, 12, 15, 18, 19, 21, 22
-    touchless_rate: 53.8
-    exceptions: 12
-    exceptions_by_type: {not_an_invoice: 1, po_no_receipt: 4, credit_note_without_invoice: 1, human_review: 2,
-                         price_qty_mismatch: 1, no_po: 1, po_not_found: 1, unknown_vendor: 1}
-    duplicates_blocked: 1
-    duplicate_postings: 0
-    credit_notes_applied: 1
-    credit_notes_unapplied: 0
-    wrong_entity_postings: 0
-    non_invoice_postings: 0
-    cash_leakage_amount: 0.0
+    touchless: 11             # docs 4, 5, 8, 9, 10, 11, 15, 18, 19, 21, 22
+    exceptions: 14
+    exceptions_by_type: {no_po: 1, po_no_receipt: 2, price_qty_mismatch: 1, po_not_found: 1, unknown_vendor: 1,
+                         wrong_legal_entity: 2, credit_note_without_invoice: 1, human_review: 2,
+                         payment_status_query: 1, amount_above_approval_limit: 2}
+    first_pass_match_rate: 50.0   # 12 of 24: a stress set, most documents are designed to hit a rule
+    accounts_per_supplier: 1.17
+    touchless_rate: 45.8          # 11 of 24 posted
+    cycle_time_median: 1.0
+    registered_same_day: 100.0

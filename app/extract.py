@@ -66,6 +66,8 @@ def is_fixture_model(model: Optional[str]) -> bool:
 class DocType(str, Enum):
     invoice = "invoice"
     credit_note = "credit_note"
+    reminder = "reminder"
+    statement = "statement"
     other = "other"
 
 
@@ -138,11 +140,11 @@ FIELDS: tuple[str, ...] = tuple(InvoiceExtraction.model_fields)
 FIELD_LABELS: dict[str, str] = {
     "doc_type": "Document type",
     "supplier_name": "Supplier name",
-    "supplier_vat_id": "Supplier VAT ID",
+    "supplier_vat_id": "Supplier tax ID (VAT)",
     "supplier_iban": "Supplier IBAN / bank account",
     "supplier_country": "Supplier country",
     "bill_to_name": "Bill-to name",
-    "bill_to_vat_id": "Bill-to VAT ID",
+    "bill_to_vat_id": "Bill-to tax ID (VAT)",
     "invoice_number": "Invoice number",
     "invoice_date": "Invoice date",
     "due_date": "Due date",
@@ -339,8 +341,9 @@ General rules
   lower when you had to infer it, choose between several candidates, or the text is partially legible.
 
 Field rules
-- doc_type: "invoice", "credit_note" or "other" (e.g. a statement or an order confirmation). A payment
-  reminder or copy that reproduces an invoice is "invoice".
+- doc_type: "invoice", "credit_note", "reminder" (a payment reminder, also when it reproduces an invoice),
+  "statement" (a statement of account that lists open items) or "other" (e.g. an order confirmation). A plain
+  copy of an invoice without a reminder is "invoice".
 - supplier_name: the issuing company's name as printed on this document.
 - supplier_country: ISO 3166-1 alpha-2 code of the supplier's address (e.g. DE, FR, GB, NL, ES, CH, US).
 - supplier_vat_id and bill_to_vat_id: the tax identifier (VAT ID, UID, EIN, ...) without the label in front
@@ -722,9 +725,13 @@ def extract_file(pdf_path: Path, *, force: bool = False, allow_api: bool = True)
     return result
 
 
+DOC_TYPES = tuple(t.value for t in DocType)  # invoice | credit_note | reminder | statement | other
+
+
 def _doc_type_from(data: dict[str, Any]) -> str:
+    """The document type as read; "unknown" when nothing usable was read."""
     value = (data.get("doc_type") or {}).get("value")
-    return value if value in ("invoice", "credit_note") else "unknown"
+    return value if value in DOC_TYPES else "unknown"
 
 
 def _save_result(session: Session, doc: InboundDocument, result: ExtractionResult) -> Extraction:
@@ -823,7 +830,7 @@ def _sample_numbers(text: str) -> list[int]:
 
 
 def _dataset_documents(dataset: str) -> tuple[list[world.DocumentSpec], Path]:
-    """The sample documents of a dataset and their folder: v1 = the 14 case documents, v2 = test set v2."""
+    """The sample documents of a dataset and their folder: v1 = the 12 case documents, v2 = test set v2."""
     if dataset == "v2":
         return list(world.documents_for("v2")), config.INVOICES_V2_DIR
     return list(world.DOCUMENTS), config.INVOICES_DIR
@@ -891,7 +898,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Extract the sample documents with a Gemini model "
                                                  "(cached on disk; UBL e-invoices are parsed without a model).")
     parser.add_argument("--dataset", choices=("v1", "v2"), default="v1",
-                        help="v1 = the 14 case documents (default), v2 = test set v2 (26 documents)")
+                        help="v1 = the 12 case documents (default), v2 = test set v2 (26 documents)")
     parser.add_argument("--force-extract", action="store_true", help="call the API even if a cached result exists")
     parser.add_argument("--only", type=_sample_numbers, metavar="1,5,12",
                         help="comma-separated sample document numbers (default: all of the dataset)")

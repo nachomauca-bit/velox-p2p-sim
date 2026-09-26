@@ -9,8 +9,9 @@
 {% for label, tone in items %}<span class="badge-mini badge-{{ tone }}">{{ label }}</span> {% endfor %}
 {%- endmacro %}
 
-{% macro owner(name, role=None, next_name=None, next_role=None) -%}
-{% if name %}<strong>{{ name }}</strong>{% if role %} <small class="muted">{{ role }}</small>{% endif %}
+{# Owner cell: "Name · role" (the deck A3 role), the person's job title small; then the next owner. #}
+{% macro owner(name, role=None, next_name=None, next_role=None, title=None) -%}
+{% if name %}<strong>{{ name }}</strong>{% if role %} · {{ role }}{% endif %}{% if title and title != role %} <small class="muted">({{ title }})</small>{% endif %}
 {% else %}<span class="muted">—</span>{% endif %}
 {% if next_name %}<div class="next-owner">then <strong>{{ next_name }}</strong>{% if next_role %} <small class="muted">{{ next_role }}</small>{% endif %}</div>{% endif %}
 {%- endmacro %}
@@ -23,9 +24,9 @@
 </form>
 {%- endmacro %}
 
-{# KPI value. "Run the scenario" (a KPI that needs a run) -> a muted dash and a caption; "3 days (0 under the 500 EUR
-   DoA limit)" -> the value, and the parenthesis as a small note; "29,646.00 EUR" or "0.5 days" -> the number and a
-   smaller unit, the number never broken. #}
+{# Metric value. "Run the scenario" (a metric that needs a run) -> a muted dash and a caption; "0 (same day)" -> the
+   value, and the parenthesis as a small note; "72.7%" or "15 days" -> the number and a smaller unit, the number never
+   broken. #}
 {% macro value(text) -%}
 {%- set parts = (text or '—')|string -%}
 {%- if parts == 'Run the scenario' -%}<span class="na-dash" aria-hidden="true">—</span><small class="value-note">needs a run</small>

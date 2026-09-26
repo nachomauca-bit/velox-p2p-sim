@@ -35,7 +35,7 @@ def _sha256_by_name(folder: Path) -> dict[str, str]:
 
 
 def test_one_page_pdf_per_document(pdf_dir):
-    assert len(world.DOCUMENTS) == 14  # the 12 of the brief + 2 clean documents
+    assert len(world.DOCUMENTS) == 12  # the twelve case documents of brief v2
     for spec in world.DOCUMENTS:
         path = pdf_dir / spec.filename
         assert path.read_bytes().startswith(b"%PDF")
@@ -80,9 +80,9 @@ def test_credit_note(texts):
     assert "Please transfer" not in text
 
 
-def test_wrong_entity_invoice(texts):
-    assert "Velox Retail SAS" in texts[8]
-    assert "4500126" in texts[8]
+def test_bill_to_entity_and_po_are_printed(texts):
+    assert "Velox Retail SAS" in texts[8]  # QuickPrint, billed to the French entity
+    assert "4500114" in texts[8]
 
 
 def test_price_mismatch_invoice_shows_unit_price_44(texts):
@@ -90,7 +90,7 @@ def test_price_mismatch_invoice_shows_unit_price_44(texts):
 
 
 def test_store_invoice_has_attention_line_and_no_bill_to_vat(texts):
-    text, entity = texts[10], world.LEGAL_ENTITY_BY_CODE["VDE"]
+    text, entity = texts[9], world.LEGAL_ENTITY_BY_CODE["VDE"]
     assert "Store Berlin 01" in text
     assert "Rosenthaler Strasse 40" in text
     assert fmt_vat(entity.vat_id, entity.country) not in text
@@ -99,7 +99,7 @@ def test_store_invoice_has_attention_line_and_no_bill_to_vat(texts):
 
 def test_contract_references(texts):
     assert "Contract ref. CT-2025-001" in texts[1]
-    assert "Contract ref. CT-2025-003" in texts[11]
+    assert "Contract ref. CT-2025-003" in texts[10]
 
 
 def test_supplier_identity_blocks(texts):

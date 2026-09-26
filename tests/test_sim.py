@@ -72,22 +72,20 @@ def test_business_days_between_inverts_add_business_days() -> None:
 # Registration per scenario and channel (brief section 6)
 # --------------------------------------------------------------------------------------------
 
-# Expected as-is registration of the 14 sample documents: ap@ +1 business day, store mailbox +7.
+# Expected as-is registration of the 12 case documents: ap@ +1 business day, store mailbox +7.
 ASIS_REGISTERED_ON = {
     1: datetime(2026, 10, 2, 8, 42),
-    2: datetime(2026, 10, 26, 16, 5),  # store mailbox, received Thu 15 Oct
+    2: datetime(2026, 10, 13, 8, 15),  # store mailbox, received Fri 2 Oct
     3: datetime(2026, 10, 2, 9, 15),
     4: datetime(2026, 10, 5, 11, 30),  # received Fri -> Mon
-    5: datetime(2026, 10, 2, 14, 2),
-    6: datetime(2026, 10, 5, 10, 21),
+    5: datetime(2026, 10, 5, 14, 2),  # received Fri 2 Oct (the demo's "Receive next email")
+    6: datetime(2026, 9, 29, 10, 21),  # received Mon 28 Sep
     7: datetime(2026, 10, 2, 7, 55),
-    8: datetime(2026, 10, 13, 13, 47),  # store mailbox, received Fri 2 Oct
-    9: datetime(2026, 10, 2, 10, 33),
-    10: datetime(2026, 10, 12, 12, 10),  # store mailbox, received Thu 1 Oct
-    11: datetime(2026, 10, 5, 9, 5),
-    12: datetime(2026, 10, 6, 8, 30),
-    13: datetime(2026, 10, 5, 14, 20),  # received Fri -> Mon
-    14: datetime(2026, 10, 2, 16, 40),
+    8: datetime(2026, 10, 2, 10, 33),
+    9: datetime(2026, 10, 12, 12, 10),  # store mailbox, received Thu 1 Oct
+    10: datetime(2026, 10, 5, 9, 5),  # received Fri -> Mon
+    11: datetime(2026, 10, 5, 14, 20),  # received Fri -> Mon
+    12: datetime(2026, 10, 2, 16, 40),
 }
 
 
@@ -113,7 +111,7 @@ def test_asis_registration_date(spec: world.DocumentSpec) -> None:
 
 def test_expected_dates_cover_all_documents_and_both_mailboxes() -> None:
     assert set(ASIS_REGISTERED_ON) == {d.no for d in world.DOCUMENTS}
-    assert {d.no for d in world.DOCUMENTS if d.channel == "store_mailbox"} == {2, 8, 10}
+    assert {d.no for d in world.DOCUMENTS if d.channel == "store_mailbox"} == {2, 9}
 
 
 # --------------------------------------------------------------------------------------------

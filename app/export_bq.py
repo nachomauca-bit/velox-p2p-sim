@@ -42,7 +42,7 @@ GATE_DETAIL_FIELDS = (
     ("gross_total", "FLOAT"), ("currency", "STRING"), ("account_id", "STRING"), ("bill_to_entity", "STRING"),
     ("posted_entity", "STRING"), ("po_number", "STRING"), ("contract_id", "STRING"), ("touchless", "BOOLEAN"),
     ("wrong_entity_posting", "BOOLEAN"), ("duplicate_posting", "BOOLEAN"), ("credit_status", "STRING"),
-    ("terms_variance_paid", "BOOLEAN"), ("doa_auto_approved", "BOOLEAN"),
+    ("terms_variance_paid", "BOOLEAN"), ("commitment", "STRING"), ("first_pass_match", "BOOLEAN"),
 )
 
 

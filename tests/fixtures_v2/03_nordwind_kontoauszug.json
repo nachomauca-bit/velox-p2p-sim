@@ -7,7 +7,7 @@
   "usage": null,
   "extraction": {
     "doc_type": {
-      "value": "other",
+      "value": "statement",
       "confidence": 0.99
     },
     "supplier_name": {

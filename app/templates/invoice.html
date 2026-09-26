@@ -76,6 +76,11 @@
         </span>
       </header>
       <div class="panel-body">
+        {% if registration.registered and registration.date == doc.received_on %}
+        <p class="reg-line">Registered <strong>{{ doc.doc_id }}</strong> <span class="sep" aria-hidden="true">·</span>
+          <span class="nowrap">{{ registration.date|dt }}</span> <span class="sep" aria-hidden="true">·</span> {{ doc.mailbox }}
+          <span class="sep" aria-hidden="true">·</span> clock started</p>
+        {% endif %}
         <dl class="doc-facts">
           <div><dt>Mailbox</dt><dd>{{ doc.mailbox }} <span class="muted">({{ channel_label }})</span></dd></div>
           <div><dt>Sender</dt><dd>{{ doc.sender_email }}</dd></div>
@@ -101,9 +106,9 @@
       </div>
     </article>
 
-    {% include "_gate_panel.html" %}
-
     {% include "_extraction_panel.html" %}
+
+    {% include "_gate_panel.html" %}
   </div>
 </div>
 {% endblock %}

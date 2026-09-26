@@ -1,0 +1,9 @@
+{
+  "doc_id": "B-06",
+  "exception_type": "price_qty_mismatch",
+  "model": "gemini-3.8-flash",
+  "created_on": "2026-09-26T10:53:01",
+  "latency_ms": 3951,
+  "prompt": "Facts:\n- Document type: invoice\n- Supplier: Atlas Displays SL\n- Invoice number: AD-2026/0788\n- Amount: 6,600 EUR\n- Purchase order: 4500109\n- Exception: Price or quantity mismatch\n- Gate finding: Line 1: 150 x 44.00 vs PO 4500109 at 42.00 (+300.00, tolerance 126.00): price outside tolerance, routed to the buyer Sofia Brandt (Buyer, Procurement DE).\n- Owner: Sofia Brandt (Buyer)\n- Owner first name: Sofia\n- Requested action: Agree a correction with the supplier or approve the variance\n- Due by: Wednesday 30 September 2026 (SLA 2 business days from registration)",
+  "text": "Sofia, invoice AD-2026/0788 from Atlas Displays SL (6,600 EUR) references PO 4500109, but line 1 has a price mismatch of 44.00 versus the PO price of 42.00, which is outside tolerance. Please agree a correction with the supplier or approve the variance by Wednesday 30 September 2026."
+}

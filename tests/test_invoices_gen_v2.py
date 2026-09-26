@@ -207,7 +207,7 @@ def test_special_documents():
 
 
 def test_v2_lists_no_case_document_invoice():
-    """v2 is a separate run on the same seed, as if the 14 case documents had not been received."""
+    """v2 is a separate run on the same seed, as if the 12 case documents had not been received."""
     case_numbers = {spec.invoice_number for spec in world.DOCUMENTS}
     for spec in SPECS:
         assert spec.invoice_number not in case_numbers, spec.no
@@ -282,7 +282,7 @@ def test_committed_files_are_up_to_date(v2_dir):
 
 def test_v1_pdfs_unchanged(tmp_path):
     paths = invoices_gen.generate_all(tmp_path)
-    assert len(paths) == 14
+    assert len(paths) == 12
     for path in paths:
         assert path.read_bytes() == (config.INVOICES_DIR / path.name).read_bytes(), path.name
 
@@ -585,7 +585,7 @@ def test_fixture_conventions(spec):
 
 def test_statement_fixture():
     ex = _fixture(world_v2.DOCUMENT_V2_BY_NO[3])["extraction"]
-    assert ex["doc_type"]["value"] == "other"
+    assert ex["doc_type"]["value"] == "statement"
     assert ex["invoice_number"]["value"] == "KA-2026-11"
     assert ex["gross_total"]["value"] == 56525.0
     assert ex["tax_total"]["value"] is None and ex["due_date"]["value"] is None

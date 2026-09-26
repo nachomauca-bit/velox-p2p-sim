@@ -1,18 +1,16 @@
-"""KPIs (brief section 12): the same definitions as the case deck, computed from the gate decisions.
+"""Metrics (brief v2 section 5): the four metrics of the deck's slide 11, with the definitions of appendix A6, computed
+from the gate decisions, plus "registered same day" as a small fifth indicator. Nothing else is a KPI.
 
-Upstream "process health": PO / contract coverage, vendor master quality, registration lag.
-Downstream "automation efficiency": touchless rate, exceptions by type, duplicates, credit notes,
-wrong-entity postings, terms variance, simulated cash leakage and cycle time.
+Upstream "process health": first-pass match rate, accounts per supplier.
+Downstream "automation efficiency": touchless rate, invoice cycle time (business days, median).
 
-Every KPI is a dict {key, label, value, display, formula, group, unit}. `formula` is the plain-English
-definition (shown on hover or as a footnote), followed by the numbers behind the value. Percentages, ratios and
-days are rounded to one decimal, money to two. KPIs that need a run are None until the scenario has run.
-
-No currency conversion: cash leakage is summed per currency; `value` is the EUR part and `display` lists
-every currency (all amounts involved in the sample are EUR).
+Every metric is a dict {key, label, value, display, formula, group, unit}. `formula` is the definition (shown on
+hover or focus), followed by the numbers behind the value. Durations are simulated (docs/ASSUMPTIONS.md, section 6).
+No money figure is a metric (brief v2: no euros, no cost or savings figures).
 """
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
@@ -21,56 +19,39 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import config, gate, normalize, seed, sim, taxonomy
-from app.models import (Contract, Extraction, GateDecision, InboundDocument, Party, PurchaseOrder, Run,
-                        VendorAccount)
+from app import config, gate, normalize, seed, taxonomy
+from app.models import Contract, GateDecision, InboundDocument, Party, Run, VendorAccount
 
 NA = "—"
 EXCEPTION_OUTCOMES = ("exception", "human_review")
-OUTCOMES = ("posted", "exception", "human_review", "blocked_duplicate", "applied_credit")
-OUTCOME_LABELS = {
-    "posted": "Posted",
-    "exception": "Exception",
-    "human_review": "Human review",
-    "blocked_duplicate": "Blocked duplicate",
-    "applied_credit": "Credit applied",
-}
+OUTCOMES = ("posted", "applied_credit", "exception", "human_review", "blocked_duplicate")
+OUTCOME_WORDS = gate.OUTCOME_WORDS  # the four outcomes of the gate (to-be) and the as-is equivalents
+FOUR_OUTCOMES = ("Post", "Exception", "Block", "Human review")
 
-# key -> (label, group, unit), in display order.
+GROUP_TAGS = {"upstream": "Upstream · process health", "downstream": "Downstream · automation efficiency",
+              "indicator": "Indicator"}
+
+# key -> (label, group, unit), in the order of the deck's slide 11 (then the small fifth indicator).
 KPI_DEFS: dict[str, tuple[str, str, str]] = {
-    "po_contract_coverage": ("PO / contract coverage", "upstream", "%"),
-    "accounts_per_supplier": ("Vendor accounts per supplier", "upstream", "ratio"),
-    "pct_accounts_vat_iban": ("Accounts with VAT ID and IBAN", "upstream", "%"),
-    "pct_accounts_terms_ok": ("Accounts with the agreed payment terms", "upstream", "%"),
-    "registration_lag_days": ("Registration lag", "upstream", "days"),
-    "touchless": ("Touchless documents", "downstream", "count"),
+    "first_pass_match_rate": ("First-pass match rate", "upstream", "%"),
+    "accounts_per_supplier": ("Accounts per supplier", "upstream", "ratio"),
     "touchless_rate": ("Touchless rate", "downstream", "%"),
-    "exceptions": ("Exceptions", "downstream", "count"),
-    "exception_rate": ("Exception rate", "downstream", "%"),
-    "duplicates_blocked": ("Duplicates blocked", "downstream", "count"),
-    "duplicate_postings": ("Duplicate postings", "downstream", "count"),
-    "duplicate_invoices": ("Invoices posted more than once", "downstream", "count"),
-    "credit_notes_applied": ("Credit notes applied", "downstream", "count"),
-    "credit_notes_unapplied": ("Credit notes unapplied", "downstream", "count"),
-    "wrong_entity_postings": ("Wrong-entity postings", "downstream", "count"),
-    "non_invoice_postings": ("Non-invoice documents posted", "downstream", "count"),
-    "terms_variance_paid": ("Posted on non-agreed payment terms", "downstream", "count"),
-    "cash_leakage_amount": ("Simulated cash leakage", "downstream", "EUR"),
-    "avg_cycle_days": ("Average cycle time (sample)", "downstream", "days"),
-    "avg_cycle_followup_days": ("Average cycle time, documents with a human step", "downstream", "days"),
-    "reference_nonpo_store_days": ("Reference path: non-PO invoice sent to a store", "downstream", "days"),
+    "cycle_time_median": ("Invoice cycle time (business days)", "downstream", "days"),
+    "registered_same_day": ("Registered same day", "indicator", "%"),
 }
+HEADLINE = ("first_pass_match_rate", "accounts_per_supplier", "touchless_rate", "cycle_time_median")
 
-# Plain-English names of the sim.cycle_breakdown activities (reference path formula).
+# Plain-English names of the sim.cycle_breakdown activities.
 ACTIVITY_LABELS = {
     "store_forwarding": "store forwarding",
-    "ap_open_and_key": "AP opening ap@ (the quick-fix tool keys it)",
+    "ap_open_and_key": "AP opening ap@ and keying",
     "email_loop": "email loop",
     "email_approval": "email approval",
     "posting": "posting",
     "registration": "registration",
-    "extraction_and_gate": "extraction and gate",
-    "exception_sla": "no-PO exception SLA (requester, assumed met)",
+    "extraction_and_gate": "reading and rules",
+    "exception_sla": "owner resolves within the SLA",
+    "past_sla": "days past the SLA",
     "workflow_approval": "workflow approval",
 }
 
@@ -88,6 +69,22 @@ def mean(values: Sequence[float]) -> Optional[float]:
     return round(sum(values) / len(values), 1) if values else None
 
 
+def median(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    mid = len(s) // 2
+    return float(s[mid]) if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def percentile(values: Sequence[float], p: float) -> Optional[float]:
+    """Nearest-rank percentile (P90 of the cycle time)."""
+    if not values:
+        return None
+    s = sorted(values)
+    return float(s[max(0, math.ceil(p / 100 * len(s)) - 1)])
+
+
 def fmt_pct(value: Optional[float]) -> str:
     return NA if value is None else f"{value:.1f}%"
 
@@ -96,20 +93,16 @@ def fmt_days(value: Optional[float], decimals: int = 1) -> str:
     return NA if value is None else f"{value:.{decimals}f} days"
 
 
-def fmt_money(value: Optional[float], currency: str = "EUR") -> str:
-    return NA if value is None else f"{value:,.2f} {currency}"
+def fmt_business_days(value: Optional[float]) -> str:
+    """'15 days', '0 days (same day)', '2.5 days'."""
+    if value is None:
+        return NA
+    text = f"{value:g} day{'s' if value != 1 else ''}"
+    return f"{text} (same day)" if value == 0 else text
 
 
 def fmt_number(value: Optional[float], decimals: int = 0) -> str:
     return NA if value is None else f"{value:,.{decimals}f}"
-
-
-def fmt_amounts(amounts: dict[str, float]) -> str:
-    """'29,646.00 EUR' or, with several currencies, '1,800.00 EUR + 500.00 USD' (EUR first; never converted)."""
-    if not amounts:
-        return fmt_money(0.0)
-    order = sorted(amounts, key=lambda c: (c != "EUR", c))
-    return " + ".join(fmt_money(amounts[c], c) for c in order)
 
 
 def scenario_config(scenario: str) -> dict[str, Any]:
@@ -128,7 +121,7 @@ def detail(decision: GateDecision, key: str, default: Any = None) -> Any:
 
 
 def is_exception(decision: GateDecision) -> bool:
-    """Blocking exceptions, human reviews and (as-is) the untracked email loop; not info flags."""
+    """Exceptions, human reviews and (as-is) the untracked email loop; not info flags."""
     return decision.outcome in EXCEPTION_OUTCOMES
 
 
@@ -153,24 +146,39 @@ def info_flags_by_type(decisions: Iterable[GateDecision]) -> dict[str, int]:
     return ordered_counts(counts, (t.key for t in taxonomy.EXCEPTION_TYPES))
 
 
+def outcome_word(decision: GateDecision) -> str:
+    """Post / Exception / Block / Human review (to-be); 'Posted by AP' / 'Email loop — untracked' (as-is)."""
+    return OUTCOME_WORDS[decision.scenario].get(decision.outcome, decision.outcome)
+
+
 def outcome_counts(decisions: Iterable[GateDecision]) -> dict[str, int]:
-    return ordered_counts(Counter(d.outcome for d in decisions), OUTCOMES)
+    """Documents per outcome word, the four gate outcomes first."""
+    return ordered_counts(Counter(outcome_word(d) for d in decisions), FOUR_OUTCOMES)
 
 
-def invoice_key(decision: GateDecision) -> Optional[tuple[str, str, str]]:
-    """(real supplier, document type, normalised number) identifying one supplier document, or None."""
+def outcome_counts_from(scenario: str, by_code: dict[str, int]) -> dict[str, int]:
+    """A run summary's counts per outcome code as counts per outcome word (posted + applied_credit = Post)."""
+    counts: Counter = Counter()
+    for code, n in by_code.items():
+        counts[OUTCOME_WORDS[scenario].get(code, code)] += n
+    return ordered_counts(counts, FOUR_OUTCOMES)
+
+
+def invoice_key(decision: GateDecision) -> Optional[tuple[str, str]]:
+    """(real supplier, normalised number) identifying one supplier invoice, or None. A credit note is its own key."""
     number = detail(decision, "invoice_number_norm") or normalize.normalise_invoice_number(
         detail(decision, "invoice_number"))
     supplier = detail(decision, "true_party_id") or normalize.normalise_name(detail(decision, "supplier_name"))
     if not number or not supplier:
         return None
-    return supplier, detail(decision, "doc_type", ""), number
+    kind = "credit_note" if detail(decision, "doc_type") == "credit_note" else "invoice"
+    return supplier, f"{kind}:{number}"
 
 
 def duplicate_groups(decisions: Iterable[GateDecision]) -> list[list[GateDecision]]:
     """Postings of the same invoice (same real supplier and normalised number) posted more than once, in
     processing order: the first posting of each group is legitimate, the others are the duplicates."""
-    groups: dict[tuple[str, str, str], list[GateDecision]] = {}
+    groups: dict[tuple[str, str], list[GateDecision]] = {}
     for d in decisions:
         key = invoice_key(d)
         if detail(d, "posted", False) and key:
@@ -178,65 +186,15 @@ def duplicate_groups(decisions: Iterable[GateDecision]) -> list[list[GateDecisio
     return [g for g in groups.values() if len(g) > 1]
 
 
-def gross(decision: GateDecision) -> float:
-    return abs(float(detail(decision, "gross_total", 0.0)))
+def is_invoice_received(decision: GateDecision) -> bool:
+    """A document received as an invoice (first-pass denominator): everything but credit notes."""
+    return detail(decision, "doc_type") != "credit_note"
 
 
-def currency_of(decision: GateDecision) -> str:
-    return str(detail(decision, "currency", "")).strip().upper() or "n/a"
-
-
-def gross_by_currency(decisions: Iterable[GateDecision]) -> dict[str, float]:
-    """Sum of |gross| per currency (never converted)."""
-    amounts: dict[str, float] = {}
-    for d in decisions:
-        cur = currency_of(d)
-        amounts[cur] = round(amounts.get(cur, 0.0) + gross(d), 2)
-    return amounts
-
-
-def repeated_postings(decisions: Sequence[GateDecision]) -> list[GateDecision]:
-    """Every posting of a duplicated invoice after the first one."""
-    return [d for group in duplicate_groups(decisions) for d in group[1:]]
-
-
-def unapplied_credits(decisions: Sequence[GateDecision]) -> list[GateDecision]:
-    return [d for d in decisions if detail(d, "credit_status") == "unapplied"]
-
-
-def non_invoice_postings(decisions: Sequence[GateDecision]) -> list[GateDecision]:
-    """Documents that are not invoices (doc_type "other", e.g. a supplier statement) posted as if they were."""
-    return [d for d in decisions if detail(d, "posted", False) and detail(d, "doc_type") == "other"]
-
-
-def leakage_postings(decisions: Sequence[GateDecision]) -> list[GateDecision]:
-    """Repeated postings + unapplied credit notes + non-invoice postings, each decision once."""
-    out: dict[int, GateDecision] = {}
-    for d in repeated_postings(decisions) + unapplied_credits(decisions) + non_invoice_postings(decisions):
-        out.setdefault(id(d), d)
-    return list(out.values())
-
-
-def cash_leakage(decisions: Sequence[GateDecision]) -> dict[str, float]:
-    """Per currency: gross of every repeated posting of a duplicated invoice + |gross| of unapplied credit notes +
-    gross of non-invoice documents posted as invoices. Terms variance is a count only (brief section 12), so it adds
-    nothing here."""
-    return gross_by_currency(leakage_postings(decisions))
-
-
-def po_key(value: Any) -> str:
-    """The PO number as the gate compares it (normalize.normalise_po_number), so coverage counts exactly the POs
-    the gate finds: 'PO 4500117', 'po-4500117' and '4500117' -> '4500117'."""
-    return normalize.normalise_po_number(value)
-
-
-def has_commitment(po_numbers: Iterable[str], party_id: Optional[str], entity: Optional[str], *,
-                   existing_pos: set[str], contracts: set[tuple[str, str]], use_contracts: bool) -> bool:
-    """A usable commitment at arrival: a printed PO number that exists in the ERP, or (when the scenario uses
-    contracts) a recurring contract for the real supplier and the billed entity."""
-    if any(po_key(p) in existing_pos for p in po_numbers):
-        return True
-    return use_contracts and (party_id, entity) in contracts
+def ends_posted(decision: GateDecision) -> bool:
+    """Posted, now or once its owner resolves it (touchless and cycle-time population): not a Block, and not a
+    document that is never posted (a statement, a document that is not an invoice)."""
+    return decision.outcome != "blocked_duplicate" and detail(decision, "doc_type") not in ("statement", "other")
 
 
 def as_int(value: Optional[float]) -> Optional[int]:
@@ -249,14 +207,14 @@ def as_int(value: Optional[float]) -> Optional[int]:
 
 
 def find_party(acc: VendorAccount, parties: Sequence[Party]) -> tuple[Optional[Party], Optional[str]]:
-    """Linked party; for unlinked accounts the party with the same VAT ID, else a matching name."""
+    """Linked party; for unlinked accounts the party with the same tax ID, else a matching name."""
     if acc.party_id:
         return next((p for p in parties if p.party_id == acc.party_id), None), None
     vat = normalize.normalise_vat(acc.vat_id)
     if vat:
         for p in parties:
             if normalize.normalise_vat(p.vat_id) == vat:
-                return p, "VAT ID"
+                return p, "tax ID"
     for p in parties:
         if normalize.names_match(acc.display_name, p.canonical_name):
             return p, "name"
@@ -280,7 +238,7 @@ def duplicate_reason(a: VendorAccount, b: VendorAccount) -> Optional[str]:
         return None
     vat_a = normalize.normalise_vat(a.vat_id)
     if vat_a and vat_a == normalize.normalise_vat(b.vat_id):
-        return "same VAT ID"
+        return "same tax ID"
     if normalize.names_match(a.display_name, b.display_name):
         return "similar name"
     return None
@@ -288,9 +246,14 @@ def duplicate_reason(a: VendorAccount, b: VendorAccount) -> Optional[str]:
 
 def vendor_master_stats(accounts: Sequence[VendorAccount], parties: Sequence[Party],
                         contracts: Sequence[Contract]) -> dict[str, Any]:
-    """Accounts per supplier, completeness of identifiers, agreed terms and possible duplicates."""
+    """Records per supplier (all records, inactive included, as the deck's 2,800 ÷ 1,200), completeness of
+    identifiers, agreed terms and possible duplicates."""
     n = len(accounts)
     with_ids = sum(1 for a in accounts if a.vat_id and a.iban)
+    # unique suppliers: the known ones, plus one per tax ID (else per record) of a record that belongs to none of
+    # them, e.g. a record the as-is process opened for a supplier that is not in the master
+    unknown = {a.vat_id or a.account_id for a in accounts if find_party(a, parties)[0] is None}
+    suppliers = len(parties) + len(unknown)
     terms_ok = terms_differ = 0
     for acc in accounts:
         agreed, _ = agreed_terms(find_party(acc, parties)[0], acc.legal_entity_code, contracts)
@@ -300,8 +263,8 @@ def vendor_master_stats(accounts: Sequence[VendorAccount], parties: Sequence[Par
                                                   for other in accounts))
     return {
         "accounts": n,
-        "parties": len(parties),
-        "ratio": round(n / len(parties), 1) if parties else None,
+        "parties": suppliers,
+        "ratio": round(n / suppliers, 2) if suppliers else None,
         "active": sum(1 for a in accounts if a.status == "active"),
         "with_vat_iban": with_ids,
         "pct_vat_iban": pct(with_ids, n),
@@ -321,47 +284,6 @@ def vendor_master_quality(session: Session, scenario: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------------
-# Reference path (brief section 10): a non-PO invoice sent to a store
-# --------------------------------------------------------------------------------------------
-
-
-def reference_nonpo_store_path(scenario: str) -> dict[str, float]:
-    """Business days per activity for a non-PO invoice sent to a store (a reference, not the sample).
-
-    Without exception routing (as-is) it goes through the email loop, counted at its mean ((min + max) / 2);
-    with routing (to-be) it is a no_po exception: the SLA of the requester (assumed met) plus a workflow approval.
-    """
-    if scenario_config(scenario)["exception_routing"]:
-        steps = sim.cycle_breakdown(scenario, "exception", channel="store_mailbox", doc_key="reference",
-                                    sla_days=taxonomy.get("no_po").sla_days or 0, approval=True)
-        return {k: float(v) for k, v in steps.items()}
-    d = sim.DURATIONS[scenario]
-    steps = {k: float(v) for k, v in sim.cycle_breakdown(scenario, "email_loop", channel="store_mailbox",
-                                                         doc_key="reference").items()}
-    steps["email_loop"] = (d["email_loop_min"] + d["email_loop_max"]) / 2
-    return steps
-
-
-def _reference_formula(scenario: str, steps: dict[str, float]) -> str:
-    parts = []
-    for key, days in steps.items():
-        label = ACTIVITY_LABELS.get(key, key.replace("_", " "))
-        if key == "email_loop":
-            d = sim.DURATIONS[scenario]
-            label += f" (mean of {d['email_loop_min']}–{d['email_loop_max']})"
-        parts.append(f"{label} {days:g}")
-    text = (f"Reference path, not the sample average: {' + '.join(parts)} = {sum(steps.values()):g} business days "
-            "for a non-PO invoice sent to a store.")
-    limit = scenario_config(scenario).get("doa_auto_approve_limit")
-    if limit:
-        text += (f" Under the {limit:,.0f} EUR delegation-of-authority limit it is auto-approved and posted "
-                 "the same day (0).")
-    else:
-        text += " The case reports 26 business days on average."
-    return text
-
-
-# --------------------------------------------------------------------------------------------
 # compute / compare
 # --------------------------------------------------------------------------------------------
 
@@ -369,7 +291,7 @@ def _reference_formula(scenario: str, steps: dict[str, float]) -> str:
 def _kpi(key: str, value: Any, display: str, formula: str) -> dict[str, Any]:
     label, group, unit = KPI_DEFS[key]
     return {"key": key, "label": label, "value": value, "display": display, "formula": formula,
-            "group": group, "unit": unit}
+            "group": group, "tag": GROUP_TAGS[group], "unit": unit}
 
 
 def is_sample(decision: GateDecision) -> bool:
@@ -391,172 +313,60 @@ def _documents_total(session: Session, scenario: str, sample_only: bool = False)
     return int(session.scalar(query) or 0)
 
 
-def _printed_po_numbers(session: Session, decisions: Sequence[GateDecision]) -> dict[str, list[str]]:
-    """PO numbers printed on each document (from its extraction; else the PO the gate used)."""
-    doc_ids = [d.doc_id for d in decisions]
-    extracted = {e.doc_id: (e.json or {}).get("po_numbers", {}).get("value") or []
-                 for e in session.scalars(select(Extraction).where(Extraction.doc_id.in_(doc_ids)))}
-    out = {}
-    for d in decisions:
-        fallback = [detail(d, "po_number")] if detail(d, "po_number") else []
-        out[d.doc_id] = extracted.get(d.doc_id, fallback)
-    return out
-
-
-def _coverage(session: Session, scenario: str, decisions: Sequence[GateDecision]) -> tuple[int, int]:
-    """(invoices with a usable commitment at arrival, invoices). Credit notes are excluded."""
-    invoices = [d for d in decisions if detail(d, "doc_type") == "invoice"]
-    existing = {po_key(n) for n in session.scalars(select(PurchaseOrder.po_number)
-                                                   .where(PurchaseOrder.scenario == scenario))}
-    contracts = {(c.party_id, c.legal_entity_code) for c in session.scalars(
-        select(Contract).where(Contract.scenario == scenario, Contract.recurring.is_(True)))}
-    printed = _printed_po_numbers(session, invoices)
-    use_contracts = bool(scenario_config(scenario)["contract_matching"])
-    covered = sum(1 for d in invoices if has_commitment(
-        printed[d.doc_id], detail(d, "true_party_id"), detail(d, "bill_to_entity"),
-        existing_pos=existing, contracts=contracts, use_contracts=use_contracts))
-    return covered, len(invoices)
-
-
-def _lag_breakdown(lags: Sequence[int]) -> str:
-    """'(11 × 1 + 3 × 7) ÷ 14'."""
-    counts = Counter(lags)
-    return f"({' + '.join(f'{n} × {lag}' for lag, n in sorted(counts.items()))}) ÷ {len(lags)}"
-
-
 def compute(session: Session, scenario: str, *, sample_only: bool = False) -> dict[str, Any]:
-    """All KPIs of one scenario, plus the counts behind the charts. See the module docstring.
+    """The metrics of one scenario, plus the counts behind the charts. See the module docstring.
 
-    "documents" is the number of decisions (the KPI denominators), "documents_total" the number of inbound
-    documents of the scenario: fewer decisions than documents means the scenario was only partly processed.
-    sample_only=True keeps the sample documents only (sample_no > 0), for decisions and denominators alike, so
-    two scenarios are compared on the same documents even when one of them also received webhook uploads.
+    "documents" is the number of decisions, "documents_total" the number of inbound documents of the scenario:
+    fewer decisions than documents means the scenario was only partly processed (e.g. an email just received).
+    sample_only=True keeps the sample documents only (sample_no > 0), so two scenarios are compared on the same
+    documents even when one of them also received webhook uploads.
     """
     decisions = _decisions(session, scenario, sample_only)
     available = bool(decisions)
     run = session.scalars(select(Run).where(Run.scenario == scenario)
                           .order_by(Run.started_on.desc(), Run.id.desc())).first()
     vm = vendor_master_quality(session, scenario)
-    n = len(decisions)
-    routing = bool(scenario_config(scenario)["exception_routing"])
-    use_contracts = bool(scenario_config(scenario)["contract_matching"])
     kpis: dict[str, dict[str, Any]] = {}
 
     def add(key: str, value: Any, display: str, formula: str, numbers: str = "") -> None:
-        """Run-dependent KPI; the numbers behind the value are appended once the scenario has run."""
+        """Run-dependent metric; the numbers behind the value are appended once the scenario has run."""
         kpis[key] = _kpi(key, value, display, f"{formula} {numbers}" if available and numbers else formula)
 
     # ---- upstream: process health --------------------------------------------------------------
-    commitment = ("A commitment is the PO number printed on the invoice existing in the ERP, or a recurring "
-                  "contract for the supplier and the billed entity." if use_contracts else
-                  "A commitment is the PO number printed on the invoice existing in the ERP; this process does "
-                  "not use contracts.")
-    covered, invoices = _coverage(session, scenario, decisions) if available else (0, 0)
-    coverage = pct(covered, invoices) if available else None
-    add("po_contract_coverage", coverage, fmt_pct(coverage),
-        f"Invoices with a usable commitment at arrival ÷ invoices × 100 (credit notes excluded). {commitment}",
-        f"Here: {covered} of {invoices} invoices.")
+    received = [d for d in decisions if is_invoice_received(d)]
+    matched = [d for d in received if detail(d, "first_pass_match", False)]
+    rate = pct(len(matched), len(received)) if available else None
+    add("first_pass_match_rate", rate, fmt_pct(rate),
+        "Invoices matched at the first pass to a commitment (PO + receipt or confirmation, contract schedule, or "
+        "card / catalogue) and within tolerance, with no follow-up ÷ invoices received (credit notes excluded; "
+        "deck A6, with card / catalogue counted as a commitment as in brief v2).",
+        f"Here: {len(matched)} of {len(received)}.")
     kpis["accounts_per_supplier"] = _kpi(
-        "accounts_per_supplier", vm["ratio"], fmt_number(vm["ratio"], 1),
-        f"Vendor accounts (including inactive ones) ÷ suppliers (parties): {vm['accounts']} ÷ {vm['parties']}.")
-    kpis["pct_accounts_vat_iban"] = _kpi(
-        "pct_accounts_vat_iban", vm["pct_vat_iban"], fmt_pct(vm["pct_vat_iban"]),
-        "Vendor accounts with both a VAT ID and an IBAN / bank account ÷ vendor accounts × 100: "
-        f"{vm['with_vat_iban']} of {vm['accounts']}.")
-    kpis["pct_accounts_terms_ok"] = _kpi(
-        "pct_accounts_terms_ok", vm["pct_terms_ok"], fmt_pct(vm["pct_terms_ok"]),
-        "Vendor accounts whose payment terms equal the agreed terms (the recurring contract for that supplier "
-        "and entity, else the supplier agreement) ÷ vendor accounts × 100. Unlinked accounts are matched to a "
-        f"supplier by VAT ID, then by name: {vm['terms_ok']} of {vm['accounts']}.")
-    lags = [int(detail(d, "registration_lag_days")) for d in decisions
-            if detail(d, "registration_lag_days") is not None]
-    lag = mean(lags)
-    add("registration_lag_days", lag, fmt_days(lag),
-        "Average business days from receipt to registration, over all documents.",
-        f"Here: {_lag_breakdown(lags)}." if lags else "")
+        "accounts_per_supplier", vm["ratio"], fmt_number(vm["ratio"], 2),
+        "Vendor records ÷ unique suppliers by tax ID (deck A6; inactive records included, as in the case's 2,800 ÷ "
+        "1,200). One record per legal entity a supplier serves is legitimate (deck A1, S9). "
+        f"Here: {vm['accounts']} ÷ {vm['parties']}.")
 
     # ---- downstream: automation efficiency ------------------------------------------------------
-    def count(predicate) -> Optional[int]:
-        return sum(1 for d in decisions if predicate(d)) if available else None
-
-    touchless = count(lambda d: detail(d, "touchless", False))
-    exceptions = count(is_exception)
-    touchless_note = "" if routing else (
-        " Without a gate, \"touchless\" means no exception follow-up after intake; intake itself is delayed "
-        "(the store forwards its mail, AP opens ap@) before the quick-fix tool keys and posts the document.")
-    add("touchless", touchless, fmt_number(touchless),
-        "Documents fully handled with no human step: posted, blocked as a duplicate or credit applied "
-        f"automatically.{touchless_note}")
-    rate = pct(touchless, n) if available else None
-    add("touchless_rate", rate, fmt_pct(rate), "Touchless documents ÷ documents × 100.",
-        f"Here: {touchless} ÷ {n}.")
-    add("exceptions", exceptions, fmt_number(exceptions),
-        "Documents that stopped for a person: exceptions routed to an owner, low-confidence human reviews and, "
-        "without a gate, the untracked email loop. Info flags do not count.")
-    rate = pct(exceptions, n) if available else None
-    add("exception_rate", rate, fmt_pct(rate), "Exceptions ÷ documents × 100.", f"Here: {exceptions} ÷ {n}.")
-
-    blocked = count(lambda d: d.outcome == "blocked_duplicate")
-    add("duplicates_blocked", blocked, fmt_number(blocked),
-        "Documents blocked by the gate as a repeat of an invoice already registered or posted (same supplier, "
-        "normalised invoice number, gross total within 1%).")
-    groups = duplicate_groups(decisions)
-    dup_postings = sum(len(g) for g in groups) if available else None
-    dup_invoices = len(groups) if available else None
-    add("duplicate_postings", dup_postings, fmt_number(dup_postings),
-        "Postings of an invoice that was posted more than once in the scenario (same real supplier and "
-        "normalised invoice number), counting every posting of it, the first one included.")
-    add("duplicate_invoices", dup_invoices, fmt_number(dup_invoices),
-        "Distinct invoices posted more than once in the scenario.")
-    applied = count(lambda d: detail(d, "credit_status") == "applied")
-    unapplied = count(lambda d: detail(d, "credit_status") == "unapplied")
-    add("credit_notes_applied", applied, fmt_number(applied), "Credit notes applied to the invoice they reference.")
-    add("credit_notes_unapplied", unapplied, fmt_number(unapplied),
-        "Credit notes posted without being applied to their invoice, for example on another vendor account.")
-    wrong = count(lambda d: detail(d, "wrong_entity_posting", False))
-    add("wrong_entity_postings", wrong, fmt_number(wrong),
-        "Postings to a Velox legal entity other than the one the invoice is billed to.")
-    non_invoice = non_invoice_postings(decisions)
-    add("non_invoice_postings", len(non_invoice) if available else None,
-        fmt_number(len(non_invoice) if available else None),
-        "Documents that are not invoices or credit notes (for example a supplier statement) posted as if they were "
-        "invoices.")
-    variance = count(lambda d: detail(d, "terms_variance_paid", False))
-    add("terms_variance_paid", variance, fmt_number(variance),
-        "Postings that took the payment terms printed on the invoice although they differ from the agreed terms, "
-        "so the invoice is paid early or late. Counted, not valued.")
-
-    leakage = cash_leakage(decisions)
-    repeated, credit_docs = repeated_postings(decisions), unapplied_credits(decisions)
-    statements = (f" + {len(non_invoice)} non-invoice document(s) posted "
-                  f"{fmt_amounts(gross_by_currency(non_invoice))}" if non_invoice else "")
-    add("cash_leakage_amount", round(leakage.get("EUR", 0.0), 2) if available else None,
-        fmt_amounts(leakage) if available else NA,
-        "Gross amount of every repeated posting of a duplicated invoice (the first posting is legitimate) + "
-        "absolute amount of unapplied credit notes + gross amount of non-invoice documents posted as invoices. "
-        "Payment-terms variance is part of the leakage but only counted (see its KPI), not valued. Amounts are "
-        "never converted: other currencies are summed separately.",
-        f"Here: {len(repeated)} repeated posting(s) {fmt_amounts(gross_by_currency(repeated))} + "
-        f"{len(credit_docs)} unapplied credit note(s) {fmt_amounts(gross_by_currency(credit_docs))}{statements}; "
-        f"{variance} posting(s) on non-agreed terms (count only).")
-
-    days = [float(d.simulated_days) for d in decisions if d.simulated_days is not None]
-    avg = mean(days)
-    add("avg_cycle_days", avg, fmt_days(avg),
-        "Average simulated business days from receipt to posting or resolution, over all documents of the sample.",
-        f"Here: {sum(days):g} ÷ {len(days)}.")
-    followup = [float(d.simulated_days) for d in decisions
-                if d.simulated_days is not None and not detail(d, "touchless", False)]
-    avg = mean(followup)
-    add("avg_cycle_followup_days", avg, fmt_days(avg),
-        "Average simulated business days over the documents that needed a human step (not touchless).",
-        f"Here: {sum(followup):g} ÷ {len(followup)}." if followup else "Here: no such document.")
-    steps = reference_nonpo_store_path(scenario)
-    ref = round(sum(steps.values()), 1)
-    limit = scenario_config(scenario).get("doa_auto_approve_limit")
-    display = fmt_days(ref, 0) + (f" (0 under the {limit:,.0f} EUR DoA limit)" if limit else "")
-    kpis["reference_nonpo_store_days"] = _kpi("reference_nonpo_store_days", ref, display,
-                                              _reference_formula(scenario, steps))
+    population = [d for d in decisions if ends_posted(d)]
+    touchless = [d for d in population if detail(d, "touchless", False)]
+    rate = pct(len(touchless), len(population)) if available else None
+    add("touchless_rate", rate, fmt_pct(rate),
+        "Invoices posted with no human step ÷ invoices posted (deck A6). An Exception or Human review is posted "
+        "after its owner resolves it; a Block is never posted. Without a gate AP keys every invoice, so nothing is "
+        "touchless.", f"Here: {len(touchless)} of {len(population)}.")
+    days = [float(d.simulated_days) for d in population if d.simulated_days is not None]
+    med, p90 = median(days), percentile(days, 90)
+    add("cycle_time_median", med, fmt_business_days(med),
+        "Median simulated business days from arrival (registration, in to-be) to approved and ready to pay, over the "
+        "invoices posted (deck A6).",
+        f"Here: median of {len(days)} documents; P90 {fmt_business_days(p90)}.")
+    lags = [d for d in decisions if detail(d, "registration_lag_days") is not None]
+    same_day = [d for d in lags if int(detail(d, "registration_lag_days")) == 0]
+    rate = pct(len(same_day), len(lags)) if available else None
+    add("registered_same_day", rate, fmt_pct(rate),
+        "Documents registered on the day they arrive ÷ documents (deck slide 5, RC3). As-is: the store forwards its "
+        "mail (7 business days) and AP opens ap@ the next day.", f"Here: {len(same_day)} of {len(lags)}.")
 
     kpis = {key: kpis[key] for key in KPI_DEFS}  # display order
     return {
@@ -564,23 +374,23 @@ def compute(session: Session, scenario: str, *, sample_only: bool = False) -> di
         "available": available,
         "run": {"run_id": run.run_id, "finished_on": run.finished_on} if run else None,
         "sample_only": sample_only,
-        "documents": n,
+        "documents": len(decisions),
         "documents_total": _documents_total(session, scenario, sample_only),
         "kpis": kpis,
         "exceptions_by_type": exceptions_by_type(decisions),
         "info_flags_by_type": info_flags_by_type(decisions),
         "outcomes": outcome_counts(decisions),
         "cycle_by_doc": [{"doc_id": d.doc_id, "sample_no": detail(d, "sample_no"),
-                          "days": as_int(d.simulated_days), "path": detail(d, "path")}
+                          "days": as_int(d.simulated_days), "path": detail(d, "path"), "outcome": d.outcome}
                          for d in sorted(decisions, key=lambda d: d.doc_id)],
     }
 
 
 def outcome_label(decision: GateDecision) -> str:
-    """'Posted', 'Credit applied', or the plain-English label of the exception type."""
-    if decision.exception_type and decision.outcome in EXCEPTION_OUTCOMES:
+    """The A3 label of a to-be exception or human review; else the outcome word (Post, Block, Posted by AP, ...)."""
+    if decision.exception_type and decision.outcome in EXCEPTION_OUTCOMES and decision.exception_type != "email_loop":
         return taxonomy.label(decision.exception_type)
-    return OUTCOME_LABELS.get(decision.outcome, decision.outcome)
+    return outcome_word(decision)
 
 
 def as_date(value: Any) -> Optional[date]:
@@ -621,7 +431,7 @@ def terms_badge(decision: GateDecision) -> str:
     return "terms paid early" if scheduled < agreed_due else "terms paid late"
 
 
-FLAG_BADGES = {"terms_variance": "terms variance flagged", "duplicate_vendor_account": "duplicate account flagged"}
+FLAG_BADGES = {"duplicate_vendor_account": "duplicate record flagged"}
 
 
 def ubl_model() -> Optional[str]:
@@ -653,22 +463,20 @@ def badges(decision: GateDecision) -> list[str]:
         out.append("wrong entity")
     if detail(decision, "credit_status") == "unapplied":
         out.append("unapplied credit")
-    if detail(decision, "posted", False) and detail(decision, "doc_type") == "other":
+    if detail(decision, "posted", False) and detail(decision, "doc_type") in ("statement", "other"):
         out.append("statement posted as invoice")
     if detail(decision, "terms_variance_paid", False):
         out.append(terms_badge(decision))
     if detail(decision, "resolution_method") == "created":
         out.append("vendor account created")
-    if decision.outcome == "blocked_duplicate":
-        out.append("blocked duplicate")
     if detail(decision, "credit_status") == "applied":
-        out.append("credit applied")
-    if detail(decision, "doa_auto_approved", False):
-        out.append("DoA auto-approved")
+        out.append("credit note linked")
     if decision.outcome == "posted" and detail(decision, "posted", False):
         commitment = detail(decision, "commitment")
         if commitment == "contract":
             out.append("contract match")
+        elif commitment == "catalogue":
+            out.append("catalogue match")
         elif commitment == "po" and not detail(decision, "wrong_entity_posting", False):
             out.append("3-way match")
     out += [FLAG_BADGES[f["type"]] for f in detail(decision, "flags", []) if f.get("type") in FLAG_BADGES]
@@ -682,6 +490,7 @@ def cell(decision: Optional[GateDecision]) -> Optional[dict[str, Any]]:
     return {
         "doc_id": decision.doc_id,
         "outcome": decision.outcome,
+        "outcome_word": outcome_word(decision),
         "exception_type": decision.exception_type,
         "label": outcome_label(decision),
         "owner_name": decision.owner_name,
@@ -721,7 +530,7 @@ def compared_datasets(session: Session) -> tuple[str, dict[str, Optional[str]], 
 
 
 def compare(session: Session) -> dict[str, Any]:
-    """Scenario A vs B for the same sample documents: both KPI sets (sample documents only, so webhook uploads
+    """Scenario A vs B for the same sample documents: both metric sets (sample documents only, so webhook uploads
     never change a denominator on one side) and one row per document of the dataset loaded (case documents or
     test set v2); a warning when the two scenarios hold different datasets."""
     asis, tobe = compute(session, "asis", sample_only=True), compute(session, "tobe", sample_only=True)
@@ -735,7 +544,6 @@ def compare(session: Session) -> dict[str, Any]:
             "invoice_number": spec.invoice_number,
             "gross_total": spec.gross_total,
             "currency": spec.currency,
-            "designed_to_show": spec.designed_to_show,
             "asis": cell(by_sample["asis"].get(spec.no)),
             "tobe": cell(by_sample["tobe"].get(spec.no)),
         })

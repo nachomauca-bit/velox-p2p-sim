@@ -12,8 +12,9 @@
     {{ m.outcome(c.chip_label, c.chip_tone) }}
   </div>
   <div class="cmp-meta">
-    Owner: {% if c.owner_name %}<strong>{{ c.owner_name }}</strong>{% if c.next_owner_name %}, then {{ c.next_owner_name }}{% endif %}{% else %}—{% endif %}
-    · <strong>{{ c.days if c.days is not none else '—' }}</strong> day{{ '' if c.days == 1 else 's' }}
+    {% if c.outcome == "blocked_duplicate" %}AP replies with status
+    {%- else %}Owner: {% if c.owner_name %}<strong>{{ c.owner_name }}</strong>{% if c.next_owner_name %}, then {{ c.next_owner_name }}{% endif %}{% else %}—{% endif %}{% endif %}
+    · <strong>{{ c.days if c.days is not none else '—' }}</strong> simulated day{{ '' if c.days == 1 else 's' }}
     {% if c.account_id %}· <code>{{ c.account_id }}</code>{% endif %}{% if c.posted_entity %} → {{ c.posted_entity }}{% endif %}
   </div>
   {% if c.badge_chips %}<div class="cell-badges">{{ m.badges(c.badge_chips) }}</div>{% endif %}
@@ -38,7 +39,8 @@
 
 {% macro ab_tile(r, extra="") -%}
 <div class="kpi-tile ab-tile{{ extra }}" id="cmp-{{ r.key }}" tabindex="0" aria-describedby="f-{{ r.key }}">
-  <span class="kpi-label">{{ r.label }}</span>
+  <span class="kpi-tag kpi-tag-{{ r.group }}">{{ r.tag }}</span>
+  <span class="kpi-label">{{ r.label }}{% if r.unit == 'days' %} <small class="sim-label">simulated</small>{% endif %}</span>
   {{ ab(r) }}
   {{ m.formula("f-" ~ r.key, r.formula) }}
 </div>
@@ -50,8 +52,8 @@
 <header class="page-head">
   <div class="page-head-main">
     <h1>Compare <span class="h1-sub">A — As-is vs B — To-be{% if data and any_loaded %}, same {{ rows|length }} documents ({{ data.dataset_label }}){% elif data %}, no documents loaded{% endif %}</span></h1>
-    <p class="lead">The same supplier documents, the same extraction, two processes: a dirty vendor master and no
-      gate (A) against clean master data, commitments and a control gate (B).</p>
+    <p class="lead">The same supplier documents, read the same way, two processes: a dirty vendor master and no
+      gate (A) against clean master data, commitments and a control gate (B). Durations are simulated.</p>
   </div>
   {% if data %}
   <div class="ab-legend" aria-label="Legend">
@@ -71,7 +73,7 @@
 {% endif %}
 
 {% for label, warning in partial_warnings %}
-<p class="flash flash-warn partial-run" role="status">{{ label }}: {{ warning }}. Its KPIs and column cover the
+<p class="flash flash-warn partial-run" role="status">{{ label }}: {{ warning }}. Its metrics and column cover the
   processed documents only.</p>
 {% endfor %}
 {% if partial_warnings and both_available %}
@@ -82,38 +84,31 @@
 <article class="empty-state compare-run">
   {{ m.empty_icon('compare') }}
   <h2>{% if not available.asis and not available.tobe %}Neither scenario has been run yet{% elif not available.asis %}Scenario A — As-is has not been run yet{% else %}Scenario B — To-be has not been run yet{% endif %}</h2>
-  <p>Run both scenarios to fill the comparison (as-is first, then to-be).{% if not any_run %} Until then, only the
-    vendor-master KPIs below can be compared.{% endif %}</p>
+  <p>Run both scenarios to fill the comparison (as-is first, then to-be).{% if not any_run %} Until then, only
+    accounts per supplier can be compared.{% endif %}</p>
   {{ m.run_button("Run both scenarios", "/run-both") }}
 </article>
 {% endif %}
 
 {% if data %}
-{% if any_run and headline %}
+{% if headline %}
 <section class="kpi-group kpi-headline" aria-labelledby="cmp-headline-title">
-  <h2 id="cmp-headline-title">Headline results</h2>
+  <h2 id="cmp-headline-title" class="visually-hidden">The four metrics</h2>
   <div class="kpi-tiles ab-tiles ab-hero-tiles">
-    {% for r in headline %}{{ ab_tile(r, " kpi-hero") }}{% endfor %}
+    {% for r in headline if any_run or r.key == "accounts_per_supplier" %}{{ ab_tile(r, " kpi-hero") }}{% endfor %}
   </div>
-  <p class="section-note"><strong>Cycle time, shown both ways.</strong> The sample average depends on the mix of these
-    documents; the reference path (under Throughput and cycle time) is the case's typical failure, a non-PO invoice
-    sent to a store, and uses the fixed durations on the Assumptions page.</p>
 </section>
 {% endif %}
-
-{% for g in groups if any_run or g.key == "upstream" %}
-<section class="kpi-group kpi-{{ g.key }}">
-  <h2>{{ g.title }}</h2>
-  {% for row in g.rows %}
-  {% if row.title %}<h3 class="kpi-row-title">{{ row.title }}</h3>{% endif %}
-  <div class="kpi-tiles ab-tiles" style="--cols: {{ row["items"]|length }}">
-    {% for r in row["items"] %}{{ ab_tile(r) }}{% endfor %}
+{% if small and any_run %}
+<section class="kpi-group kpi-small" aria-label="Indicator">
+  <div class="kpi-tiles ab-tiles kpi-tiles-small">
+    {% for r in small %}{{ ab_tile(r, " kpi-mini") }}{% endfor %}
   </div>
-  {% endfor %}
 </section>
-{% endfor %}
+{% endif %}
 <p class="section-note compare-foot-note">Marked <span class="better-pill">✓&nbsp;Better</span>: the better value of the
-  two. Hover or focus a tile for its formula; the numbered definitions are on the <a href="/gate/kpis">KPIs</a> page.</p>
+  two. Hover or focus a tile for its definition with the numbers of A and B; the numbered definitions are on the
+  <a href="/gate/kpis">Metrics</a> page.</p>
 
 {% if any_run %}
 <section class="compare-docs">
@@ -133,9 +128,6 @@
         <td class="col-asis">{{ cell_view(r.a) }}</td>
         <td class="col-tobe">{{ cell_view(r.b) }}</td>
       </tr>
-      {% if r.designed_to_show %}
-      <tr class="designed"><td></td><td colspan="4" class="designed-note"><span class="designed-label">Designed to show:</span> {{ r.designed_to_show }}</td></tr>
-      {% endif %}
     </tbody>
     {% endfor %}
   </table>

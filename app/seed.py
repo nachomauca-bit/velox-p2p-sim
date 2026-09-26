@@ -3,11 +3,13 @@
 - `tobe` = the clean world, loaded as defined.
 - `asis` = the clean world after explicit corruption rules D1–D6 (documented in docs/ASSUMPTIONS.md).
 
-Also loads a set of sample documents into the simulated mailboxes ("Load sample documents"): the 14 case
-documents (dataset v1, app/world.py) or the 26 documents of test set v2 (app/world_v2.py, docs/TEST_SET_V2.md).
+Also loads a set of sample documents into the simulated mailboxes: the 12 case documents (dataset v1, app/world.py)
+or the 26 documents of test set v2 (app/world_v2.py, docs/TEST_SET_V2.md), and prepares the demo (reset_demo: both
+scenarios loaded and run offline, FitOut held back for "Receive next email").
 
-CLI:  python -m app.seed            # drop + create tables, seed both scenarios, generate PDFs,
-                                     # load the case documents into both inboxes (cached extraction only)
+CLI:  python -m app.seed            # drop + create tables, seed both scenarios, generate PDFs, reset the demo
+                                     # (case documents in both inboxes, both scenarios run; cache / fixtures only)
+      python -m app.seed --dataset v2   # test set v2 instead, loaded and run in both scenarios
 """
 from __future__ import annotations
 
@@ -51,14 +53,15 @@ RULE_DESCRIPTIONS = {
           "IBAN and terms; not linked to the party.",
     "D2": "D2 cross-entity spread: account in an entity the supplier does not serve, created by a store user.",
     "D3": "D3 terms drift: payment terms differ from the contract / supplier agreement.",
-    "D4": "D4 missing identifiers: VAT ID or IBAN left empty.",
+    "D4": "D4 missing identifiers: tax ID or IBAN left empty.",
     "D5": "D5 inactive leftover: old account under a previous company name.",
     "D6": "D6 weak PO discipline: the requester gave the supplier a PO number, but the PO was never keyed "
-          "and approved in the ERP; only 6 of 14 POs exist in as-is.",
+          "and approved in the ERP; only 6 of 12 POs exist in as-is.",
 }
 
-# D1 — spelling duplicates: suppliers 1, 2, 4, 7 get extra accounts in the same legal entity with a
-# different spelling, a different IBAN and different terms. No party link.
+# D1 — spelling duplicates: suppliers 1, 2, 4, 5, 7, 8 get extra accounts in the same legal entity with a
+# different spelling, a different IBAN and different terms. No party link. (V-000129 and V-000130 keep the as-is at
+# 28 records for 12 suppliers, the deck's 2.33, after the clean master dropped two per-entity records.)
 # (new account, cloned from, display name, IBAN, terms, created_by, created_on, notes)
 D1_DUPLICATES = [
     ("V-000117", "V-000101", "NORDWIND LOGISTICS", make_iban("DE", "200505501234987650"), 14,
@@ -75,6 +78,10 @@ D1_DUPLICATES = [
      "ap.temp", date(2023, 3, 1), "Temporary account for a campaign invoice"),
     ("V-000123", "V-000107", "Metro-Media GmbH", make_iban("DE", "100100100765432109"), 60,
      "store.berlin01", date(2024, 11, 25), "Created by the Berlin store"),
+    ("V-000129", "V-000105", "SHOPSYS SOFTWARE", "ABA 121000248 ACCT 5520193847", 45,
+     "finance.us", date(2024, 6, 3), "Created for a renewal invoice"),
+    ("V-000130", "V-000108", "QuickPrint S.A.S.", make_iban("FR", "10107001180001234567893"), 60,
+     "store.paris02", date(2025, 3, 17), "Created by a Paris store for leaflets"),
 ]
 
 # D2 — cross-entity spread: supplier 1 also has an account in VFR with terms 45, created by a store user.
@@ -98,7 +105,7 @@ D5_INACTIVE = [
      30, "finance.de", date(2019, 7, 15), "Old trading name"),
 ]
 
-# D4 — missing identifiers: ~30% of all accounts (8 of 28) have an empty VAT ID or IBAN.
+# D4 — missing identifiers: ~30% of all accounts (8 of 28) have an empty VAT ID (tax ID) or IBAN.
 # Applied last so it covers accounts created by D1, D2 and D5.
 D4_MISSING = {
     "V-000109": "vat_id", "V-000117": "vat_id", "V-000119": "vat_id", "V-000120": "iban",
@@ -202,7 +209,7 @@ def seed_scenario(session: Session, scenario: str) -> None:
     for a in accounts_for(scenario):
         notes = a.notes
         if scenario == "tobe" and notes is None:
-            notes = "Validated through the vendor request workflow; linked to its party."
+            notes = "Validated through the vendor request workflow; linked to its supplier."
         session.add(VendorAccount(scenario=scenario, account_id=a.account_id,
                                   legal_entity_code=a.legal_entity_code, party_id=a.party_id,
                                   display_name=a.display_name, vat_id=a.vat_id, iban=a.iban,
@@ -217,6 +224,15 @@ def seed_scenario(session: Session, scenario: str) -> None:
                              expected_monthly_min=c.expected_monthly_min,
                              expected_monthly_max=c.expected_monthly_max, currency=c.currency,
                              category=c.category, owner_name=owner.name, owner_email=owner.email))
+    if scenario == "tobe":  # card / catalogue commitments for small store purchases (none in the as-is)
+        for cat in world.CATALOGUES:
+            owner = world.PEOPLE[cat.owner]
+            session.add(Contract(scenario=scenario, contract_id=cat.catalogue_id, party_id=cat.party_id,
+                                 legal_entity_code=cat.legal_entity_code, description=cat.description,
+                                 payment_terms_days=world.PARTY_BY_ID[cat.party_id].agreed_terms_days, recurring=False,
+                                 expected_monthly_min=0.0, expected_monthly_max=cat.limit_chf,
+                                 currency=world.GROUP_CURRENCY, category="catalogue", owner_name=owner.name,
+                                 owner_email=owner.email))
     for po in purchase_orders_for(scenario):
         requester, buyer = world.PEOPLE[po.requester], world.PEOPLE[po.buyer]
         session.add(PurchaseOrder(
@@ -256,7 +272,8 @@ def reset_scenario(session: Session, scenario: str) -> Optional[str]:
 # Intake: load a set of sample documents into the simulated mailboxes
 # --------------------------------------------------------------------------------------------
 
-DATASETS = ("v1", "v2")  # v1 = the 14 case documents; v2 = test set v2 (26 documents)
+DATASETS = ("v1", "v2")  # v1 = the 12 case documents; v2 = test set v2 (26 documents)
+DEMO_HELD_BACK = 5  # the case document that arrives live in the demo ("Receive next email"): FitOut, deck A5
 LIVE_DATASET = "live"  # documents received through the intake webhook
 DATASET_LABELS = {"v1": "case documents", "v2": "test set v2", LIVE_DATASET: "live intake"}
 
@@ -321,7 +338,7 @@ def ensure_pdfs() -> None:
 
 
 def ensure_files(dataset: str) -> None:
-    """Generate the files of a dataset when any is missing (v1: the 14 PDFs; v2: PDFs, the UBL XML, the email)."""
+    """Generate the files of a dataset when any is missing (v1: the 12 PDFs; v2: PDFs, the UBL XML, the email)."""
     if check_dataset(dataset) == "v1":
         ensure_pdfs()
         return
@@ -340,43 +357,77 @@ def loaded_dataset(session: Session, scenario: str) -> Optional[str]:
     return known[0] if known else None
 
 
-def load_sample_documents(session: Session, scenario: str, dataset: str = "v1") -> list[InboundDocument]:
-    """(Re)load a dataset's sample documents into the two mailboxes of one scenario (every document of the
-    scenario, webhook uploads included, is replaced).
+def _new_document(scenario: str, spec: world.DocumentSpec, dataset: str) -> InboundDocument:
+    """A sample document as it arrives. to-be: one intake address (ap@), registered on arrival. as-is: the mailbox the
+    supplier used, unregistered until the scenario runs (ap@ +1 business day, store mailbox +7 business days)."""
+    path = dataset_dir(dataset) / spec.filename
+    registered = scenario == "tobe"
+    channel, mailbox = ("ap_mailbox", world.AP_MAILBOX) if registered else (spec.channel, spec.mailbox)
+    return InboundDocument(
+        doc_id=doc_id_for(scenario, spec.no, dataset), scenario=scenario, sample_no=spec.no,
+        channel=channel, mailbox=mailbox, received_on=spec.received_on,
+        file_path=stored_path(path), file_hash=file_sha256(path),
+        sender_email=spec.sender_email, subject=spec.subject, registered=registered,
+        registered_on=sim.registration_date(scenario, channel, spec.received_on) if registered else None,
+        doc_type="unknown", dataset=dataset, content_type=getattr(spec, "content", "pdf") or "pdf",
+        email_body=getattr(spec, "email_body", None),
+    )
 
-    to-be: every document is registered on arrival (registered_on = received_on).
-    as-is: documents stay unregistered until the scenario runs; the expected registration date
-           follows sim.registration_date (ap@ +1 business day, store mailbox +7 business days).
-    """
+
+def load_sample_documents(session: Session, scenario: str, dataset: str = "v1", *,
+                          hold_back: tuple[int, ...] = ()) -> list[InboundDocument]:
+    """(Re)load a dataset's sample documents into the mailboxes of one scenario (every document of the scenario,
+    webhook uploads included, is replaced). Documents whose number is in `hold_back` are not loaded yet: they arrive
+    later with receive_document (the demo's "Receive next email")."""
     specs = documents_for(dataset)
     ensure_files(dataset)
     for doc in session.scalars(select(InboundDocument).where(InboundDocument.scenario == scenario)):
         session.delete(doc)
     session.flush()
-
-    folder = dataset_dir(dataset)
-    docs: list[InboundDocument] = []
-    for spec in specs:
-        path = folder / spec.filename
-        registered = scenario == "tobe"
-        doc = InboundDocument(
-            doc_id=doc_id_for(scenario, spec.no, dataset), scenario=scenario, sample_no=spec.no,
-            channel=spec.channel, mailbox=spec.mailbox, received_on=spec.received_on,
-            file_path=stored_path(path), file_hash=file_sha256(path),
-            sender_email=spec.sender_email, subject=spec.subject, registered=registered,
-            registered_on=sim.registration_date(scenario, spec.channel, spec.received_on) if registered else None,
-            doc_type="unknown", dataset=dataset, content_type=getattr(spec, "content", "pdf") or "pdf",
-            email_body=getattr(spec, "email_body", None),
-        )
-        session.add(doc)
-        docs.append(doc)
+    docs = [_new_document(scenario, spec, dataset) for spec in specs if spec.no not in hold_back]
+    session.add_all(docs)
     session.commit()
     return docs
+
+
+def held_back_documents(session: Session, scenario: str = "tobe") -> list[world.DocumentSpec]:
+    """Case documents not in the scenario's mailbox yet while the case documents are loaded (the demo's next email),
+    in order of arrival."""
+    if loaded_dataset(session, scenario) != "v1":
+        return []
+    present = set(session.scalars(select(InboundDocument.sample_no).where(
+        InboundDocument.scenario == scenario, InboundDocument.dataset == "v1")))
+    return sorted((s for s in world.DOCUMENTS if s.no not in present), key=lambda s: s.received_on)
+
+
+def receive_document(session: Session, scenario: str, spec: world.DocumentSpec) -> InboundDocument:
+    """One case document arrives: registered on arrival (to-be), not read and not processed yet."""
+    doc = _new_document(scenario, spec, "v1")
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+def reset_demo(session: Session, dataset: str = "v1", *, log=None) -> None:
+    """The demo's starting point (brief v2 section 7): both scenarios re-seeded, the sample documents loaded and run
+    offline (extraction cache or fixtures, never the API), the case document DEMO_HELD_BACK not arrived yet in to-be."""
+    from app import extract, gate
+
+    for scenario in SCENARIOS:
+        clear_scenario(session, scenario)
+        seed_scenario(session, scenario)
+        session.commit()
+        hold = (DEMO_HELD_BACK,) if scenario == "tobe" and dataset == "v1" else ()
+        docs = load_sample_documents(session, scenario, dataset, hold_back=hold)
+        extract.extract_documents(session, docs, allow_api=False)
+        gate.run_scenario(session, scenario, allow_api=False, log=log or (lambda line: None))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed the Velox P2P simulator database.")
     parser.add_argument("--no-documents", action="store_true", help="do not load the sample documents")
+    parser.add_argument("--dataset", choices=DATASETS, default="v1",
+                        help="v1: the case documents (default); v2: test set v2")
     args = parser.parse_args()
 
     from app.db import SessionLocal, init_db
@@ -388,16 +439,13 @@ def main() -> None:
             n_acc = len(accounts_for(scenario))
             n_po = len(purchase_orders_for(scenario))
             print(f"[seed] scenario={scenario} accounts={n_acc} parties={len(world.PARTIES)} "
-                  f"ratio={n_acc / len(world.PARTIES):.1f} POs={n_po} receipts={len(receipts_for(scenario))} "
+                  f"ratio={n_acc / len(world.PARTIES):.2f} POs={n_po} receipts={len(receipts_for(scenario))} "
                   f"contracts={len(world.CONTRACTS)}")
         if not args.no_documents:
-            from app import extract
-
+            reset_demo(session, args.dataset)  # cache / fixtures only: seeding never calls the Gemini API
             for scenario in SCENARIOS:
-                docs = load_sample_documents(session, scenario)
-                # Cache / fixture only: seeding never calls the Gemini API.
-                extract.extract_documents(session, docs, allow_api=False)
-                print(f"[seed] scenario={scenario} loaded {len(docs)} documents into the mailboxes")
+                n = len(session.scalars(select(InboundDocument).where(InboundDocument.scenario == scenario)).all())
+                print(f"[seed] scenario={scenario} {n} {DATASET_LABELS[args.dataset]} loaded and run")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,13 @@
-"""Control gate (brief section 8): one ordered, scenario-aware pipeline per inbound document.
+"""Control gate (brief v2 section 2): one ordered, scenario-aware pipeline per inbound document.
 
-    register -> extract -> resolve_vendor -> legal_entity -> duplicate_check -> credit_note ->
-    commitment_match -> terms -> post
+    register -> screen -> read (Gemini) -> confidence -> document type -> supplier (tax ID) -> legal entity ->
+    duplicate -> credit note -> commitment -> terms -> tolerances -> approval limit -> post
 
-Every step appends {step, result, detail} to the decision's trace and logs one console line. Every
-as-is / to-be difference is a flag in SCENARIOS that the steps read; there are no scattered scenario checks.
-The as-is flags model the naive "AI quick-fix" (docs/ASSUMPTIONS.md section 8); the to-be flags are the gate.
+Every step appends {step, result, detail} to the decision's trace and logs one line "[B-05] Rule → result — reason".
+The model reads and classifies; every decision is a rule. Four outcomes: Post · Exception · Block · Human review.
+Every as-is / to-be difference is a flag in SCENARIOS that the steps read; there are no scattered scenario checks.
+The as-is has no gate: AP keys every document, picks an account by name and chases what does not match by email
+(docs/ASSUMPTIONS.md section 8); the steps the as-is does not have are left out of its log.
 
 Deterministic: a decision follows from the extraction JSON, the seed and the documents processed before it
 (in order of registration). Durations come from app/sim.py, exception types and SLAs from app/taxonomy.py,
@@ -24,7 +26,7 @@ from rapidfuzz import fuzz
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app import config, extract, sim, taxonomy, world
+from app import config, extract, seed, sim, taxonomy, world
 from app.models import (
     Contract,
     CreditNoteApplication,
@@ -52,52 +54,83 @@ from app.seed import LIVE_DATASET, SCENARIO_LETTER
 
 Log = Callable[[str], None]
 
-ON_THE_FLY_CREATOR = "ap.ai-intake"  # created_by of vendor accounts the as-is tool creates on the fly
-ON_THE_FLY_NOTE = "Created on the fly by the AI intake tool"
+ON_THE_FLY_CREATOR = "ap.invoice-entry"  # created_by of vendor accounts AP opens to pay an invoice (as-is)
+ON_THE_FLY_NOTE = "Created by AP to pay the invoice"
 PO_TOLERANCE_PCT = 0.02  # PO amount tolerance: 2% or 50, whichever is larger (brief section 8)
 PO_TOLERANCE_ABS = 50.0
 DUPLICATE_AMOUNT_TOLERANCE = 0.01  # same invoice: gross within 1%
 LINE_MATCH_THRESHOLD = 60  # rapidfuzz token_set_ratio to map an invoice line to a PO line by description
 BILL_TO_FUZZY_THRESHOLD = 95  # rapidfuzz ratio on entity names with legal suffixes kept
 
-STEP_NAMES = ("register", "extract", "resolve_vendor", "legal_entity", "duplicate_check", "credit_note",
-              "commitment_match", "terms", "post")
+STEP_NAMES = ("register", "screen", "extract", "confidence", "document_type", "resolve_vendor", "legal_entity",
+              "duplicate_check", "credit_note", "commitment_match", "terms", "tolerances", "approval_limit", "post")
 
-# Every as-is / to-be difference of the gate (brief section 8, as-is behaviour in brackets there).
-# doc_type_check: a document read as doc_type "other" (e.g. a supplier statement) stops as not_an_invoice; the
-# as-is tool processes whatever it gets as an invoice. po_vendor_match: a quoted PO is the supplier's when it is on
-# the resolved vendor account ("account", as-is) or on any account of the same party ("party", to-be).
+# The deck's words for each step (rule log, invoice trace). The as-is has no gate: AP does the work by hand.
+STEP_LABELS: dict[str, dict[str, str]] = {
+    "tobe": {"register": "Registered on arrival", "screen": "Screened", "extract": "Read with Gemini",
+             "confidence": "Confidence", "document_type": "Document type", "resolve_vendor": "Supplier (tax ID)",
+             "legal_entity": "Legal entity", "duplicate_check": "Duplicate", "credit_note": "Credit note",
+             "commitment_match": "Commitment", "terms": "Terms", "tolerances": "Tolerances",
+             "approval_limit": "Approval limit", "post": "Post"},
+    "asis": {"register": "Registered", "extract": "Keyed by AP", "resolve_vendor": "Account (by name)",
+             "duplicate_check": "Duplicate (same account)", "credit_note": "Credit note",
+             "commitment_match": "PO lookup", "terms": "Terms", "tolerances": "Price and quantity",
+             "post": "Posted by AP"},
+}
+# Result words in the rule log.
+RESULT_WORDS = {"ok": "pass", "info": "info", "flag": "flag", "created": "account created", "skipped": "skipped",
+                "exception": "Exception", "human_review": "Human review", "blocked": "Block",
+                "applied": "credit note linked", "unapplied": "unapplied", "email_loop": "email loop"}
+# The four outcomes of the gate (brief v2 section 2), and the as-is equivalents (no gate).
+OUTCOME_WORDS: dict[str, dict[str, str]] = {
+    "tobe": {"posted": "Post", "applied_credit": "Post", "exception": "Exception", "blocked_duplicate": "Block",
+             "human_review": "Human review"},
+    "asis": {"posted": "Posted by AP", "applied_credit": "Posted by AP", "exception": "Email loop — untracked",
+             "blocked_duplicate": "Blocked (same account)", "human_review": "Email loop — untracked"},
+}
+
+# Every as-is / to-be difference of the gate (brief v2 section 2; the as-is behaviour in docs/ASSUMPTIONS.md 8).
+# screening / confidence_threshold / doc_type_check / entity_check / approval_matrix: the to-be rules the as-is does
+# not have (their steps are left out of the as-is log). po_vendor_match: a quoted PO is the supplier's when it is
+# on the resolved vendor account ("account", as-is) or on any account of the same party ("party", to-be).
 SCENARIOS: dict[str, dict[str, Any]] = {
-    "asis": dict(registration="delayed", confidence_threshold=None, vendor_resolution="naive_name",
+    "asis": dict(registration="delayed", screening=False, confidence_threshold=None, vendor_resolution="naive_name",
                  flag_duplicate_vendor_accounts=False, unknown_vendor="create_account", entity_check=False,
                  duplicate_check="account_exact", credit_matching="account", contract_matching=False,
-                 exception_routing=False, terms_source="invoice", doa_auto_approve_limit=None,
+                 catalogue_matching=False, exception_routing=False, terms_source="invoice", approval_matrix=False,
                  doc_type_check=False, po_vendor_match="account"),
-    "tobe": dict(registration="on_arrival", confidence_threshold=config.CONFIDENCE_THRESHOLD,
+    "tobe": dict(registration="on_arrival", screening=True, confidence_threshold=config.CONFIDENCE_THRESHOLD,
                  vendor_resolution="party_identifiers", flag_duplicate_vendor_accounts=True,
                  unknown_vendor="exception", entity_check=True, duplicate_check="party_normalised",
-                 credit_matching="party", contract_matching=True, exception_routing=True, terms_source="master",
-                 doa_auto_approve_limit=500.0, doc_type_check=True, po_vendor_match="party"),
+                 credit_matching="party", contract_matching=True, catalogue_matching=True, exception_routing=True,
+                 terms_source="master", approval_matrix=True, doc_type_check=True, po_vendor_match="party"),
 }
+# The scenario flag a step depends on; a step whose flag is off is not part of that scenario's process.
+STEP_FLAGS = {"screen": "screening", "confidence": "confidence_threshold", "document_type": "doc_type_check",
+              "legal_entity": "entity_check", "approval_limit": "approval_matrix"}
 
 # Keys of GateDecision.details; all are always present (None / False / [] when not applicable).
 DETAIL_KEYS = (
     "sample_no", "supplier_name", "invoice_number", "invoice_number_norm", "gross_total", "net_total", "currency",
     "doc_type", "party_id", "true_party_id", "account_id", "resolution_method", "bill_to_entity", "posted_entity",
     "posted", "invoice_id", "wrong_entity_posting", "duplicate_posting", "duplicate_of", "commitment", "po_number",
-    "contract_id", "contract_period", "doa_auto_approved", "requester_name", "next_owner_name", "next_owner_role",
+    "contract_id", "contract_period", "catalogue_id", "requester_name", "next_owner_name", "next_owner_role",
+    "owner_title", "gross_chf", "duplicate_leg", "first_pass_match",
     "credit_status", "applied_to", "flags", "terms_days", "terms_source", "invoice_terms_days", "agreed_terms_days",
     "terms_variance_paid", "touchless", "path", "cycle_breakdown", "registration_lag_days", "email_loop_days",
     "line_checks", "lookup_party_id", "invoice_date", "posted_on", "po_numbers", "content_type", "extraction_model",
 )
 # lookup_party_id: the party found from the extraction's identifiers (to-be only), also for a document that stops
 # before resolve_vendor, so later duplicate, credit-note and contract checks still see it. invoice_date: ISO date;
-# posted_on: ISO datetime of the simulated posting. doc_type: the document's type, "other" when the extraction reads
-# it as neither an invoice nor a credit note (e.g. a statement). po_numbers: every PO the commitment match used (more
-# than one for a multi-PO invoice). content_type (pdf | ubl_xml | email_body) and extraction_model: how it arrived
-# and was read.
-_FALSE_KEYS = {"posted", "wrong_entity_posting", "duplicate_posting", "doa_auto_approved", "terms_variance_paid",
-               "touchless"}
+# posted_on: ISO datetime of the simulated posting. doc_type: the document type as read (invoice, credit_note,
+# reminder, statement, other). po_numbers: every PO the commitment match used (more than one for a multi-PO invoice).
+# content_type (pdf | ubl_xml | email_body) and extraction_model: how it arrived and was read. commitment: po |
+# contract | catalogue | none. owner_title: the named owner's job title. gross_chf: the gross in the group currency
+# at the simulated rate (approval limit). duplicate_leg: which leg of the duplicate rule matched. first_pass_match:
+# matched to a commitment (PO + receipt / confirmation, contract schedule, card / catalogue) and within tolerance at
+# the first pass, with no follow-up (deck A6, first-pass match rate).
+_FALSE_KEYS = {"posted", "wrong_entity_posting", "duplicate_posting", "terms_variance_paid", "touchless",
+               "first_pass_match"}
 _LIST_KEYS = {"flags", "line_checks", "po_numbers"}
 BLOCKING_OUTCOMES = ("exception", "human_review")
 
@@ -126,7 +159,7 @@ def low_confidence_fields(data: dict[str, Any], threshold: float) -> list[str]:
     low = []
     identity = [confidence(data, f) for f in extract.SUPPLIER_IDENTITY_FIELDS if _present(value(data, f))]
     if not identity or max(identity) < threshold:
-        low.append("supplier identity (VAT ID, IBAN or name)")
+        low.append("supplier identity (tax ID, IBAN or name)")
     for name in extract.CRITICAL_FIELDS:
         if name not in extract.SUPPLIER_IDENTITY_FIELDS and (
                 not _present(value(data, name)) or confidence(data, name) < threshold):
@@ -267,16 +300,9 @@ def qty(x: float) -> str:
     return f"{x:,.0f}" if float(x).is_integer() else f"{x:,.2f}"
 
 
-def _fmt(v: Any) -> str:
-    s = str(v)
-    return f'"{s}"' if " " in s else s
-
-
-def log_line(label: int | str, head: str, **extra: Any) -> str:
-    """'[doc 07] step=resolve_vendor result=ok party=Shopsys account=V-000105 method=vat_id' (brief section 13).
-    The label is the sample number, or the document id of a live (webhook) document: '[doc B-W01] ...'."""
-    tag = f"{label:02d}" if isinstance(label, int) else label
-    return f"[doc {tag}] {head}" + "".join(f" {k}={_fmt(v)}" for k, v in extra.items() if v is not None)
+def log_line(doc_id: str, rule: str, result: str, reason: str = "") -> str:
+    """'[B-05] Commitment → Exception — PO 4500123 exists but ...' (brief v2 section 2: "rule X → result")."""
+    return f"[{doc_id}] {rule} → {result}" + (f" — {reason}" if reason else "")
 
 
 # --------------------------------------------------------------------------------------------
@@ -286,8 +312,9 @@ def log_line(label: int | str, head: str, **extra: Any) -> str:
 
 def find_party(data: dict[str, Any], accounts: list[VendorAccount],
                parties: list[Party]) -> tuple[Optional[str], Optional[str]]:
-    """To-be party resolution on active accounts: VAT ID exact -> IBAN exact -> name similarity (account display
-    names and party canonical names, best score >= NAME_SIMILARITY_THRESHOLD). Returns (party_id, method)."""
+    """To-be supplier resolution at supplier level on active accounts: tax ID (VAT ID) exact, then IBAN exact (the
+    deck's uniqueness rule). A name is never enough: guessing by name is what the as-is does. Returns
+    (party_id, method)."""
     linked = [a for a in accounts if a.party_id]
     vat = normalise_vat(value(data, "supplier_vat_id"))
     if vat:
@@ -299,10 +326,11 @@ def find_party(data: dict[str, Any], accounts: list[VendorAccount],
         hit = next((a.party_id for a in linked if normalise_iban(a.iban) == iban), None)
         if hit:
             return hit, "iban"
-    name = value(data, "supplier_name")
-    candidates = [(a.display_name, a.party_id) for a in linked] + [(p.canonical_name, p.party_id) for p in parties]
-    score, party_id = max(((name_similarity(name, n), pid) for n, pid in candidates), default=(0.0, None))
-    return (party_id, "name") if score >= NAME_SIMILARITY_THRESHOLD else (None, None)
+    return None, None
+
+
+METHOD_WORDS = {"vat_id": "tax ID", "iban": "IBAN", "exact_name": "exact name", "fuzzy_name": "similar name",
+                "created": "account created"}
 
 
 def true_party(data: dict[str, Any], parties: list[Party], linked_accounts: list[VendorAccount]) -> Optional[str]:
@@ -581,6 +609,11 @@ def check_header_across_pos(net_total: Optional[float], pos: list[PurchaseOrder]
 # --------------------------------------------------------------------------------------------
 
 
+def _days(n: int) -> str:
+    """'1 business day' / '7 business days'."""
+    return f"{n} business day{'' if n == 1 else 's'}"
+
+
 def _blank_details(doc: InboundDocument) -> dict[str, Any]:
     details: dict[str, Any] = {k: (False if k in _FALSE_KEYS else [] if k in _LIST_KEYS else None)
                                for k in DETAIL_KEYS}
@@ -598,6 +631,7 @@ class _Gate:
     data: dict[str, Any]
     details: dict[str, Any]
     cfg: dict[str, Any] = field(init=False)
+    spec: Optional[world.DocumentSpec] = field(init=False, default=None)  # a sample document's spec
     steps: list[dict[str, str]] = field(default_factory=list)
     earlier: list[GateDecision] = field(default_factory=list)  # decisions of documents processed before
     entities: dict[str, LegalEntity] = field(default_factory=dict)
@@ -618,9 +652,13 @@ class _Gate:
     decided_on: Optional[datetime] = None
     po_numbers: list[str] = field(default_factory=list)  # extracted PO numbers, normalised, in printed order
     invoice_date: Optional[date] = None
+    # Price / quantity issues found by the commitment match, decided by the tolerances rule:
+    # {"pos": [...], "issues": [...], "checks": [...], "ignored": [...], "note": str, "lines_ok": str}
+    tolerance: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         self.cfg = SCENARIOS[self.doc.scenario]
+        self.spec = seed.spec_for(self.doc.dataset, self.doc.sample_no)
 
     # -- helpers ---------------------------------------------------------------------------
     def v(self, name: str) -> Any:
@@ -632,47 +670,49 @@ class _Gate:
 
     @property
     def key(self) -> str:
-        """Seed key of the as-is email loop: the sample number; a live (webhook) document's own id, so each one gets
-        its own loop length."""
+        """Seed key of the as-is email loop: the case document's loop key (its number before the renumbering of 25 Sep
+        2026) or sample number; a live (webhook) document's own id, so each one gets its own loop length."""
+        if self.spec is not None and self.spec.loop_key:
+            return self.spec.loop_key
         return f"{self.doc.sample_no:02d}" if self.doc.sample_no else self.doc.doc_id
-
-    @property
-    def log_label(self) -> int | str:
-        """Sample number in the log lines; the document id for a live (webhook) document."""
-        return self.doc.sample_no or self.doc.doc_id
 
     def entity_label(self, code: Optional[str]) -> str:
         le = self.entities.get(code or "")
         return f"{le.name} ({code})" if le else "an entity that is not a Velox legal entity"
 
-    def step(self, name: str, result: str, detail: str, *, quiet: bool = False, **extra: Any) -> None:
-        self.steps.append({"step": name, "result": result, "detail": detail})
+    def step(self, name: str, result: str, detail: str, *, quiet: bool = False) -> None:
+        """Record a step; a quiet one (not reached, not applicable) is kept in the steps but not in the rule log."""
+        self.steps.append({"step": name, "result": result, "detail": detail, **({"quiet": True} if quiet else {})})
         if not quiet:
-            self.log(log_line(self.log_label, f"step={name} result={result}", **extra))
+            rule = STEP_LABELS[self.doc.scenario].get(name, name)
+            self.log(log_line(self.doc.doc_id, rule, RESULT_WORDS.get(result, result), detail))
 
     def add_flag(self, type_: str, owner: world.Person, detail: str) -> None:
         self.details["flags"].append({"type": type_, "label": taxonomy.label(type_), "owner_name": owner.name,
-                                      "detail": detail})
+                                      "owner_role": taxonomy.BY_KEY[type_].owner_role, "detail": detail})
 
-    def fail(self, step: str, type_: str, *, role: str, owner: Optional[str], reason: str, cause: str,
-             next_owner: Optional[tuple[str, str]] = None, approval: bool = False, **extra: Any) -> None:
-        """A blocking exception. With exception routing it goes to its owner with the taxonomy SLA and the
-        pipeline stops; without it (as-is) it becomes the untracked email loop and the document continues."""
+    def fail(self, step: str, type_: str, *, owner: Optional[str], reason: str, cause: str,
+             next_owner: Optional[tuple[str, str]] = None, approval: bool = False) -> None:
+        """A typed exception. With exception routing it goes to its owner (the A3 role, a named person) with the
+        taxonomy SLA and outcome (Exception or Human review) and the pipeline stops; without it (as-is) it becomes
+        the untracked email loop and the document continues."""
         if self.cfg["exception_routing"]:
-            self.outcome = "human_review" if type_ == "human_review" else "exception"
-            self.exception_type, self.owner_role, self.owner_name = type_, role, owner
-            self.sla_days, self.reason, self.approval = taxonomy.get(type_).sla_days, reason, approval
+            etype = taxonomy.get(type_)
+            self.outcome = etype.outcome
+            self.exception_type, self.owner_role, self.owner_name = type_, etype.owner_role, owner
+            self.sla_days, self.reason, self.approval = etype.sla_days, reason, approval
+            person = world.PERSON_BY_NAME.get(owner or "")
+            self.details["owner_title"] = person.role if person else None
             if next_owner:
                 self.details["next_owner_name"], self.details["next_owner_role"] = next_owner
             self.stopped_at = step
-            self.step(step, "exception", reason, exception=type_, owner=owner, **extra)
+            self.step(step, "human_review" if etype.outcome == "human_review" else "exception", reason)
             return
         if not self.email_loop:
             self.email_loop, self.loop_cause = True, cause
             self.outcome, self.exception_type = "exception", "email_loop"
             self.details["email_loop_days"] = sim.email_loop_days(self.key)
-        self.step(step, "exception", f"{cause}: untracked follow-up by email, with no owner and no SLA.",
-                  exception="email_loop", **extra)
+        self.step(step, "email_loop", f"{cause}: untracked follow-up by email, with no owner and no SLA.")
 
     def stop(self, step: str) -> None:
         self.stopped_at = self.stopped_at or step
@@ -696,81 +736,102 @@ def _register(g: _Gate) -> None:
     lag = sim.business_days_between(g.doc.received_on, reg)
     g.details["registration_lag_days"] = lag
     if lag == 0:
-        g.step("register", "ok", f"Registered on arrival as {g.doc.doc_id} ({reg:%a %d %b %Y %H:%M}); the ageing "
-                                 "clock starts.", lag_days=0)
+        g.step("register", "ok", f"{g.doc.doc_id} · {reg:%a %d %b %Y %H:%M} · {g.doc.mailbox}: from this minute the "
+                                 "invoice exists and the clock runs.")
         return
     if g.doc.dataset == LIVE_DATASET and reg > datetime.now():  # received live: the registration day is ahead
-        why = ("the store forwards it to AP" if g.doc.channel == "store_mailbox"
-               else "AP opens ap@ and the quick-fix tool keys it")
-        g.step("register", "info", f"Not registered yet: expected {lag} business day(s) after receipt, on "
-                                   f"{reg:%a %d %b %Y}, when {why}.", lag_days=lag)
+        why = "the store forwards it to AP" if g.doc.channel == "store_mailbox" else "AP opens ap@ and keys it"
+        g.step("register", "info", f"Not registered yet: expected {_days(lag)} after receipt, on "
+                                   f"{reg:%a %d %b %Y}, when {why}.")
         return
-    why = "the store forwarded it to AP" if g.doc.channel == "store_mailbox" else "AP opened ap@ and the quick-fix tool keyed it"
-    g.step("register", "info", f"Registered {lag} business day(s) after receipt, on {reg:%a %d %b %Y}, when {why}.",
-           lag_days=lag)
+    why = "the store forwarded it to AP" if g.doc.channel == "store_mailbox" else "AP opened ap@ and keyed it"
+    g.step("register", "info", f"Registered {_days(lag)} after receipt, on {reg:%a %d %b %Y}, when {why}.")
 
 
-def _no_extraction(g: _Gate) -> None:
-    """Nothing was read: to-be human review (AP keys it); as-is the email loop, and nothing can be posted.
-    A body-only email has no document to read: AP keys the invoice from the email text."""
-    ap = world.AP_SPECIALIST
-    if g.doc.content_type == "email_body":
-        reason = (f"No document is attached: the invoice is only in the email body. Routed to the AP specialist "
-                  f"{ap.name}, who keys it from the email and verifies it.")
-        cause = "No document attached: the invoice is only in the email body, so AP keys it by hand"
-    else:
-        reason = (f"No extraction is available for this document: routed to the AP specialist {ap.name} to key and "
-                  "verify it.")
-        cause = "No extraction available, so AP keys the invoice by hand"
-    g.fail("extract", "human_review", role=ap.role, owner=ap.name, reason=reason, cause=cause)
-    g.stop("extract")
-
-
-def _not_an_invoice(g: _Gate, model: str, threshold: float) -> bool:
-    """To-be document-type check: a document read as "other" with enough confidence is filed, never posted."""
-    if g.v("doc_type") != "other" or confidence(g.data, "doc_type") < threshold:
-        return False
-    ap = world.AP_SPECIALIST
-    g.fail("extract", "not_an_invoice", role=ap.role, owner=ap.name,
-           reason=f"Read by {model} as neither an invoice nor a credit note (document type 'other', e.g. a supplier "
-                  f"statement): nothing is posted. Routed to the AP specialist {ap.name} to file it or reconcile it "
-                  "with the open items.", cause="Not an invoice")
-    g.stop("extract")
-    return True
+def _screen(g: _Gate) -> None:
+    """Simulated pre-model screening (deck slide 10: documents are screened before they reach the model)."""
+    what = {"ubl_xml": "a structured e-invoice (XML)", "email_body": "the text of the email"}.get(
+        g.doc.content_type or "pdf", "a PDF")
+    g.step("screen", "ok", f"Screened before the model: {what} from {g.doc.sender_email or 'the sender'}; accepted "
+                           "file type, no hidden instructions found (simulated check).")
 
 
 def _extract(g: _Gate) -> None:
+    """Read with Gemini (to-be) / keyed by AP (as-is). The model only reads and classifies: every decision on what it
+    read is a rule of its own (confidence, document type, ...)."""
+    if not g.cfg["exception_routing"]:
+        if not g.data:
+            cause = ("No document attached: the invoice is only in the email body, so AP keys it by hand"
+                     if g.doc.content_type == "email_body" else "Nothing could be keyed from the document")
+            g.fail("extract", "human_review", owner=None, reason=cause, cause=cause)
+            g.stop("extract")
+            return
+        g.step("extract", "ok", "AP opened the document and keyed the invoice by hand: no confidence, no checks.")
+        return
     if not g.data:
-        _no_extraction(g)
+        what = ("No document is attached: the invoice is only in the email body" if g.doc.content_type == "email_body"
+                else "No extraction is available for this document")
+        g.step("extract", "info", f"{what}; nothing was read.")
+        return
+    if g.doc.content_type == "ubl_xml":
+        g.step("extract", "ok", "Structured e-invoice: the fields are parsed from the XML, no model call.")
         return
     model = g.doc.extraction.model if g.doc.extraction else "unknown model"
-    threshold = g.cfg["confidence_threshold"]
-    if g.cfg["doc_type_check"] and _not_an_invoice(g, model, threshold if threshold is not None else 0.0):
-        return
-    if threshold is None:
-        g.step("extract", "ok", f"Fields read by {model}; no confidence threshold, whatever came out is used.")
+    read = DOC_TYPE_WORDS.get(g.doc.doc_type, g.doc.doc_type)
+    g.step("extract", "ok", f"Read by {model}: {len(extract.FIELDS)} fields, each with a confidence; document type "
+                            f"'{read}' ({confidence(g.data, 'doc_type'):.2f}).")
+
+
+DOC_TYPE_WORDS = {"invoice": "invoice", "credit_note": "credit note", "reminder": "reminder",
+                  "statement": "statement", "other": "other", "unknown": "unknown"}
+
+
+def _confidence(g: _Gate) -> None:
+    """Confidence rule: every critical field present and at or above the threshold, else Human review (AP review)."""
+    threshold, ap = g.cfg["confidence_threshold"], world.AP_SPECIALIST
+    if not g.data:
+        why = ("the invoice is only in the email body, so AP keys it from the email and verifies it"
+               if g.doc.content_type == "email_body" else "nothing was read, so AP keys the invoice and verifies it")
+        g.fail("confidence", "human_review", owner=ap.name, reason=f"No fields to check: {why} (AP review: {ap.name}).",
+               cause="Nothing read")
         return
     low = low_confidence_fields(g.data, threshold)
-    if g.doc.doc_type not in ("invoice", "credit_note"):
-        low.append("document type (not recognised as an invoice or credit note)")
     if low:
-        g.fail("extract", "human_review", role="AP specialist", owner=world.AP_SPECIALIST.name,
-               reason=f"Extraction not reliable enough on {', '.join(low)} (missing or confidence below "
-                      f"{threshold:.2f}): routed to the AP specialist {world.AP_SPECIALIST.name} to verify the "
-                      "fields against the document.", cause="Low extraction confidence")
-        return
-    negative = [x for x in (g.details["gross_total"], g.details["net_total"]) if x is not None and x < 0]
-    if g.doc.doc_type == "invoice" and negative:
-        ap = world.AP_SPECIALIST
-        g.fail("extract", "human_review", role=ap.role, owner=ap.name,
-               reason=f"The document is read as an invoice but its total is negative "
-                      f"({money(negative[0], g.details['currency'])}): negative total, probable credit note. Routed "
-                      f"to the AP specialist {ap.name} to confirm the document type.",
-               cause="Negative total: probable credit note")
+        g.fail("confidence", "human_review", owner=ap.name,
+               reason=f"{', '.join(low).capitalize()} missing or below {threshold:.2f}: Human review, AP verifies the "
+                      f"fields against the document (AP review: {ap.name}).", cause="Low extraction confidence")
         return
     lowest = min(confidence(g.data, f) for f in extract.CRITICAL_FIELDS if _present(g.v(f)))
-    g.step("extract", "ok", f"Fields read by {model}; every critical field at or above {threshold:.2f} "
-                            f"(lowest {lowest:.2f}).")
+    g.step("confidence", "ok", f"Every critical field at or above {threshold:.2f} (lowest {lowest:.2f}).")
+
+
+def _document_type(g: _Gate) -> None:
+    """Invoices and credit notes continue; a reminder continues as a copy of the invoice it reproduces (the duplicate
+    rule decides); a statement is a supplier payment-status query; anything else goes to Human review."""
+    read, ap = g.doc.doc_type, world.AP_SPECIALIST
+    negative = [x for x in (g.details["gross_total"], g.details["net_total"]) if x is not None and x < 0]
+    if read == "invoice" and negative:
+        g.fail("document_type", "human_review", owner=ap.name,
+               reason=f"Read as an invoice but the total is negative ({money(negative[0], g.details['currency'])}): "
+                      f"probable credit note, Human review (AP review: {ap.name}).",
+               cause="Negative total: probable credit note")
+        return
+    if read in ("invoice", "credit_note"):
+        g.step("document_type", "ok", f"{DOC_TYPE_WORDS[read].capitalize()}: the rules apply.")
+        return
+    if read == "reminder":
+        g.step("document_type", "ok", f"Payment reminder reproducing invoice {g.details['invoice_number'] or '?'}: "
+                                      "checked like the invoice it copies (the duplicate rule decides).")
+        return
+    if read == "statement":
+        g.fail("document_type", "payment_status_query", owner=ap.name,
+               reason="A statement of account, not an invoice: nothing is posted. Supplier payment-status query: the "
+                      f"agent drafts the reply with the status of the open items, AP ({ap.name}) approves it.",
+               cause="Statement of account")
+        return
+    g.fail("document_type", "human_review", owner=ap.name,
+           reason=f"Read as '{DOC_TYPE_WORDS.get(read, read)}': not an invoice or credit note, so nothing is posted. "
+                  f"Human review (AP review: {ap.name}) files it or keys it.", cause="Not an invoice")
 
 
 def _resolve_vendor(g: _Gate) -> None:
@@ -782,9 +843,9 @@ def _resolve_vendor(g: _Gate) -> None:
     else:
         account, method = naive_account(g.v("supplier_name"), accounts)
         if account is not None:
-            _use_account(g, account, method, f"First account whose name matches the printed name "
-                                             f"'{g.v('supplier_name')}' ({method.replace('_', ' ')}); "
-                                             "VAT ID and IBAN are not used.")
+            _use_account(g, account, method, f"AP picks the first account whose name matches the printed name "
+                                             f"'{g.v('supplier_name')}' ({METHOD_WORDS[method]}); tax ID and IBAN "
+                                             "are not used.")
         else:
             _unknown_vendor(g)
 
@@ -799,9 +860,10 @@ def _resolve_party(g: _Gate, accounts: list[VendorAccount]) -> None:
     g.party = parties[party_id]
     bill_to = g.details["bill_to_entity"]
     in_entity = [a for a in mine if a.legal_entity_code == bill_to]
+    how = METHOD_WORDS.get(method, method)
     if len(in_entity) == 1:
-        _use_account(g, in_entity[0], method, f"Resolved to {g.party.canonical_name} by {method.replace('_', ' ')}; "
-                                              f"its account in {bill_to} is {in_entity[0].account_id}.")
+        _use_account(g, in_entity[0], method, f"Resolved to {g.party.canonical_name} by {how} at supplier level; "
+                                              f"its record in {bill_to} is {in_entity[0].account_id}.")
     elif in_entity:
         account = min(in_entity, key=lambda a: (a.party_id != g.party.party_id, a.account_id))
         others = ", ".join(a.account_id for a in in_entity if a is not account)
@@ -812,9 +874,9 @@ def _resolve_party(g: _Gate, accounts: list[VendorAccount]) -> None:
         _use_account(g, account, method, detail, result="flag" if g.cfg["flag_duplicate_vendor_accounts"] else "ok")
     else:
         account = mine[0]
-        _use_account(g, account, method, f"Resolved to {g.party.canonical_name} by {method.replace('_', ' ')}, "
-                                         f"but it has no account in {bill_to or 'the billed entity'}; nearest "
-                                         f"account {account.account_id} ({account.legal_entity_code}).")
+        _use_account(g, account, method, f"Resolved to {g.party.canonical_name} by {how} at supplier level, but it "
+                                         f"has no record in {bill_to or 'the billed entity'}; nearest record "
+                                         f"{account.account_id} ({account.legal_entity_code}).")
 
 
 def _use_account(g: _Gate, account: VendorAccount, method: str, detail: str, result: str = "ok") -> None:
@@ -824,8 +886,7 @@ def _use_account(g: _Gate, account: VendorAccount, method: str, detail: str, res
                                                        Party.party_id == account.party_id))
     g.details.update(account_id=account.account_id, resolution_method=method,
                      party_id=g.party.party_id if g.party else None)
-    short = g.party.canonical_name.split()[0] if g.party else "none"
-    g.step("resolve_vendor", result, detail, party=short, account=account.account_id, method=method)
+    g.step("resolve_vendor", result, detail)
 
 
 def _unknown_vendor(g: _Gate) -> None:
@@ -834,14 +895,14 @@ def _unknown_vendor(g: _Gate) -> None:
         _create_account(g)
         return
     owner = world.MASTER_DATA_OWNER
-    g.fail("resolve_vendor", "unknown_vendor", role=owner.role, owner=owner.name,
-           reason=f"{name} matches no vendor account by VAT ID, IBAN or name: routed to the Master Data owner "
-                  f"{owner.name} to onboard it through the vendor request workflow.", cause="Unknown supplier")
+    g.fail("resolve_vendor", "unknown_vendor", owner=owner.name,
+           reason=f"{name} matches no supplier record by tax ID or IBAN: unknown vendor, routed to the master data "
+                  f"owner {owner.name} to onboard it through the vendor request workflow.", cause="Unknown supplier")
     g.stop("resolve_vendor")
 
 
 def _create_account(g: _Gate) -> None:
-    """As-is: the quick-fix tool opens a new vendor account for any name it does not find."""
+    """As-is: AP opens a new vendor account for any name it does not find, to pay the invoice."""
     ids = g.session.scalars(select(VendorAccount.account_id).where(VendorAccount.scenario == g.doc.scenario))
     n = max((int(i[2:]) for i in ids if i[2:].isdigit()), default=0) + 1
     terms = g.v("payment_terms_days")
@@ -855,21 +916,14 @@ def _create_account(g: _Gate) -> None:
     g.session.flush()
     g.account = account
     g.details.update(account_id=account.account_id, resolution_method="created", party_id=None)
-    g.step("resolve_vendor", "created", f"No account named '{account.display_name}': the tool created "
-                                        f"{account.account_id} in {account.legal_entity_code} on the fly.",
-           party="none", account=account.account_id, method="created")
+    g.step("resolve_vendor", "created", f"No account named '{account.display_name}': AP opened "
+                                        f"{account.account_id} in {account.legal_entity_code} to pay the invoice.")
 
 
 def _legal_entity(g: _Gate) -> None:
     bill_to, acc = g.details["bill_to_entity"], g.account
-    if not g.cfg["entity_check"]:
-        g.step("legal_entity", "skipped", f"No legal-entity check: the invoice goes to the entity of "
-                                          f"{acc.account_id} ({acc.legal_entity_code}); billed to "
-                                          f"{g.entity_label(bill_to)}.", bill_to=bill_to, account_entity=acc.legal_entity_code)
-        return
     if bill_to == acc.legal_entity_code:
-        g.step("legal_entity", "ok", f"Billed to {g.entity_label(bill_to)}, where {acc.account_id} is held.",
-               bill_to=bill_to, account_entity=acc.legal_entity_code)
+        g.step("legal_entity", "ok", f"Billed to {g.entity_label(bill_to)}, where {acc.account_id} is held.")
         return
     if bill_to is None:
         where = f"'{g.v('bill_to_name') or 'no name'}', which is not a Velox legal entity"
@@ -881,10 +935,9 @@ def _legal_entity(g: _Gate) -> None:
     if po is not None:
         where += f" and PO {po.po_number} belongs to {po.legal_entity_code}"
     ap = world.AP_SPECIALIST
-    g.fail("legal_entity", "wrong_legal_entity", role=ap.role, owner=ap.name,
-           reason=f"Billed to {where}: routed to the AP specialist {ap.name} to ask the supplier to re-issue it or "
-                  "re-assign it.", cause="Billed to the wrong Velox entity", bill_to=bill_to,
-           account_entity=acc.legal_entity_code)
+    g.fail("legal_entity", "wrong_legal_entity", owner=ap.name,
+           reason=f"Billed to {where}: wrong legal entity, routed to AP ({ap.name}) to ask the supplier to re-issue "
+                  "it or re-assign it.", cause="Billed to the wrong Velox entity")
 
 
 def _numbered(word: str, number: Any) -> str:
@@ -893,14 +946,32 @@ def _numbered(word: str, number: Any) -> str:
     return f"{word} {text}" if text else f"{word} (no number read)"
 
 
+def duplicate_leg(g: _Gate, earlier: GateDecision) -> Optional[str]:
+    """Which leg of the to-be duplicate rule an earlier document of the same supplier matches (brief v2 section 2):
+    the same invoice number, or the same gross amount and invoice date billed to the same entity; None if neither.
+    A statement is never the original, and a credit note is only compared with credit notes."""
+    det = earlier.details
+    if det.get("doc_type") in ("statement", "other") or (det.get("doc_type") == "credit_note") != g.is_credit_note:
+        return None
+    number = g.details["invoice_number_norm"]
+    if number and number == det.get("invoice_number_norm"):
+        return f"same invoice number {g.details['invoice_number']}"
+    if (g.invoice_date and det.get("invoice_date") == g.invoice_date.isoformat()
+            and det.get("bill_to_entity") == g.details["bill_to_entity"]
+            and amounts_close(g.details["gross_total"], det.get("gross_total"))):
+        return (f"same amount {money(g.details['gross_total'], g.details['currency'])} and date "
+                f"{g.invoice_date:%d %b %Y}")
+    return None
+
+
 def _duplicate_check(g: _Gate) -> None:
     number, gross = g.details["invoice_number"], g.details["gross_total"]
     blank = not (str(number).strip() if number is not None else "")
-    if g.cfg["duplicate_check"] == "party_normalised":  # a document that is not an invoice is never the original
-        hit = next((d.doc_id for d in g.earlier if g.same_party(d) and d.details.get("doc_type") != "other"
-                    and same_invoice(number, gross, d.details.get("invoice_number"), d.details.get("gross_total"))),
-                   None)
-        scope = f"from {g.party.canonical_name if g.party else 'this supplier'} on any account"
+    leg = None
+    if g.cfg["duplicate_check"] == "party_normalised":
+        hit, leg = next(((d.doc_id, lg) for d in g.earlier if g.same_party(d) and (lg := duplicate_leg(g, d))),
+                        (None, None))
+        scope = f"from {g.party.canonical_name if g.party else 'this supplier'} on any of its records"
     else:
         # A missing number is not a number: it never equals the blank number of an earlier posting.
         earlier_ids = [d.doc_id for d in g.earlier]
@@ -910,22 +981,25 @@ def _duplicate_check(g: _Gate) -> None:
             PendingVendorInvoice.invoice_number == number).limit(1))
         scope = f"posted on account {g.account.account_id} (other accounts are not checked)"
     if hit is None:
-        detail = (f"No invoice number read, so no earlier invoice {scope} can be matched." if blank
-                  else f"No earlier invoice {number} {scope}.")
-        g.step("duplicate_check", "ok", detail, number=g.details["invoice_number_norm"])
+        if g.cfg["duplicate_check"] == "party_normalised":
+            detail = f"No earlier invoice {scope} with the same number, or the same amount and date."
+        else:
+            detail = (f"No invoice number read, so no earlier invoice {scope} can be matched." if blank
+                      else f"No earlier invoice {number} {scope}.")
+        g.step("duplicate_check", "ok", detail)
         return
     routed = g.cfg["exception_routing"]
     ap = world.AP_SPECIALIST
     g.outcome, g.exception_type = "blocked_duplicate", "duplicate_invoice"
-    g.owner_role, g.owner_name = (ap.role, ap.name) if routed else (None, None)
+    g.owner_role, g.owner_name = (taxonomy.get("duplicate_invoice").owner_role, ap.name) if routed else (None, None)
     g.sla_days = taxonomy.get("duplicate_invoice").sla_days if routed else None
-    g.details["duplicate_of"] = hit
+    g.details.update(duplicate_of=hit, duplicate_leg=leg)
     supplier = g.party.canonical_name if g.party else g.account.display_name
-    g.reason = (f"{_numbered('Invoice', number)} from {supplier} ({money(gross, g.details['currency'])}) was already "
-                f"registered as {hit}: blocked"
-                + (", and the supplier gets an automatic status reply." if routed else "."))
+    what = f"{_numbered('Invoice', number)} from {supplier} ({money(gross, g.details['currency'])})"
+    g.reason = (f"{what} was already registered as {hit} ({leg}): Block before posting; AP replies to the supplier "
+                f"with the status ({ap.name})." if routed else f"{what} was already posted as {hit}: blocked.")
     g.stopped_at = "duplicate_check"
-    g.step("duplicate_check", "blocked", g.reason, duplicate_of=hit)
+    g.step("duplicate_check", "blocked", g.reason)
 
 
 def _credit_note(g: _Gate) -> None:
@@ -951,19 +1025,19 @@ def _credit_note(g: _Gate) -> None:
         where = f"same vendor account {g.account.account_id}"
     if applied_to:
         g.details.update(credit_status="applied", applied_to=applied_to)
-        g.step("credit_note", "applied", f"{_numbered('Credit note', g.details['invoice_number'])} applied to "
-                                         f"invoice {ref} ({applied_to}; {where}).", applied_to=applied_to)
+        g.step("credit_note", "applied", f"{_numbered('Credit note', g.details['invoice_number'])} linked to "
+                                         f"invoice {ref} ({applied_to}; {where}).")
         return
     if g.cfg["credit_matching"] == "party":
         # Pending, not unapplied: nothing is posted until AP identifies the invoice (credit_status stays None, so it
-        # is neither an unapplied credit nor cash leakage).
+        # is not an unapplied credit either).
         ap = world.AP_SPECIALIST
-        g.fail("credit_note", "credit_note_without_invoice", role=ap.role, owner=ap.name,
+        g.fail("credit_note", "credit_note_without_invoice", owner=ap.name,
                reason=f"{_numbered('Credit note', g.details['invoice_number'])} "
                       f"({money(g.details['gross_total'], g.details['currency'])}) "
                       + (f"references invoice {ref}, which is not known for this supplier" if ref
                          else "references no invoice")
-                      + f": routed to the AP specialist {ap.name} to identify the original invoice.",
+                      + f": credit note without invoice, routed to AP ({ap.name}) to identify the original invoice.",
                cause="Credit note without a known invoice")
         return
     g.details["credit_status"] = "unapplied"
@@ -1014,19 +1088,44 @@ def _commitment_match(g: _Gate) -> None:
         _match_without_po(g)
 
 
+def _likely_requester(g: _Gate) -> Optional[str]:
+    """The requester of the supplier's latest PO in the billed entity, else its non-PO requester; None if neither."""
+    party, entity = g.details["party_id"], g.details["bill_to_entity"]
+    if not party:
+        return None
+    accounts = set(g.session.scalars(select(VendorAccount.account_id).where(
+        VendorAccount.scenario == g.doc.scenario, VendorAccount.party_id == party)))
+    po = g.session.scalar(select(PurchaseOrder).where(
+        PurchaseOrder.scenario == g.doc.scenario, PurchaseOrder.legal_entity_code == entity,
+        PurchaseOrder.vendor_account_id.in_(accounts)).order_by(PurchaseOrder.order_date.desc()).limit(1))
+    if po is not None:
+        return po.requester_name
+    key = world.NON_PO_REQUESTERS.get((party, entity))
+    return world.PEOPLE[key].name if key else None
+
+
 def _po_not_found(g: _Gate) -> None:
-    """None of the quoted PO numbers is in the ERP: there is no PO, so no requester can be derived; the AP
-    specialist gets the correct PO from the supplier (a PO of another supplier goes to its requester instead)."""
-    ap, numbers = world.AP_SPECIALIST, g.po_numbers
+    """None of the quoted PO numbers is in the ERP: routed to the requester of the supplier's latest PO in the billed
+    entity (A3: requester); AP only when the supplier has no PO there (a PO of another supplier goes to its
+    requester instead)."""
+    numbers = g.po_numbers
     if len(numbers) == 1:
         missing, cause = (f"PO {numbers[0]} quoted on the invoice is not in the ERP",
                           f"PO {numbers[0]} quoted on the invoice was never keyed in the ERP")
     else:
         missing = f"None of the PO numbers quoted on the invoice ({', '.join(numbers)}) is in the ERP"
         cause = f"None of the PO numbers quoted on the invoice ({', '.join(numbers)}) was keyed in the ERP"
-    g.fail("commitment_match", "po_not_found", role=ap.role, owner=ap.name, po=numbers[0],
-           reason=f"{missing}, so no requester can be derived: AP gets the correct PO from the supplier (routed to "
-                  f"the AP specialist {ap.name}).", cause=cause)
+    requester = _likely_requester(g)
+    who = (f"the requester {requester} (latest PO of this supplier in the billed entity)" if requester
+           else f"AP ({world.AP_SPECIALIST.name}), since the supplier has no PO in the billed entity")
+    g.fail("commitment_match", "po_not_found", owner=requester or world.AP_SPECIALIST.name,
+           reason=f"{missing}: PO not found, routed to {who} to provide the correct PO.", cause=cause)
+
+
+def _who(name: Optional[str]) -> str:
+    """'Jonas Weber (Store development manager DE)': the named owner with the job title, when it is known."""
+    person = world.PERSON_BY_NAME.get(name or "")
+    return f"{name} ({person.role})" if person else (name or "nobody")
 
 
 def _match_po(g: _Gate) -> None:
@@ -1050,16 +1149,16 @@ def _match_po(g: _Gate) -> None:
     others = _ignored_sentence([p for p in ignored if p is not po])
     number = g.details["po_number"] = po.po_number
     if not _supplier_po(g, po):
-        g.fail("commitment_match", "po_not_found", role="Requester", owner=po.requester_name, po=number,
-               reason=f"PO {number} belongs to another supplier (account {po.vendor_account_id}): routed to the "
-                      f"requester {po.requester_name} to provide the correct PO.{others}",
+        g.fail("commitment_match", "po_not_found", owner=po.requester_name,
+               reason=f"PO {number} belongs to another supplier (account {po.vendor_account_id}): wrong vendor, "
+                      f"routed to the requester {_who(po.requester_name)} to provide the correct PO.{others}",
                cause=f"PO {number} belongs to another vendor account")
         return
     if g.cfg["entity_check"] and po.legal_entity_code != g.details["bill_to_entity"]:
-        g.fail("commitment_match", "wrong_legal_entity", role=ap.role, owner=ap.name, po=number,
+        g.fail("commitment_match", "wrong_legal_entity", owner=ap.name,
                reason=f"Billed to {g.entity_label(g.details['bill_to_entity'])} but PO {number} belongs to "
-                      f"{po.legal_entity_code}: routed to the AP specialist {ap.name} to ask for a re-issued invoice "
-                      f"or re-assign it.{others}", cause=f"PO {number} belongs to another legal entity")
+                      f"{po.legal_entity_code}: wrong legal entity, routed to AP ({ap.name}) to ask for a re-issued "
+                      f"invoice or re-assign it.{others}", cause=f"PO {number} belongs to another legal entity")
         return
     g.details.update(commitment="po", po_numbers=[number])
     receipts = _receipts(g, number)
@@ -1068,25 +1167,42 @@ def _match_po(g: _Gate) -> None:
     if lines:
         checks, issues = check_po_lines(lines, po, receipts, currency)
         unreadable = lines_total_mismatch(lines, net, currency)
-        lines_ok = f"{len(lines)} line{'s' if len(lines) != 1 else ''} within tolerance"
+        lines_ok = f"{len(lines)} line{'s' if len(lines) != 1 else ''} within tolerance of PO {number}"
     else:
         checks, issues, unreadable = check_po_header(net, po, receipts, currency)
-        lines_ok = "no invoice lines read, net total within tolerance of the PO total"
+        lines_ok = f"no invoice lines read, net total within tolerance of the total of PO {number}"
     g.details["line_checks"] = checks
     if unreadable:
-        g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name, po=number,
-               reason=f"PO {number}: {unreadable}. Routed to the AP specialist {ap.name} to check the invoice lines "
-                      f"against the document.{others}", cause=f"PO {number}: {unreadable}")
+        g.fail("commitment_match", "human_review", owner=ap.name,
+               reason=f"PO {number}: {unreadable}. Human review: AP checks the invoice lines against the document "
+                      f"(AP review: {ap.name}).{others}", cause=f"PO {number}: {unreadable}")
         return
-    if issues:
-        _route_po_issues(g, po, issues, note=others.strip())
+    if _route_receipt_issues(g, [po], issues, checks, others):
         return
-    received = "received in full" if fully_received(po, receipts) else "the invoiced quantities received"
     skipped = _ignored_note(ignored)
-    what = (f"3-way match on PO {number}{skipped}: {lines_ok} and {received}" if po.category == "goods"
-            else f"PO {number}{skipped} + service confirmation: {lines_ok}")
-    g.posted_note = what
-    g.step("commitment_match", "ok", f"{what}.", commitment="po", po=number)
+    g.tolerance = dict(pos=[po], issues=issues, checks=checks, ignored=others, lines_ok=lines_ok)
+    if po.category == "goods":
+        received = "received in full" if fully_received(po, receipts) else "goods receipt recorded"
+        g.posted_note = f"3-way match on PO {number}{skipped}"
+        g.step("commitment_match", "ok", f"Goods → PO + receipt: PO {number}{skipped}, {received}.")
+    else:
+        g.posted_note = f"PO {number}{skipped} + service confirmation"
+        g.step("commitment_match", "ok", f"Services → PO + confirmation: PO {number}{skipped}, service confirmation "
+                                         "recorded.")
+
+
+def _route_receipt_issues(g: _Gate, pos: list[PurchaseOrder], issues: list[dict[str, Any]],
+                          checks: list[dict[str, Any]], note: str) -> bool:
+    """A missing receipt or service confirmation stops the commitment rule (A3: PO exists, no receipt or
+    confirmation -> the requester). Returns True when it did."""
+    missing = [i for i in issues if i["kind"] == "no_receipt"]
+    if not missing:
+        return False
+    if len(pos) > 1:
+        _route_multi_po_issues(g, "commitment_match", pos, missing, checks, note)
+    else:
+        _route_po_issues(g, "commitment_match", pos[0], missing, note=note.strip())
+    return True
 
 
 def _ignored_note(ignored: list[PurchaseOrder]) -> str:
@@ -1102,17 +1218,17 @@ def _ignored_sentence(ignored: list[PurchaseOrder]) -> str:
 def _pos_of_another_entity(g: _Gate, usable: list[PurchaseOrder], wrong: list[PurchaseOrder],
                            others: list[PurchaseOrder]) -> None:
     """The invoice quotes POs of the billed entity and POs of the same supplier in another Velox entity: one invoice
-    for two legal entities. Never matched on the billed entity's POs alone: the AP specialist asks for one invoice
-    per entity (the single-PO entity check routes the same way)."""
+    for two legal entities. Never matched on the billed entity's POs alone: AP asks for one invoice per entity (the
+    single-PO entity check routes the same way)."""
     ap, label = world.AP_SPECIALIST, _po_label(wrong)
     verb = "belongs" if len(wrong) == 1 else "belong"
     entities = and_list(sorted({po.legal_entity_code for po in wrong}))
     g.details["po_number"] = wrong[0].po_number
-    g.fail("commitment_match", "wrong_legal_entity", role=ap.role, owner=ap.name,
-           po=",".join(po.po_number for po in wrong),
+    g.fail("commitment_match", "wrong_legal_entity", owner=ap.name,
            reason=f"Billed to {g.entity_label(g.details['bill_to_entity'])} with {_po_label(usable)}, but the invoice "
-                  f"also quotes {label} of the same supplier, which {verb} to {entities}: routed to the AP specialist "
-                  f"{ap.name} to ask for one invoice per legal entity or re-assign it.{_ignored_sentence(others)}",
+                  f"also quotes {label} of the same supplier, which {verb} to {entities}: wrong legal entity, routed "
+                  f"to AP ({ap.name}) to ask for one invoice per legal entity or re-assign it."
+                  f"{_ignored_sentence(others)}",
            cause=f"{label} quoted on the invoice {verb} to another legal entity")
 
 
@@ -1123,7 +1239,7 @@ def _receipts(g: _Gate, po_number: str) -> list[ProductReceipt]:
 
 def _match_pos(g: _Gate, pos: list[PurchaseOrder], ignored: list[PurchaseOrder]) -> None:
     """Multi-PO invoice: the invoice lines are mapped across the lines of every usable PO and each PO line is
-    checked as for a single PO; an issue is routed to the requester / receiver / buyer of the PO it is on."""
+    checked as for a single PO; an issue is routed to the requester / buyer of the PO it is on."""
     ap, label = world.AP_SPECIALIST, _po_label(pos)
     numbers = [po.po_number for po in pos]
     g.details.update(commitment="po", po_number=numbers[0], po_numbers=numbers)
@@ -1133,25 +1249,25 @@ def _match_pos(g: _Gate, pos: list[PurchaseOrder], ignored: list[PurchaseOrder])
     if lines:
         checks, issues = check_lines_across_pos(lines, pos, receipts, currency)
         unreadable = lines_total_mismatch(lines, net, currency)
-        lines_ok = f"{len(lines)} line{'s' if len(lines) != 1 else ''} within tolerance"
+        lines_ok = f"{len(lines)} line{'s' if len(lines) != 1 else ''} within tolerance of {label}"
     else:
         checks, issues, unreadable = check_header_across_pos(net, pos, receipts, currency)
-        lines_ok = "no invoice lines read, net total within tolerance of the POs' total"
+        lines_ok = f"no invoice lines read, net total within tolerance of the total of {label}"
     g.details["line_checks"] = checks
     skipped = _ignored_note(ignored)
     if unreadable:
-        g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name, po=",".join(numbers),
-               reason=f"{label}: {unreadable}. Routed to the AP specialist {ap.name} to check the invoice lines "
-                      f"against the document.{_ignored_sentence(ignored)}", cause=f"{label}: {unreadable}")
+        g.fail("commitment_match", "human_review", owner=ap.name,
+               reason=f"{label}: {unreadable}. Human review: AP checks the invoice lines against the document "
+                      f"(AP review: {ap.name}).{_ignored_sentence(ignored)}", cause=f"{label}: {unreadable}")
         return
-    if issues:
-        _route_multi_po_issues(g, pos, issues, checks, _ignored_sentence(ignored))
+    if _route_receipt_issues(g, pos, issues, checks, _ignored_sentence(ignored)):
         return
-    g.posted_note = f"Multi-PO match on {label}{skipped}: {lines_ok}, every line received or confirmed"
-    g.step("commitment_match", "ok", f"{g.posted_note}.", commitment="po", po=",".join(numbers))
+    g.tolerance = dict(pos=pos, issues=issues, checks=checks, ignored=_ignored_sentence(ignored), lines_ok=lines_ok)
+    g.posted_note = f"Multi-PO match on {label}{skipped}"
+    g.step("commitment_match", "ok", f"{g.posted_note}: a receipt or confirmation is recorded for every line.")
 
 
-def _route_multi_po_issues(g: _Gate, pos: list[PurchaseOrder], issues: list[dict[str, Any]],
+def _route_multi_po_issues(g: _Gate, step: str, pos: list[PurchaseOrder], issues: list[dict[str, Any]],
                            checks: list[dict[str, Any]], ignored: str = "") -> None:
     """Route the highest-priority issue (missing receipt, quantity, price) to the owners of the PO it is on; an
     invoice line on none of the POs goes to the buyer of the first one."""
@@ -1165,36 +1281,27 @@ def _route_multi_po_issues(g: _Gate, pos: list[PurchaseOrder], issues: list[dict
                 if amounts and all(a is not None for a in amounts) else None)
     clean = [p for p in pos if not any(i.get("po") == p.po_number for i in issues)]
     note = f"Invoice lines on {_po_label(pos)}" + (f"; the lines on {_po_label(clean)} match." if clean else ".")
-    _route_po_issues(g, po, mine, invoiced=invoiced, note=note + ignored)
+    _route_po_issues(g, step, po, mine, invoiced=invoiced, note=note + ignored)
 
 
-def _route_po_issues(g: _Gate, po: PurchaseOrder, issues: list[dict[str, Any]], *, invoiced: Optional[str] = None,
-                     note: str = "") -> None:
-    """Priority: missing receipt -> requester; quantity -> receiver, then buyer; price -> buyer. `invoiced` replaces
-    the invoiced amount of the reason and `note` is appended to it (multi-PO invoices)."""
+def _route_po_issues(g: _Gate, step: str, po: PurchaseOrder, issues: list[dict[str, Any]], *,
+                     invoiced: Optional[str] = None, note: str = "") -> None:
+    """Deck A3: a missing receipt or confirmation -> the requester; a price or quantity mismatch -> the buyer.
+    `invoiced` replaces the invoiced amount of the reason and `note` is appended to it (multi-PO invoices)."""
     by_kind = {kind: next((i for i in issues if i["kind"] == kind), None) for kind in ("no_receipt", "quantity", "price")}
-    common = dict(po=po.po_number)
     tail = f" {note}" if note else ""
     if by_kind["no_receipt"]:
         text = by_kind["no_receipt"]["text"]
         amount = invoiced or f"{money(g.details['net_total'], g.details['currency'])} invoiced"
-        g.fail("commitment_match", "po_no_receipt", role="Requester", owner=po.requester_name,
+        g.fail(step, "po_no_receipt", owner=po.requester_name,
                reason=f"PO {po.po_number} exists but {text} ({amount}): routed to the requester "
-                      f"{po.requester_name} to confirm delivery.{tail}",
-               cause=f"PO {po.po_number} exists but {text}", **common)
+                      f"{_who(po.requester_name)} to confirm delivery.{tail}",
+               cause=f"PO {po.po_number} exists but {text}")
         return
     issue = by_kind["quantity"] or by_kind["price"]
-    receiver = issue["receiver"] if issue["kind"] == "quantity" else None
-    if receiver:
-        g.fail("commitment_match", "price_qty_mismatch", role="Receiver", owner=receiver,
-               next_owner=(po.buyer_name, "Buyer"),
-               reason=f"{issue['text']}: quantity mismatch, routed to the receiver {receiver}, then the buyer "
-                      f"{po.buyer_name}.{tail}", cause=issue["text"], **common)
-        return
     kind = "quantity mismatch" if issue["kind"] == "quantity" else "price outside tolerance"
-    g.fail("commitment_match", "price_qty_mismatch", role="Buyer", owner=po.buyer_name,
-           reason=f"{issue['text']}: {kind}, routed to the buyer {po.buyer_name}.{tail}", cause=issue["text"],
-           **common)
+    g.fail(step, "price_qty_mismatch", owner=po.buyer_name,
+           reason=f"{issue['text']}: {kind}, routed to the buyer {_who(po.buyer_name)}.{tail}", cause=issue["text"])
 
 
 def _period_claimed(g: _Gate, contract: Contract, period: str) -> Optional[str]:
@@ -1247,46 +1354,62 @@ def _match_without_po(g: _Gate) -> None:
         if unreadable:
             ap = world.AP_SPECIALIST
             supplier = g.party.canonical_name if g.party else "the supplier"
-            g.fail("commitment_match", "human_review", role=ap.role, owner=ap.name,
+            g.fail("commitment_match", "human_review", owner=ap.name,
                    reason=f"No PO, and {unreadable}, so the invoice cannot be checked against the recurring contract "
-                          f"of {supplier}: routed to the AP specialist {ap.name} to read it from the document.",
+                          f"of {supplier}: Human review, AP reads it from the document (AP review: {ap.name}).",
                    cause=f"No PO and {unreadable}")
             return
         if contract is not None:
             amount, period = g.details["net_total"], g.invoice_date
             g.details.update(commitment="contract", contract_id=contract.contract_id)
-            g.posted_note = (f"No PO needed: recurring contract {contract.contract_id} covers "
-                             f"{f'{period:%B %Y}' if period else 'the period'} (net {money(amount, currency)} inside the "
-                             f"{contract.expected_monthly_min:,.2f}–{contract.expected_monthly_max:,.2f} monthly range)")
-            g.step("commitment_match", "ok", f"{g.posted_note}.", commitment="contract",
-                   contract=contract.contract_id)
+            g.posted_note = (f"Recurring contract {contract.contract_id} covers "
+                             f"{f'{period:%B %Y}' if period else 'the period'}")
+            g.tolerance = dict(pos=[], issues=[], checks=[], ignored="",
+                               lines_ok=f"net {money(amount, currency)} inside the {contract.expected_monthly_min:,.2f}–"
+                                        f"{contract.expected_monthly_max:,.2f} monthly range of contract "
+                                        f"{contract.contract_id}")
+            g.step("commitment_match", "ok", f"Recurring → contract schedule: {g.posted_note}; no PO needed.")
             return
+    if g.cfg["catalogue_matching"] and _match_catalogue(g):
+        return
     requester_key = world.NON_PO_REQUESTERS.get((g.details["party_id"], entity))
     requester = world.PEOPLE[requester_key] if requester_key else None
-    limit = g.cfg["doa_auto_approve_limit"]
-    known = g.details["resolution_method"] not in (None, "created")
-    if limit is not None and gross is not None and 0 < gross < limit and known:
-        g.details.update(doa_auto_approved=True, requester_name=requester.name if requester else None)
-        informed = f"requester {requester.name} informed" if requester else "no requester on file"
-        g.posted_note = (f"Non-PO invoice of {money(gross, currency)} from a known supplier, under the "
-                         f"{limit:,.2f} delegation-of-authority limit: auto-approved, {informed}")
-        g.step("commitment_match", "info", f"{g.posted_note}.", commitment="none", doa="auto_approved",
-               requester=requester.name if requester else None)
-        return
     owner_contract = g.session.scalar(select(Contract).where(
         Contract.scenario == g.doc.scenario, Contract.party_id == g.details["party_id"],
         Contract.legal_entity_code == entity).limit(1))
     if requester:
-        role, owner = "Requester", requester.name
+        owner, who = requester.name, f"the requester {_who(requester.name)}"
     elif owner_contract is not None:
-        role, owner = "Contract owner", owner_contract.owner_name
+        owner, who = owner_contract.owner_name, f"the contract owner {_who(owner_contract.owner_name)} as requester"
     else:
-        role, owner = world.AP_SPECIALIST.role, world.AP_SPECIALIST.name
+        owner, who = world.AP_SPECIALIST.name, f"AP ({world.AP_SPECIALIST.name}), since no requester is on file"
     g.details["requester_name"] = requester.name if requester else None
-    g.fail("commitment_match", "no_po", role=role, owner=owner, approval=True,
-           reason=f"No PO and no matching contract ({why}) for {money(gross, currency)}: routed to the "
-                  f"{role.lower()} {owner} to confirm the purchase, then cost-centre approval.",
+    g.fail("commitment_match", "no_po", owner=owner, approval=True,
+           reason=f"No commitment for {money(gross, currency)}: no PO, no matching contract ({why}) and no catalogue. "
+                  f"No PO, routed to {who} to confirm the purchase; then the budget owner approves.",
            cause=f"No PO on the invoice and {why}")
+
+
+def _match_catalogue(g: _Gate) -> bool:
+    """Small store purchase -> card / catalogue (deck slide 9): a catalogue of the supplier in the billed entity whose
+    per-invoice limit (group currency, simulated rate) covers the gross. Returns True when it matched."""
+    gross, currency = g.details["gross_total"], g.details["currency"]
+    rows = list(g.session.scalars(select(Contract).where(
+        Contract.scenario == g.doc.scenario, Contract.party_id == g.details["party_id"],
+        Contract.legal_entity_code == g.details["bill_to_entity"], Contract.category == "catalogue")))
+    chf = world.to_chf(gross, currency)
+    for cat in rows:
+        if chf is not None and 0 < chf <= cat.expected_monthly_max:
+            g.details.update(commitment="catalogue", catalogue_id=cat.contract_id, gross_chf=chf)
+            rate = world.CHF_RATES[(currency or "").upper()]
+            g.posted_note = f"Card / catalogue {cat.contract_id} ({cat.description})"
+            g.tolerance = dict(pos=[], issues=[], checks=[], ignored="",
+                               lines_ok=f"{money(gross, currency)} ≈ CHF {chf:,.2f} (simulated rate {rate:.2f}) within "
+                                        f"the CHF {cat.expected_monthly_max:,.0f} per-invoice limit of {cat.contract_id}")
+            g.step("commitment_match", "ok", f"Small store purchase → card / catalogue: {cat.contract_id}, "
+                                             f"{cat.description} (owner {cat.owner_name}).")
+            return True
+    return False
 
 
 def _agreed_terms(g: _Gate) -> Optional[int]:
@@ -1314,18 +1437,62 @@ def _terms(g: _Gate) -> None:
     if g.cfg["terms_source"] == "master" or printed is None:
         g.details.update(terms_days=master, terms_source="master")
         if g.cfg["terms_source"] == "master" and printed is not None and printed != master:
-            ap = world.AP_SPECIALIST
-            g.add_flag("terms_variance", ap, f"The invoice states {printed} days; the master terms of {master} "
-                                             "days apply.")
-            g.step("terms", "flag", f"Master terms {master} days apply; the invoice states {printed} days: info "
-                                    f"task for the AP specialist {ap.name}.", terms=master, source="master",
-                   flag="terms_variance")
+            g.step("terms", "ok", f"Master terms {master} days apply; the invoice states {printed} days, which is "
+                                  "ignored.")
             return
-        g.step("terms", "ok", f"Master terms: {master} days.", terms=master, source="master")
+        g.step("terms", "ok", f"Master terms: {master} days.")
         return
     g.details.update(terms_days=printed, terms_source="invoice")
-    g.step("terms", "ok", f"Terms taken from the invoice: {printed} days (vendor account {master}, agreed "
-                          f"{g.details['agreed_terms_days']}).", terms=printed, source="invoice")
+    g.step("terms", "ok", f"AP takes the terms from the invoice: {printed} days (vendor account {master}, agreed "
+                          f"{g.details['agreed_terms_days']}).")
+
+
+def _tolerances(g: _Gate) -> None:
+    """Price and quantity against the commitment (the PO lines found by the commitment rule); a mismatch goes to the
+    buyer (deck A3). For a contract or catalogue the amount check is the commitment's own range or limit."""
+    if g.is_credit_note:
+        g.step("tolerances", "skipped", "Not applicable to a credit note.", quiet=True)
+        return
+    t = g.tolerance
+    if t is None:
+        g.step("tolerances", "info", "No commitment to compare the amounts with.")
+        return
+    issues = [i for i in t["issues"] if i["kind"] != "no_receipt"]
+    if issues:
+        if len(t["pos"]) > 1:
+            _route_multi_po_issues(g, "tolerances", t["pos"], issues, t["checks"], t["ignored"])
+        else:
+            _route_po_issues(g, "tolerances", t["pos"][0], issues, note=t["ignored"].strip())
+        return
+    g.posted_note += f": {t['lines_ok']}"
+    g.details["first_pass_match"] = not g.email_loop
+    rule = f" (price and quantity: 2% or {PO_TOLERANCE_ABS:,.2f}, whichever is larger)" if t["pos"] else ""
+    g.step("tolerances", "ok", f"{t['lines_ok'][:1].upper()}{t['lines_ok'][1:]}{rule}.")
+
+
+def _approval_limit(g: _Gate) -> None:
+    """Above the approval limit of the billed entity (group currency CHF, simulated rate): Human review by the next
+    approver in the matrix (brief v2 section 2; deck A3: Amount above approval limit -> next approver, 2 days)."""
+    if g.is_credit_note:
+        g.step("approval_limit", "skipped", "Not applicable to a credit note.", quiet=True)
+        return
+    gross, currency, entity = g.details["gross_total"], g.details["currency"], g.account.legal_entity_code
+    rule, chf = world.APPROVAL_MATRIX.get(entity), world.to_chf(gross, currency)
+    g.details["gross_chf"] = chf
+    if rule is None or chf is None:
+        g.step("approval_limit", "info", f"No simulated CHF rate for {currency or 'an unknown currency'} or no "
+                                         f"approval rule for {entity}: the limit cannot be checked.")
+        return
+    rate = world.CHF_RATES[(currency or "").upper()]
+    amount = f"{money(gross, currency)} ≈ CHF {chf:,.0f} (simulated rate {rate:.2f})"
+    if chf <= rule.limit_chf:
+        g.step("approval_limit", "ok", f"{amount} within the CHF {rule.limit_chf:,.0f} approval limit of {entity}.")
+        return
+    approver = world.PEOPLE[rule.next_approver]
+    g.fail("approval_limit", "amount_above_approval_limit", owner=approver.name,
+           reason=f"{amount} is above the CHF {rule.limit_chf:,.0f} approval limit of {entity}: Human review by the "
+                  f"next approver in the matrix, {_who(approver.name)}.",
+           cause=f"Amount above the CHF {rule.limit_chf:,.0f} approval limit")
 
 
 def _timing(g: _Gate) -> None:
@@ -1336,8 +1503,9 @@ def _timing(g: _Gate) -> None:
         path = "exception"
     else:
         path = "touchless" if g.cfg["exception_routing"] else "matched"
+    overrun = g.spec.sla_overrun_days if g.spec is not None and path == "exception" else 0
     breakdown = sim.cycle_breakdown(g.doc.scenario, path, channel=g.doc.channel, doc_key=g.key,
-                                    sla_days=g.sla_days or 0, approval=g.approval)
+                                    sla_days=g.sla_days or 0, approval=g.approval, overrun_days=overrun)
     g.details.update(path=path, cycle_breakdown=breakdown)
 
 
@@ -1385,13 +1553,13 @@ def _post(g: _Gate) -> None:
         terms_days=terms, terms_source=d["terms_source"] or "",  # no terms (credit note): no source (NOT NULL)
         po_number=d["po_number"] if d["commitment"] == "po" else None, posted_on=posted_on, status=status,
         flags={"wrong_entity": d["wrong_entity_posting"], "duplicate_of": d["duplicate_of"],
-               "terms_variance": variance, "doa_auto_approved": d["doa_auto_approved"]}))
+               "terms_variance": variance, "catalogue": d["commitment"] == "catalogue"}))
     g.decided_on = posted_on
     g.reason = _posting_reason(g)
     due_text = f", due {due:%d %b %Y}" if due else ""
-    g.step("post", "ok", f"Posted as {d['invoice_id']} to {acc.account_id} ({acc.legal_entity_code}), "
-                         f"{money(total, d['currency'])}{due_text}, on {posted_on:%a %d %b %Y}.",
-           invoice_id=d["invoice_id"], entity=acc.legal_entity_code)
+    g.step("post", "ok", f"Posted to the ERP (mock) as {d['invoice_id']} on {acc.account_id} "
+                         f"({acc.legal_entity_code}), {money(total, d['currency'])}{due_text}, on "
+                         f"{posted_on:%a %d %b %Y}.")
 
 
 def _posting_reason(g: _Gate) -> str:
@@ -1419,9 +1587,8 @@ def _posting_reason(g: _Gate) -> str:
         return (f"{g.loop_cause}: AP chased it by email for {d['email_loop_days']} business days with no owner and "
                 f"no SLA, then posted it to {where} {terms}{extra}.")
     note = g.posted_note or "Matched"
-    who = "the quick-fix tool posted it" if not g.cfg["exception_routing"] else "posted"
-    flags = "; the invoice's own terms are flagged to AP as info" if d["flags"] else ""
-    return f"{note}; {who} to {where} {terms}{extra}{flags}."
+    who = "posted with no human touch" if g.cfg["exception_routing"] else "AP keyed it and posted it"
+    return f"{note}; {who} to {where} {terms}{extra}."
 
 
 # --------------------------------------------------------------------------------------------
@@ -1429,10 +1596,17 @@ def _posting_reason(g: _Gate) -> str:
 # --------------------------------------------------------------------------------------------
 
 _PIPELINE: tuple[tuple[str, Callable[[_Gate], None]], ...] = (
-    ("register", _register), ("extract", _extract), ("resolve_vendor", _resolve_vendor),
-    ("legal_entity", _legal_entity), ("duplicate_check", _duplicate_check), ("credit_note", _credit_note),
-    ("commitment_match", _commitment_match), ("terms", _terms), ("post", _post),
+    ("register", _register), ("screen", _screen), ("extract", _extract), ("confidence", _confidence),
+    ("document_type", _document_type), ("resolve_vendor", _resolve_vendor), ("legal_entity", _legal_entity),
+    ("duplicate_check", _duplicate_check), ("credit_note", _credit_note), ("commitment_match", _commitment_match),
+    ("terms", _terms), ("tolerances", _tolerances), ("approval_limit", _approval_limit), ("post", _post),
 )
+
+
+def applies(scenario: str, step: str) -> bool:
+    """The step is part of the scenario's process (e.g. the as-is has no screening, confidence or approval rule)."""
+    flag = STEP_FLAGS.get(step)
+    return flag is None or SCENARIOS[scenario][flag] not in (None, False)
 
 
 def _earlier_decisions(session: Session, doc: InboundDocument) -> list[GateDecision]:
@@ -1485,15 +1659,13 @@ def _prepare(g: _Gate) -> None:
         return
     g.po_numbers = list(dict.fromkeys(n for n in map(normalise_po_number, g.v("po_numbers") or []) if n))
     g.invoice_date = parse_date(g.v("invoice_date"))
-    if g.v("doc_type") == "other":  # neither an invoice nor a credit note (extract.py registers it as "unknown")
-        d["doc_type"] = "other"
     d.update(supplier_name=g.v("supplier_name"), invoice_number=g.v("invoice_number"),
              invoice_number_norm=normalise_invoice_number(g.v("invoice_number")) or None,
              gross_total=to_float(g.v("gross_total")), net_total=net_amount(g.data),
              currency=normalise_currency(g.v("currency")),
              po_number=g.po_numbers[0] if g.po_numbers else None,
              invoice_date=g.invoice_date.isoformat() if g.invoice_date else None,
-             contract_period=contract_period(g.invoice_date) if d["doc_type"] == "invoice" else None,
+             contract_period=contract_period(g.invoice_date) if d["doc_type"] in ("invoice", "reminder") else None,
              bill_to_entity=map_bill_to(g.v("bill_to_name"), g.v("bill_to_vat_id"),
                                         [(e.code, e.name, e.vat_id) for e in g.entities.values()]))
     parties = list(g.session.scalars(select(Party).where(Party.scenario == scenario)))
@@ -1507,11 +1679,26 @@ def _prepare(g: _Gate) -> None:
 
 
 def _touchless(g: _Gate) -> bool:
-    """Fully handled with no human step: posted or credit applied without a blocking exception or email loop;
-    to-be blocked duplicates too (the supplier gets an automatic status reply)."""
-    if g.outcome in ("posted", "applied_credit"):
-        return True
-    return g.outcome == "blocked_duplicate" and bool(g.cfg["exception_routing"])
+    """Posted with no human step (deck A6): a to-be Post. Never in the as-is, where AP keys every document; a Block is
+    never posted (AP replies with the status), an Exception or Human review is posted after a human step."""
+    return bool(g.cfg["exception_routing"]) and g.outcome in ("posted", "applied_credit")
+
+
+def outcome_line(g: _Gate) -> str:
+    """The last rule-log line of a document: '[B-05] Outcome → Exception — PO exists, no receipt or confirmation ·
+    Jonas Weber · SLA 2 days'."""
+    word = OUTCOME_WORDS[g.doc.scenario].get(g.outcome or "", g.outcome or "")
+    parts = []
+    if g.cfg["exception_routing"] and g.exception_type:
+        parts.append(taxonomy.label(g.exception_type))
+        if g.owner_name:
+            parts.append(g.owner_name)
+        parts.append("SLA —" if g.sla_days is None else f"SLA {g.sla_days} day{'s' if g.sla_days != 1 else ''}")
+    elif g.email_loop:
+        parts.append(f"{g.details['email_loop_days']} days of untracked follow-up, then posted by AP")
+    days = sum(g.details["cycle_breakdown"].values())
+    parts.append(f"{days} simulated business day{'s' if days != 1 else ''}")
+    return log_line(g.doc.doc_id, "Outcome", word, " · ".join(parts))
 
 
 def process(session: Session, doc: InboundDocument, *, log: Log = print) -> GateDecision:
@@ -1527,9 +1714,11 @@ def process(session: Session, doc: InboundDocument, *, log: Log = print) -> Gate
     g.decided_on = None
     _prepare(g)
     for name, step in _PIPELINE:
+        if not applies(doc.scenario, name):
+            continue
         if g.stopped_at:
-            g.step(name, "skipped", f"Not reached: the document stopped at {g.stopped_at.replace('_', ' ')}.",
-                   quiet=True)
+            stopped = STEP_LABELS[doc.scenario].get(g.stopped_at, g.stopped_at.replace("_", " "))
+            g.step(name, "skipped", f"Not reached: the document stopped at {stopped}.", quiet=True)
         else:
             step(g)
     if not g.details["posted"]:
@@ -1552,9 +1741,7 @@ def process(session: Session, doc: InboundDocument, *, log: Log = print) -> Gate
                             decided_on=g.decided_on)
     session.add(decision)
     session.commit()
-    g.log(log_line(g.log_label, f"outcome={g.outcome}", exception=g.exception_type or "-",
-                   owner=g.owner_name or "-", sla="-" if g.sla_days is None else g.sla_days, days=days,
-                   touchless="yes" if d["touchless"] else "no"))
+    g.log(outcome_line(g))
     return decision
 
 
@@ -1589,8 +1776,12 @@ def run_scenario(session: Session, scenario: str, *, allow_api: bool = False, lo
     outcomes = Counter(d.outcome for d in decisions)
     touchless = sum(1 for d in decisions if d.details["touchless"])
     exceptions = sum(1 for d in decisions if d.outcome in BLOCKING_OUTCOMES)
-    collect(f"[run] scenario={scenario} documents={len(decisions)} touchless={touchless} exceptions={exceptions} "
-            + " ".join(f"{k}={v}" for k, v in sorted(outcomes.items())))
+    words = Counter(OUTCOME_WORDS[scenario].get(d.outcome or "", d.outcome or "") for d in decisions)
+    order = list(dict.fromkeys(OUTCOME_WORDS[scenario].values()))  # Post, Exception, Block, Human review
+    collect(f"[run] {SCENARIO_LETTER[scenario]}: {len(decisions)} documents · "
+            + " · ".join(f"{w} {words[w]}" for w in sorted(words, key=lambda w: (w not in order, order.index(w)
+                                                                                    if w in order else 0, w)))
+            + f" · posted with no human touch {touchless}")
     run = Run(run_id=f"RUN-{SCENARIO_LETTER[scenario]}-{started:%Y%m%d-%H%M%S-%f}", scenario=scenario,
               started_on=started, finished_on=datetime.now(),
               summary_json={"log": lines, "outcomes": dict(outcomes), "documents": len(decisions),

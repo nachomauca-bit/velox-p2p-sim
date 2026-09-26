@@ -1,4 +1,4 @@
-"""Golden test: every sample document in both scenarios against tests/golden.yaml (brief section 5.6).
+"""Golden test: every case document in both scenarios against tests/golden.yaml (brief v2).
 
 Seeds a fresh database (as the conftest `session` fixture does), loads the sample documents into both
 scenarios, extracts them in fixture mode (ground truth, no API call) and runs the control gate once per
@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
 import pytest
 import yaml
 from sqlalchemy import select
 
-from app import extract, gate, seed
+from app import extract, gate, metrics, seed
 from app.config import SCENARIOS
 from app.db import SessionLocal, init_db
 from app.models import GateDecision
@@ -27,7 +26,8 @@ CASES = [(scenario, no) for no, per_scenario in GOLDEN["documents"].items() for 
 
 @pytest.fixture(scope="module")
 def results() -> dict[str, Any]:
-    """Run both scenarios once. Returns plain data: {"decisions": {(scenario, no): row}, "runs": {scenario: summary}}."""
+    """Run both scenarios once. Returns plain data: {"decisions": {(scenario, no): row}, "runs": {scenario: summary},
+    "metrics": {scenario: {key: value}}}."""
     init_db(drop=True)
     with SessionLocal() as session:
         seed.seed_all(session)
@@ -40,7 +40,8 @@ def results() -> dict[str, Any]:
         for d in session.scalars(select(GateDecision)):
             row = {column: getattr(d, column) for column in DECISION_COLUMNS}
             rows[(d.scenario, d.details["sample_no"])] = {**row, "details": dict(d.details)}
-    return {"decisions": rows, "runs": runs}
+        values = {s: {k: m["value"] for k, m in metrics.compute(session, s)["kpis"].items()} for s in SCENARIOS}
+    return {"decisions": rows, "runs": runs, "metrics": values}
 
 
 def actual(row: dict[str, Any], key: str) -> Any:
@@ -85,11 +86,6 @@ def _scenario_counts(results: dict[str, Any], scenario: str) -> dict[str, Any]:
         "credit_notes_applied": sum(d["credit_status"] == "applied" for d in details),
         "credit_notes_unapplied": sum(d["credit_status"] == "unapplied" for d in details),
         "wrong_entity_postings": sum(d["wrong_entity_posting"] for d in details),
-        "terms_variance_paid": sum(d["terms_variance_paid"] for d in details),
-        "cash_leakage_amount": sum(d["gross_total"] for d in details if d["duplicate_posting"])
-                               + sum(abs(d["gross_total"]) for d in details if d["credit_status"] == "unapplied"),
-        "registration_lag_days": round(mean(d["registration_lag_days"] for d in details), 1),
-        "avg_cycle_days": round(mean(r["simulated_days"] for r in rows), 1),
     }
 
 
@@ -106,3 +102,11 @@ def test_run_summary_matches_golden_kpis(results, scenario: str) -> None:
     assert (summary["documents"], summary["touchless"], summary["exceptions"]) == (
         kpis["documents"], kpis["touchless"], kpis["exceptions"])
     assert summary["extraction"]["unavailable"] == 0 and summary["extraction"]["failed"] == 0
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS)
+def test_the_four_metrics_match_golden_kpis(results, scenario: str) -> None:
+    """The four metrics of deck slide 11 (A6 definitions) and the fifth indicator, as metrics.py computes them."""
+    expected = {k: v for k, v in GOLDEN["kpis"][scenario].items() if k in metrics.KPI_DEFS}
+    assert set(expected) == set(metrics.KPI_DEFS)
+    assert {k: results["metrics"][scenario][k] for k in expected} == expected

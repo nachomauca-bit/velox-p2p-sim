@@ -24,7 +24,7 @@ setup:           ## create the virtualenv and install dependencies (Python 3.11+
 seed: pdfs       ## generate the sample documents, (re)create the DB, seed both scenarios, load the mailboxes
 	$(VENV_PY) -m app.seed
 
-pdfs:            ## (re)generate the sample documents: the 14 case PDFs and test set v2 (deterministic)
+pdfs:            ## (re)generate the sample documents: the 12 case PDFs and test set v2 (deterministic)
 	$(VENV_PY) -m app.invoices_gen --all
 
 extract:         ## Gemini extraction of the sample documents (cached; DATASET=v2 for test set v2; FORCE=1 re-calls the API)

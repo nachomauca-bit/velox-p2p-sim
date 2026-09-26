@@ -1,0 +1,9 @@
+{
+  "doc_id": "B-01",
+  "exception_type": "amount_above_approval_limit",
+  "model": "gemini-3.8-flash",
+  "created_on": "2026-09-26T10:52:49",
+  "latency_ms": 5611,
+  "prompt": "Facts:\n- Document type: invoice\n- Supplier: Nordwind Logistics GmbH\n- Invoice number: NWL-2026-00913\n- Amount: 27,846 EUR\n- Contract: CT-2025-001\n- Exception: Amount above approval limit\n- Gate finding: 27,846.00 EUR ≈ CHF 26,175 (simulated rate 0.94) is above the CHF 25,000 approval limit of VDE: Human review by the next approver in the matrix, Stefan Keller (Finance director DE).\n- Owner: Stefan Keller (Next approver in the matrix)\n- Owner first name: Stefan\n- Requested action: The next approver decides in the approval workflow\n- Due by: Monday 5 October 2026 (SLA 2 business days from registration)",
+  "text": "Stefan, invoice NWL-2026-00913 from Nordwind Logistics GmbH for 27,846 EUR references contract CT-2025-001, but the amount is above the approval limit. Please complete your review and decide in the approval workflow by Monday 5 October 2026."
+}

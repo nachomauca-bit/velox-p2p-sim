@@ -21,11 +21,11 @@
 <div class="tiles tiles-5">
   <div class="tile tile-hero">
     <span class="tile-value">{{ stats.ratio }}</span>
-    <span class="tile-label">vendor accounts per supplier</span>
+    <span class="tile-label">accounts per supplier <small class="muted">(all records, inactive included ÷ unique suppliers by tax ID)</small></span>
     <span class="ratio">{{ stats.accounts }} accounts / {{ stats.suppliers }} suppliers = {{ stats.ratio }}</span>
   </div>
   <div class="tile"><span class="tile-value">{{ stats.active }}</span><span class="tile-label">active accounts (of {{ stats.accounts }})</span></div>
-  <div class="tile"><span class="tile-value">{{ stats.pct_complete }}%</span><span class="tile-label">accounts with VAT ID and IBAN</span></div>
+  <div class="tile"><span class="tile-value">{{ stats.pct_complete }}%</span><span class="tile-label">accounts with tax ID and IBAN</span></div>
   <div class="tile{{ ' tile-warn' if stats.terms_differ else ' tile-clear' }}"><span class="tile-value">{{ stats.terms_differ }}{% if not stats.terms_differ %}<small class="tile-none">none</small>{% endif %}</span><span class="tile-label">accounts with terms ≠ agreed</span></div>
   <div class="tile{{ ' tile-bad' if stats.duplicates else ' tile-clear' }}"><span class="tile-value">{{ stats.duplicates }}{% if not stats.duplicates %}<small class="tile-none">none</small>{% endif %}</span><span class="tile-label">accounts flagged as possible duplicates</span></div>
 </div>
@@ -33,8 +33,8 @@
 <section class="legend-card" aria-label="Highlight legend">
   <p class="legend-title">Highlight legend</p>
   <div class="legend-item"><span class="swatch-row swatch-dup" aria-hidden="true"></span><span class="flag flag-dup">possible duplicate</span>
-    <span>another account with the same VAT ID or a similar name (one account per legal entity for the same party is by design); “Duplicate of” lists them</span></div>
-  <div class="legend-item"><span class="flag flag-missing">missing VAT ID</span><span class="flag flag-missing">missing IBAN</span>
+    <span>another account with the same tax ID or a similar name (one account per legal entity for the same supplier is by design); “Duplicate of” lists them</span></div>
+  <div class="legend-item"><span class="flag flag-missing">missing tax ID</span><span class="flag flag-missing">missing IBAN</span>
     <span>identifier not in the master</span></div>
   <div class="legend-item"><span class="flag flag-terms">terms ≠ agreed</span>
     <span>account terms differ from the recurring contract, else from the supplier agreement</span></div>
@@ -50,7 +50,7 @@
 <table class="erp-table vendor-table striped">
   <thead>
     <tr>
-      <th>Account<span class="th-sub">status</span></th><th>Entity</th><th>Display name</th><th>VAT ID</th><th>IBAN / bank</th>
+      <th>Account<span class="th-sub">status</span></th><th>Entity</th><th>Display name</th><th>Tax ID</th><th>IBAN / bank</th>
       <th class="num">Terms</th><th class="num">Agreed terms</th><th>Created</th><th>Notes</th>
     </tr>
   </thead>

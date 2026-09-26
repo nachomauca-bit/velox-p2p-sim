@@ -1,0 +1,9 @@
+{
+  "doc_id": "B-05",
+  "exception_type": "po_no_receipt",
+  "model": "gemini-3.8-flash",
+  "created_on": "2026-09-26T10:52:55",
+  "latency_ms": 3941,
+  "prompt": "Facts:\n- Document type: invoice\n- Supplier: FitOut Partners Ltd\n- Invoice number: 2026-091\n- Amount: 48,000 EUR\n- Purchase order: 4500123\n- Exception: PO exists, no receipt or confirmation\n- Gate finding: PO 4500123 exists but no service confirmation is recorded for line 1 (48,000.00 EUR invoiced): routed to the requester Jonas Weber (Store development manager DE) to confirm delivery.\n- Owner: Jonas Weber (Receiver / requester)\n- Owner first name: Jonas\n- Requested action: Confirm receipt or service delivery\n- Due by: Tuesday 6 October 2026 (SLA 2 business days from registration)",
+  "text": "Jonas, invoice 2026-091 from FitOut Partners Ltd for 48,000 EUR references PO 4500123, but no service confirmation is recorded. Please confirm the receipt or service delivery by Tuesday 6 October 2026."
+}

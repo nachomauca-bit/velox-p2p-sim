@@ -207,7 +207,7 @@ def test_fixture_mode_returns_every_document():
         assert set(result.data) == set(FIELDS)
         assert result.is_fixture and result.model == FIXTURE_MODEL
         assert result.source == "fixture" and result.from_cache is False
-        assert result.data["doc_type"]["value"] == spec.doc_type
+        assert result.data["doc_type"]["value"] == spec.true_doc_type
         assert result.data["invoice_number"]["value"] == spec.invoice_number
 
 
@@ -595,7 +595,7 @@ def test_model_unavailable_classification(error, unavailable):
 
 
 def test_transient_error_is_retried_once(monkeypatch, sleeps, capsys):
-    parsed = InvoiceExtraction.model_validate(fixture_extraction("09_quickprint_invoice"))
+    parsed = InvoiceExtraction.model_validate(fixture_extraction("08_quickprint_invoice"))
     failures = [api_error(503, "UNAVAILABLE", "The model is overloaded. Please try again later.")]
 
     def respond(model):
@@ -605,7 +605,7 @@ def test_transient_error_is_retried_once(monkeypatch, sleeps, capsys):
 
     client = FakeClient(respond)
     use_client(monkeypatch, client)
-    result = extract.call_gemini(b"%PDF", "09_quickprint_invoice.pdf")
+    result = extract.call_gemini(b"%PDF", "08_quickprint_invoice.pdf")
     assert result.model == "gemini-2.5-flash"
     assert client.models.calls == ["gemini-2.5-flash", "gemini-2.5-flash"]
     assert sleeps == [extract.RETRY_BACKOFF_S]
@@ -631,7 +631,7 @@ def test_persistent_transient_error_fails_after_the_retries(monkeypatch, sleeps,
 
 def test_overloaded_model_falls_back_to_the_next_ga_flash_and_remembers_it(monkeypatch, sleeps, capsys):
     """The case seen live: 2.5 no longer available (404), 3.8 answering 503 "high demand" on every retry."""
-    parsed = InvoiceExtraction.model_validate(fixture_extraction("09_quickprint_invoice"))
+    parsed = InvoiceExtraction.model_validate(fixture_extraction("08_quickprint_invoice"))
     busy = api_error(503, "UNAVAILABLE", "This model is currently experiencing high demand. Please try again later.")
 
     def respond(model):
@@ -685,7 +685,7 @@ def test_an_unavailable_model_is_never_asked_again(monkeypatch, sleeps):
     (httpx.ConnectTimeout("timed out"), extract.RETRY_BACKOFF_S),
 ])
 def test_retry_pause_uses_the_server_delay_on_a_429(monkeypatch, sleeps, capsys, error, pause):
-    parsed = InvoiceExtraction.model_validate(fixture_extraction("09_quickprint_invoice"))
+    parsed = InvoiceExtraction.model_validate(fixture_extraction("08_quickprint_invoice"))
     failures = [error]
 
     def respond(model):
@@ -703,7 +703,7 @@ def test_retry_pause_uses_the_server_delay_on_a_429(monkeypatch, sleeps, capsys,
 
 def test_zero_quota_429_falls_back_without_waiting(monkeypatch, sleeps):
     """A 429 with "limit: 0" means no access to the model: fall back at once, ignore its retry delay."""
-    parsed = InvoiceExtraction.model_validate(fixture_extraction("09_quickprint_invoice"))
+    parsed = InvoiceExtraction.model_validate(fixture_extraction("08_quickprint_invoice"))
 
     def respond(model):
         if model == "gemini-2.5-flash":
@@ -720,7 +720,7 @@ def test_zero_quota_429_falls_back_without_waiting(monkeypatch, sleeps):
 
 def test_429_retry_delay_through_the_installed_sdk(monkeypatch, sleeps):
     """The real SDK error object carries the RetryInfo detail where _server_retry_delay looks for it."""
-    extraction_json = json.dumps(fixture_extraction("09_quickprint_invoice"))
+    extraction_json = json.dumps(fixture_extraction("08_quickprint_invoice"))
     responses = [httpx.Response(429, json=quota_body("You exceeded your current quota. Please retry in 7.2s.",
                                                      retry_delay="7s")),
                  generate_ok(extraction_json)]
@@ -731,7 +731,7 @@ def test_429_retry_delay_through_the_installed_sdk(monkeypatch, sleeps):
         return responses.pop(0)
 
     use_sdk_on_mock_transport(monkeypatch, handler)
-    result = extract.call_gemini(b"%PDF", "09_quickprint_invoice.pdf")
+    result = extract.call_gemini(b"%PDF", "08_quickprint_invoice.pdf")
     assert result.model == "gemini-2.5-flash" and len(requests) == 2  # the SDK itself does not retry
     assert sleeps == [8.0]
 
@@ -923,7 +923,7 @@ def test_extract_documents_counts_every_outcome(session, gemini_mode, tmp_path, 
     cached_pdf, fresh_pdf, uncached_pdf = fake_pdf(tmp_path, 4), fake_pdf(tmp_path, 9), fake_pdf(tmp_path, 5)
     extract.write_cache(extract.file_sha256(cached_pdf), _counting_fake([])(b"", cached_pdf.name), cached_pdf.name)
     docs = [doc_for_file(session, cached_pdf, 4), doc_for_file(session, fresh_pdf, 9)]
-    ok_client(monkeypatch, "09_quickprint_invoice")
+    ok_client(monkeypatch, "08_quickprint_invoice")
 
     summary = extract.extract_documents(session, docs)
     assert summary == {"extracted": 2, "from_cache": 1, "unavailable": 0, "failed": 0, "error": None}
@@ -1087,21 +1087,21 @@ def test_cli_reports_a_failed_file_and_continues_with_the_rest(cli_invoices, gem
     def call_gemini(pdf_bytes: bytes, file_name: str) -> ExtractionResult:
         if file_name.startswith("05_"):
             raise RuntimeError("unexpected SDK bug")  # not an ExtractionUnavailable: must not stop the batch
-        if file_name.startswith("09_"):
+        if file_name.startswith("08_"):
             raise ExtractionFailed("Gemini API error on gemini-2.5-flash: 500 INTERNAL: boom")
         return succeed(pdf_bytes, file_name)
 
     monkeypatch.setattr(extract, "call_gemini", call_gemini)
-    assert extract.main(["--only", "4,5,9,12", "--no-db"]) == 1
+    assert extract.main(["--only", "4,5,8,12", "--no-db"]) == 1
 
     out = capsys.readouterr().out
-    assert calls == ["04_bright_agency_credit_note.pdf", "12_lumen_lighting_invoice.pdf"]  # 12 still ran
+    assert calls == ["04_bright_agency_credit_note.pdf", "12_harbor_freight_invoice.pdf"]  # 12 still ran
     assert "[extract] file=05_fitout_partners_invoice.pdf FAILED: RuntimeError: unexpected SDK bug" in out
-    assert "[extract] file=09_quickprint_invoice.pdf FAILED: Gemini API error on gemini-2.5-flash" in out
+    assert "[extract] file=08_quickprint_invoice.pdf FAILED: Gemini API error on gemini-2.5-flash" in out
     table = {line.split()[1]: line for line in out.splitlines() if line[:3].strip().isdigit()}
     assert table["05_fitout_partners_invoice.pdf"].rstrip().endswith("FAILED")
-    assert table["09_quickprint_invoice.pdf"].rstrip().endswith("FAILED")
-    assert "CN-2026-0031" in table["12_lumen_lighting_invoice.pdf"]
+    assert table["08_quickprint_invoice.pdf"].rstrip().endswith("FAILED")
+    assert "CN-2026-0031" in table["12_harbor_freight_invoice.pdf"]
     assert sorted(p.name for p in gemini_mode.iterdir()) == sorted(
         f"{extract.file_sha256(cli_invoices / world.DOCUMENT_BY_NO[no].filename)}.json" for no in (4, 12))
 

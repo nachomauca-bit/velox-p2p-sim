@@ -74,9 +74,10 @@ def test_three_legal_entities_and_twelve_parties(session: Session, scenario: str
 # --------------------------------------------------------------------------------------------
 
 
-def test_tobe_has_16_accounts_all_clean(session: Session) -> None:
+def test_tobe_has_14_accounts_all_clean(session: Session) -> None:
     accs = accounts(session, "tobe")
-    assert len(accs) == 16
+    assert len(accs) == 14  # 12 suppliers, two of them with a legitimate second record (Cleanspace, Atlas: VFR)
+    assert round(len(accs) / count(session, Party, "tobe"), 2) == 1.17  # deck slide 11: <= 1.2
     for a in accs:
         assert a.party_id in AGREED_TERMS, a.account_id
         assert a.vat_id and a.iban, a.account_id
@@ -100,7 +101,7 @@ def test_tobe_has_one_account_per_party_per_entity(session: Session) -> None:
 def test_asis_has_28_accounts_for_12_suppliers(session: Session) -> None:
     n_accounts = len(accounts(session, "asis"))
     assert n_accounts == 28
-    assert round(n_accounts / count(session, Party, "asis"), 1) == 2.3  # case: 2,800 / 1,200
+    assert round(n_accounts / count(session, Party, "asis"), 2) == 2.33  # case: 2,800 / 1,200
 
 
 def test_d1_spelling_duplicates(session: Session) -> None:
@@ -117,7 +118,7 @@ def test_d1_spelling_duplicates(session: Session) -> None:
             assert dup.iban != src.iban
         assert dup.payment_terms_days in {14, 45, 60}
         assert dup.payment_terms_days != AGREED_TERMS[src.party_id]
-    assert {world.PARTY_BY_ID[p].no for p in extra_per_party} == {1, 2, 4, 7}
+    assert {world.PARTY_BY_ID[p].no for p in extra_per_party} == {1, 2, 4, 5, 7, 8}
     assert all(1 <= n <= 2 for n in extra_per_party.values())
     assert sum("D1" in a.corruption_rules for a in by_id.values()) == len(seed.D1_DUPLICATES)
 
@@ -182,11 +183,10 @@ def test_deriving_the_dirty_world_is_deterministic_and_leaves_the_clean_world_al
 # --------------------------------------------------------------------------------------------
 
 
-def test_d6_asis_has_about_40_percent_of_the_pos(session: Session) -> None:
+def test_d6_asis_has_half_of_the_pos(session: Session) -> None:
     n_tobe, n_asis = count(session, PurchaseOrder, "tobe"), count(session, PurchaseOrder, "asis")
-    assert n_tobe == 14
+    assert n_tobe == 12
     assert n_asis == 6
-    assert 0.35 <= n_asis / n_tobe <= 0.45
     tobe_numbers = set(session.scalars(select(PurchaseOrder.po_number).where(PurchaseOrder.scenario == "tobe")))
     asis_numbers = set(session.scalars(select(PurchaseOrder.po_number).where(PurchaseOrder.scenario == "asis")))
     assert asis_numbers < tobe_numbers
@@ -203,11 +203,21 @@ def test_receipts_follow_the_pos_of_each_scenario(session: Session) -> None:
 
 
 def test_contracts_are_per_legal_entity(session: Session) -> None:
-    rows = list(session.scalars(select(Contract).where(Contract.scenario == "tobe")))
+    rows = [c for c in session.scalars(select(Contract).where(Contract.scenario == "tobe")) if c.recurring]
     assert len(rows) == 4  # 3 supplier contracts; Cleanspace serves VDE and VFR
     by_party = Counter(world.PARTY_BY_ID[c.party_id].no for c in rows)
     assert by_party == {1: 1, 4: 2, 11: 1}
-    assert all(c.recurring for c in rows)
+    assert all(c.category != "catalogue" for c in rows)
+
+
+def test_tobe_has_the_store_catalogue_and_asis_has_none(session: Session) -> None:
+    """Card / catalogue for small store purchases (deck slide 9): Kaffee & Co for Store Berlin 01, CHF 500 per invoice."""
+    [cat] = session.scalars(select(Contract).where(Contract.scenario == "tobe", Contract.category == "catalogue"))
+    assert (cat.contract_id, cat.party_id, cat.legal_entity_code) == ("CAT-2026-001", "P-0009", "VDE")
+    assert (cat.recurring, cat.expected_monthly_max, cat.currency, cat.owner_name) == (False, 500.0, "CHF",
+                                                                                         "Paul Neumann")
+    assert not list(session.scalars(select(Contract).where(Contract.scenario == "asis",
+                                                           Contract.category == "catalogue")))
 
 
 def test_commitments_reference_accounts_in_their_own_entity(session: Session) -> None:
@@ -226,12 +236,12 @@ def test_po_4500123_fitout_milestone_2_has_no_service_confirmation(session: Sess
 
 
 def test_po_4500112_lumen_received_100_of_120(session: Session) -> None:
+    """Lumen's PO stays in the master (test set v2 document 15 uses it); its case document was dropped by brief v2."""
     po = purchase_order(session, "tobe", "4500112")
     assert po is not None
     assert sum(line.qty for line in po.lines) == 120
     assert sum(r.qty_received for r in receipts(session, "tobe", "4500112")) == 100
-    invoiced = world.DOCUMENT_BY_NO[12]
-    assert sum(line.quantity for line in invoiced.lines) == 120
+    assert all(d.party_id != "P-0012" for d in world.DOCUMENTS)
 
 
 def test_po_4500109_atlas_price_42_but_invoice_44(session: Session) -> None:
@@ -266,18 +276,14 @@ def test_document_supplier_identifiers_match_a_clean_account(session: Session, s
     assert any(normalise_iban(a.iban) == iban for a in party_accounts)
 
 
-def test_document_8_billed_to_vfr_but_po_is_vde(session: Session) -> None:
-    doc = world.DOCUMENT_BY_NO[8]
-    po = purchase_order(session, "tobe", "4500126")
-    assert doc.po_numbers == ("4500126",)
-    assert doc.bill_to_entity == "VFR"
-    assert po is not None and po.legal_entity_code == "VDE"
-
-
-def test_document_8_is_the_only_one_billed_to_an_entity_the_supplier_does_not_serve(session: Session) -> None:
+def test_every_case_document_is_billed_to_an_entity_its_supplier_serves(session: Session) -> None:
+    """Brief v2 dropped the wrong-entity case document (Metro Media): every one of the twelve is billed to an entity
+    where its supplier has a record; the POs quoted belong to that entity."""
     served = {(a.party_id, a.legal_entity_code) for a in accounts(session, "tobe")}
-    unserved = [d.no for d in world.DOCUMENTS if (d.party_id, d.bill_to_entity) not in served]
-    assert unserved == [8]
+    assert [d.no for d in world.DOCUMENTS if (d.party_id, d.bill_to_entity) not in served] == []
+    for d in world.DOCUMENTS:
+        for number in d.po_numbers:
+            assert purchase_order(session, "tobe", number).legal_entity_code == d.bill_to_entity, d.no
 
 
 def test_bright_credit_note_references_document_3() -> None:
@@ -291,7 +297,7 @@ def test_bright_credit_note_references_document_3() -> None:
 
 def test_contract_invoices_fall_inside_the_expected_range_on_net_amounts(session: Session) -> None:
     """Contract ranges are net: document 1 is 23,400 net (inside 20,000–26,000) but 27,846 gross."""
-    for no in (1, 11):
+    for no in (1, 10, 12):
         doc = world.DOCUMENT_BY_NO[no]
         contract = session.scalars(select(Contract).where(
             Contract.scenario == "tobe", Contract.contract_id == doc.contract_reference)).one()
@@ -314,7 +320,7 @@ def test_seed_all_twice_gives_the_same_counts(session: Session) -> None:
     before = _counts(session)
     seed.seed_all(session)
     assert _counts(session) == before
-    assert before[("VendorAccount", "asis")] == 28 and before[("VendorAccount", "tobe")] == 16
+    assert before[("VendorAccount", "asis")] == 28 and before[("VendorAccount", "tobe")] == 14
 
 
 def _add_inbox_document(session: Session, scenario: str, spec: world.DocumentSpec) -> None:
@@ -363,8 +369,7 @@ def _naive_asis_lookup(printed_name: str, accounts: list[world.AccountSpec]) -> 
 
 
 ASIS_EXPECTED_ACCOUNT = {1: "V-000101", 2: "V-000117", 3: "V-000102", 4: "V-000119", 5: "V-000103", 6: "V-000106",
-                         7: "V-000105", 8: "V-000107", 9: "V-000108", 10: "V-000109", 11: "V-000104", 12: "V-000112",
-                         13: "V-000110", 14: "V-000111"}
+                         7: "V-000105", 8: "V-000108", 9: "V-000109", 10: "V-000104", 11: "V-000110", 12: "V-000111"}
 
 
 @pytest.mark.parametrize("spec", world.DOCUMENTS, ids=lambda d: f"doc{d.no:02d}")
@@ -380,9 +385,9 @@ def test_asis_traps_follow_from_the_data():
     assert hit[2].account_id != hit[1].account_id
     # The credit note (doc 4) lands on another account than the invoice it credits (doc 3): unapplied.
     assert hit[4].account_id != hit[3].account_id
-    # Docs 8 and 11 are posted to an entity other than the one billed: two wrong-entity postings.
+    # Doc 10 (Cleanspace, billed to VFR) lands on the VDE account: a wrong-entity posting.
     wrong_entity = [d.no for d in world.DOCUMENTS if hit[d.no].legal_entity_code != d.bill_to_entity]
-    assert wrong_entity == [8, 11]
+    assert wrong_entity == [10]
 
 
 def test_tobe_identifiers_resolve_resends_and_credit_notes_to_the_same_party():
@@ -398,7 +403,7 @@ def test_tobe_identifiers_resolve_resends_and_credit_notes_to_the_same_party():
 
 
 def test_doc_ids_encode_scenario_dataset_and_number() -> None:
-    assert (seed.doc_id_for("tobe", 1), seed.doc_id_for("asis", 14, "v1")) == ("B-01", "A-14")
+    assert (seed.doc_id_for("tobe", 1), seed.doc_id_for("asis", 12, "v1")) == ("B-01", "A-12")
     assert (seed.doc_id_for("tobe", 1, "v2"), seed.doc_id_for("asis", 26, "v2")) == ("B2-01", "A2-26")
     assert [seed.dataset_of_doc_id(i) for i in ("B-01", "A2-26", "B-W01", "")] == ["v1", "v2", None, None]
     with pytest.raises(ValueError):
@@ -429,7 +434,8 @@ def test_reset_scenario_returns_the_dataset_that_was_loaded(session: Session) ->
 
 
 def test_spec_for_is_dataset_aware() -> None:
-    assert seed.spec_for("v1", 14).filename == world.DOCUMENT_BY_NO[14].filename
+    assert seed.spec_for("v1", 12).filename == world.DOCUMENT_BY_NO[12].filename
+    assert seed.spec_for("v1", 14) is None  # twelve case documents
     assert seed.spec_for("v2", 14).content == "email_body"
     assert seed.spec_for("v2", 26).party.canonical_name == "Berliner Blumen GmbH"
     assert seed.spec_for("live", 0) is None and seed.spec_for("v1", 99) is None

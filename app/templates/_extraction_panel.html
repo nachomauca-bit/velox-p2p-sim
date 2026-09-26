@@ -1,15 +1,11 @@
-{# Extraction panel: rendered inside invoice.html and returned alone to HTMX after (re-)extraction. #}
+{# Gemini output panel (to-be) / the fields AP keys (as-is): rendered inside invoice.html and returned alone to HTMX
+   by the extract route. One provenance line; the model reads and classifies, the rules decide. #}
 {% import "_icons.html" as ic %}
-<article class="panel" id="extraction-panel">
+{%- set tobe = doc.scenario == "tobe" -%}
+<article class="panel" id="extraction-panel"{% if oob %} hx-swap-oob="true"{% endif %}>
   <header class="panel-head">
-    <h2>{{ ic.icon('scan') }}Extraction</h2>
-    {% if doc.content_type != "email_body" %}
-    <form method="post" action="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
-          hx-post="/invoice/{{ doc.doc_id }}/extract{{ '?force=1' if ex else '' }}"
-          hx-target="#extraction-panel" hx-swap="outerHTML" hx-disabled-elt="find button">
-      <button type="submit" class="small-button{{ ' secondary' if ex else '' }}">{{ ic.icon('reset' if ex else 'scan') }}{{ ('Parse again' if is_ubl else 'Force re-extract') if ex else 'Extract now' }}</button>
-    </form>
-    {% endif %}
+    <h2>{{ ic.icon('scan') }}{{ "Gemini output" if tobe else "Invoice fields (keyed by AP)" }}</h2>
+    {% if ex %}<span class="head-meta"><span class="chip chip-{{ 'warn' if doc_type not in ('invoice', 'credit_note', 'unknown') else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span></span>{% endif %}
   </header>
 
   <div class="panel-body">
@@ -18,45 +14,28 @@
   {% endif %}
 
   {% if not ex %}
-  <p class="placeholder-box"><strong>No extraction yet.</strong> {{ no_extraction_reason }}</p>
+  <p class="placeholder-box"><strong>Not read yet.</strong> {{ no_extraction_reason }}</p>
   {% else %}
-  <div class="source-line">
-    {% if is_fixture %}
-      <span class="badge badge-fixture">FIXTURE — not a Gemini output</span>
-    {% elif is_ubl %}
-      <span class="badge badge-ubl">UBL e-invoice — parsed, no model call</span>
-    {% elif ex.from_cache %}
-      <span class="badge badge-cache">From cache</span>
-    {% else %}
-      <span class="badge badge-api">Gemini API</span>
-    {% endif %}
-    <span class="chip chip-{{ 'info' if doc_type == 'credit_note' else 'warn' if doc_type == 'other' else 'neutral' }}">{{ doc_type_labels.get(doc_type, doc_type) }}</span>
-  </div>
-  <dl class="meta-grid">
-    <div><dt>Model</dt><dd><code>{{ ex.model }}</code></dd></div>
-    <div><dt>Latency</dt><dd>{{ '%d ms'|format(ex.latency_ms) if ex.latency_ms is not none else '—' }}</dd></div>
-    <div><dt>Tokens</dt><dd>{% if ex.input_tokens is not none or ex.output_tokens is not none %}{{ ex.input_tokens if ex.input_tokens is not none else '—' }} in / {{ ex.output_tokens if ex.output_tokens is not none else '—' }} out{% else %}—{% endif %}</dd></div>
-    <div><dt>Created on</dt><dd>{{ ex.created_on|dt }}</dd></div>
-  </dl>
-
-  <p class="legend">
-    <span>Confidence below {{ threshold_pct }}% is flagged (the tick on each bar).</span>
-    <span><span class="crit">critical</span> = field the gate needs;</span>
-    <span><span class="crit crit-id">identity</span> = supplier identity (any one of VAT ID, IBAN or name is enough).</span>
-  </p>
+  <p class="provenance provenance-{{ provenance[0] }}">{{ provenance[1] }}</p>
+  {% if tobe and not is_ubl %}
+  <p class="legend">Gemini reads and classifies; it never decides. A field the rules need read below {{ threshold_pct }}%
+    confidence sends the document to Human review.</p>
+  {% elif not tobe %}
+  <p class="legend">Scenario A has no model and no confidence check: AP types these fields from the document. The
+    simulation uses the same reading as scenario B.</p>
+  {% endif %}
   <div class="overflow-auto">
   <table class="fields" style="--threshold: {{ threshold_pct }}%">
-    <thead><tr><th>Field</th><th>Value</th><th class="conf-col">Confidence</th></tr></thead>
+    <thead><tr><th>Field</th><th>Value</th>{% if tobe %}<th class="conf-col">Confidence</th>{% endif %}</tr></thead>
     <tbody>
     {% for f in fields %}
-      <tr class="{{ 'row-low' if f.low else '' }}">
-        <th scope="row">{{ f.label }}
-          {% if f.identity %}<span class="crit crit-id" title="Supplier identity: any one of VAT ID, IBAN or name is enough">identity</span>
-          {% elif f.critical %}<span class="crit" title="Critical field for the confidence gate">critical</span>{% endif %}
-        </th>
+      <tr class="{{ 'row-low' if tobe and f.low else '' }}">
+        <th scope="row">{{ f.label }}</th>
         <td>
           {% if f.value is none %}
             <span class="muted">not on the document</span>
+          {% elif f.name == "doc_type" %}
+            {{ doc_type_labels.get(f.value, f.value) }}
           {% elif f.name == "lines" %}
             {{ f.value|length }} line{{ '' if f.value|length == 1 else 's' }} (below)
           {% elif f.name == "po_numbers" %}
@@ -67,22 +46,22 @@
             {{ f.value }}
           {% endif %}
         </td>
+        {% if tobe %}
         <td class="conf-col">
           {% if f.value is none %}
             <span class="muted">—</span>
-            {% if f.critical and not f.identity %}<span class="chip chip-bad">critical field missing</span>{% endif %}
           {% else %}
             <div class="conf{{ ' conf-low' if f.low else '' }}">
               <div class="bar" aria-hidden="true"><span style="width: {{ f.pct }}%"></span></div>
               <span class="pct">{{ f.pct }}%</span>
             </div>
-            {% if f.low %}<span class="chip chip-bad">below {{ threshold_pct }}%</span>{% endif %}
           {% endif %}
         </td>
+        {% endif %}
       </tr>
       {% if f.name == "lines" and f.value %}
       <tr class="lines-row">
-        <td colspan="3">
+        <td colspan="{{ 3 if tobe else 2 }}">
           <table class="subtable">
             <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
             <tbody>
@@ -99,11 +78,6 @@
     </tbody>
   </table>
   </div>
-
-  <details class="raw-json">
-    <summary>Raw extraction JSON</summary>
-    <pre><code>{{ raw_json }}</code></pre>
-  </details>
   {% endif %}
   </div>
 </article>

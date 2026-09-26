@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% import "_icons.html" as ic %}
-{% set crumbs = [("Velox ERP", none), ("Accounts payable", none), ("Pending vendor invoices", none)] %}
+{% set crumbs = [("Velox ERP", none), ("Accounts payable", none), ("Posted invoices", none)] %}
 {% block content %}
 <header class="page-head erp-head">
   <div class="page-head-main">
     <p class="eyebrow">{{ ic.icon('database') }}Velox ERP · Accounts payable <span class="readonly-tag">read-only</span></p>
-    <h1>Pending vendor invoices <span class="h1-sub">{{ rows|length }} posted</span></h1>
+    <h1>Posted invoices <span class="h1-sub">{{ rows|length }} posted, pending payment</span></h1>
     <p class="lead">The invoices and credit notes posted into the ERP by the run of {{ scenario_label }}, one row per
       posting. Flags show where the payment terms came from, duplicates, wrong-entity postings, credit notes and
-      DoA auto-approvals.</p>
+      card / catalogue commitments.</p>
   </div>
 </header>
 
@@ -17,22 +17,14 @@
 <article class="empty-state">
   {{ m.empty_icon('invoice') }}
   <h2>No invoices posted yet in {{ scenario_label }}</h2>
-  <p>The control gate posts here when the scenario runs.</p>
+  <p>{{ "The control gate posts here when the scenario runs." if scenario == "tobe" else "AP posts here when the scenario runs." }}</p>
   {{ m.run_button(scenario=scenario) }}
 </article>
 {% else %}
-<div class="tiles pvi-totals">
-  {% for t in totals %}
-  <div class="tile"><span class="tile-value">{{ t.total|money }} {{ t.currency }}</span>
-    <span class="tile-label">total of {{ t.count }} posting{{ '' if t.count == 1 else 's' }} in {{ t.currency }}</span></div>
-  {% endfor %}
-</div>
-<p class="table-note muted">Totals per currency, never converted; credit notes count as negative amounts.</p>
-
 <div class="overflow-auto table-card">
 <table class="erp-table pvi-table striped">
   <thead>
-    <tr><th>Invoice ID</th><th>Entity</th><th>Vendor account</th><th>Invoice number</th>
+    <tr><th>Invoice ID</th><th>Entity</th><th>Supplier account</th><th>Invoice number</th>
         <th>Invoice date<span class="th-sub">due date</span></th><th class="num">Total</th><th class="num">Terms</th>
         <th>PO</th><th>Posted on</th><th>Status</th><th>Flags</th></tr>
   </thead>
@@ -55,11 +47,6 @@
     </tr>
   {% endfor %}
   </tbody>
-  <tfoot>
-    {% for t in totals %}
-    <tr><th colspan="5">Total {{ t.currency }} ({{ t.count }})</th><th class="num nowrap">{{ t.total|money }} {{ t.currency }}</th><th colspan="5"></th></tr>
-    {% endfor %}
-  </tfoot>
 </table>
 </div>
 {% endif %}

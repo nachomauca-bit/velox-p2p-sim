@@ -198,16 +198,14 @@ def test_to_be_blocking_exceptions_with_an_owner_are_draftable(exception_type):
                                owner_name=None, sla_days=None), id="as-is email loop"),
     pytest.param(make_decision(scenario="asis", exception_type="po_no_receipt"), id="as-is with an owner"),
     pytest.param(make_decision(outcome="posted", exception_type=None, owner_role=None, owner_name=None,
-                               sla_days=None, details=make_details(flags=[{"type": "terms_variance"}])),
+                               sla_days=None, details=make_details(flags=[{"type": "duplicate_vendor_account"}])),
                  id="to-be posted with an info flag"),
-    pytest.param(make_decision(outcome="posted", exception_type="terms_variance", sla_days=None),
-                 id="terms_variance info type"),
     pytest.param(make_decision(outcome="posted", exception_type="duplicate_vendor_account", sla_days=5),
                  id="duplicate_vendor_account info type"),
     pytest.param(make_decision(exception_type="email_loop", owner_name=None, sla_days=None), id="to-be email loop"),
     pytest.param(make_decision(outcome="blocked_duplicate", exception_type="duplicate_invoice",
                                owner_name="Marco Ruiz", owner_role="AP specialist", sla_days=0),
-                 id="blocked duplicate (automatic status reply)"),
+                 id="Block (AP replies with the status)"),
     pytest.param(make_decision(owner_name=None), id="no owner"),
     pytest.param(make_decision(exception_type="not_a_type"), id="unknown type"),
 ])
@@ -235,7 +233,7 @@ def test_prompt_contains_the_facts():
         "Owner first name": "Jonas",
         "Requested action": taxonomy.get("po_no_receipt").resolution,
         # received (and registered on arrival) Thursday 1 October 2026 + 2 business days
-        "Due by": "Monday 5 October 2026 (SLA 2 business days from registration)",
+        "Due by": "Tuesday 6 October 2026 (SLA 2 business days from registration)",
     }
 
 
@@ -249,8 +247,8 @@ def test_prompt_leaves_out_facts_the_decision_does_not_have():
     assert {"Invoice number", "Purchase order", "Contract", "Next owner after this step"}.isdisjoint(facts)
     assert facts["Amount"] == "48,000"  # no currency given: none is added
     assert "None" not in prompt
-    # received Friday 2 October 2026 + 1 business day
-    assert facts["Due by"] == "Monday 5 October 2026 (SLA 1 business day from registration)"
+    # received Thursday 1 October 2026 + 1 business day
+    assert facts["Due by"] == "Friday 2 October 2026 (SLA 1 business day from registration)"
 
 
 def test_prompt_never_carries_internal_fields():
@@ -272,8 +270,8 @@ def test_prompt_names_the_next_owner_and_the_contract_when_given():
     assert "Requested action" not in facts
     assert facts["Contract"] == "CT-2025-001"
     assert facts["Owner first name"] == "Tim"
-    # received Monday 5 October 2026 + 2 business days
-    assert facts["Due by"].startswith("Wednesday 7 October 2026")
+    # received Thursday 1 October 2026 + 2 business days
+    assert facts["Due by"].startswith("Monday 5 October 2026")
 
 
 def test_prompt_for_a_credit_note_and_a_same_day_sla():
@@ -338,9 +336,9 @@ def test_no_key_is_unavailable(gemini_mode, monkeypatch, client_creations):
 @pytest.mark.parametrize("decision, reason", [
     (make_decision(scenario="asis", exception_type="email_loop", owner_name=None, sla_days=None), "as-is"),
     (make_decision(outcome="posted", exception_type=None, owner_name=None, sla_days=None), "no open exception"),
-    (make_decision(outcome="posted", exception_type="terms_variance", sla_days=None), "information flag"),
+    (make_decision(outcome="posted", exception_type="duplicate_vendor_account", sla_days=5), "information flag"),
     (make_decision(outcome="blocked_duplicate", exception_type="duplicate_invoice", owner_name="Marco Ruiz",
-                   sla_days=0), "Handled automatically: the supplier gets a status reply"),
+                   sla_days=None), "Block: AP replies to the supplier with the status"),
     (make_decision(owner_name=None), "no owner"),
     (None, "no gate decision"),
 ])
@@ -591,5 +589,5 @@ def test_draft_for_rows_stored_in_the_database(session, gemini_mode, monkeypatch
     doc = session.query(InboundDocument).filter_by(doc_id="B-05").one()
     decision = session.query(GateDecision).filter_by(doc_id="B-05").one()
     assert drafts.is_draftable(decision)
-    assert prompt_facts(drafts.build_prompt(decision, doc))["Due by"].startswith("Monday 5 October 2026")
+    assert prompt_facts(drafts.build_prompt(decision, doc))["Due by"].startswith("Tuesday 6 October 2026")
     assert drafts.get_draft(decision, doc).text == GOOD_TEXT

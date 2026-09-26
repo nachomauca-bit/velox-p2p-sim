@@ -7,12 +7,26 @@ Cloud Storage bucket), basic auth and the BigQuery export. See .env.example and 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+
+
+def utf8_output(*streams) -> None:
+    """Log lines carry "→", "·" and "≈": print them as UTF-8, replacing what cannot be encoded, so a legacy code
+    page (on Windows, output redirected to a pipe or a file is cp1252) never turns a print into an error page."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):  # not a text stream that can be reconfigured: leave it
+            pass
+
+
+utf8_output()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -39,7 +53,7 @@ def _env_bool(name: str) -> bool:
 # --------------------------------------------------------------------------------------------
 
 DATA_DIR = _env_path("DATA_DIR", BASE_DIR / "data")
-INVOICES_DIR = DATA_DIR / "invoices"  # the 14 case documents (v1)
+INVOICES_DIR = DATA_DIR / "invoices"  # the 12 case documents (v1)
 INVOICES_V2_DIR = DATA_DIR / "invoices_v2"  # test set v2 (26 documents, docs/TEST_SET_V2.md)
 INBOUND_DIR = _env_path("INBOUND_DIR", INVOICES_DIR / "inbound")  # documents received by the intake webhook
 CACHE_DIR = _env_path("CACHE_DIR", DATA_DIR / "cache")  # extraction and draft cache (never re-call the API)
@@ -116,13 +130,16 @@ BQ_DATASET = _env("BQ_DATASET", "velox_p2p")
 
 SCENARIOS = ("asis", "tobe")
 SCENARIO_LABELS = {"asis": "A — As-is", "tobe": "B — To-be"}
-DEFAULT_SCENARIO = "asis"
+DEFAULT_SCENARIO = "tobe"  # the demo opens on the to-be (brief v2 section 7)
+
+# A fresh, empty database comes up demo-ready: both scenarios seeded, the case documents loaded and run offline, the
+# demo's next email held back (seed.reset_demo). Set DEMO_AUTOLOAD=0 to start with empty mailboxes instead.
+DEMO_AUTOLOAD = _env("DEMO_AUTOLOAD", "1") not in ("0", "false", "no", "off")
 
 # Confidence threshold for critical fields (used by the phase-2 gate; shown in the UI now).
 CONFIDENCE_THRESHOLD = 0.80
 
 FOOTER_TEXT = (
-    "Velox P2P control-gate simulator. Mock ERP tables modelled on Dynamics 365 Finance concepts. "
-    "Document understanding by a Gemini model via the Google GenAI SDK. "
-    "Durations are simulated (see Assumptions)."
+    "Velox P2P control-gate simulator. ERP (mock, system of record): read-only tables, not a real ERP. "
+    "Gemini reads and classifies; rules decide. Durations are simulated (see Assumptions)."
 )

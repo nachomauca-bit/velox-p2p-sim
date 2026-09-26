@@ -3,16 +3,16 @@
   "file_sha256": "afda52252da8a2fff3f808637c9871e075f967de94fc08fe44b9b0b7844092a3",
   "model": "gemini-3.8-flash",
   "backend": "aistudio",
-  "created_on": "2026-09-25T18:03:42",
-  "latency_ms": 4025,
+  "created_on": "2026-09-26T09:55:42",
+  "latency_ms": 4471,
   "usage": {
-    "input_tokens": 1495,
-    "output_tokens": 1005,
-    "thinking_tokens": 555
+    "input_tokens": 1522,
+    "output_tokens": 1159,
+    "thinking_tokens": 403
   },
   "extraction": {
     "doc_type": {
-      "value": "other",
+      "value": "statement",
       "confidence": 1.0
     },
     "supplier_name": {
@@ -97,7 +97,7 @@
       "confidence": 0.95
     },
     "notes": {
-      "value": "Dieser Kontoauszug ist keine Rechnung.",
+      "value": "Kontoauszug: Dieser Kontoauszug ist keine Rechnung.",
       "confidence": 0.95
     }
   }

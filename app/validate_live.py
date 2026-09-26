@@ -48,7 +48,8 @@ PRICE_PER_M = {"gemini-3.8-flash": (0.75, 3.75)}
 KNOWN_DIFFERENCES = {
     ("v2", 13, "tobe"): "In fixture mode this degraded scan carries simulated low confidences, so the golden file "
                         "expects human review. Gemini read the real scan correctly and with high confidence, so the "
-                        "to-be gate treats it like the clean invoice it is (DoA auto-approval under 500 EUR). The "
+                        "to-be gate treats it like the clean invoice it is (a small store purchase matched to the "
+                        "store's card / catalogue commitment, within the CHF 500 limit). The "
                         "confidence threshold still routes a document to review whenever the model itself is unsure.",
 }
 

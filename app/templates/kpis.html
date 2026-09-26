@@ -1,16 +1,17 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% import "_icons.html" as ic %}
-{% set crumbs = [("Control gate (new)", none), ("KPIs", none)] %}
+{% set crumbs = [("Control gate (new)", none), ("Metrics", none)] %}
 {% block head %}
 {% if charts %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>{% endif %}
 {% endblock %}
 {% block content %}
 <header class="page-head">
   <div class="page-head-main">
-    <h1>KPIs <span class="h1-sub">{{ scenario_label }}</span></h1>
-    <p class="lead">The same definitions as in the case deck. Hover or focus a tile for its formula; the numbered notes
-      are below.{% if data and data.run %} Latest run finished {{ data.run.finished_on|dt }}.{% endif %}</p>
+    <h1>Metrics <span class="h1-sub">{{ scenario_label }}</span></h1>
+    <p class="lead">The four metrics of the case (deck A6 definitions), plus one small indicator. Durations are
+      simulated business days. Hover or focus a tile for its definition; the numbered notes are below.{% if data and data.run %}
+      Latest run finished {{ data.run.finished_on|dt }}.{% endif %}</p>
   </div>
 </header>
 
@@ -19,44 +20,41 @@
 {% endif %}
 
 {% if data and not available %}
-<div class="flash flash-info partial-run" role="status"><span>{{ scenario_label }} has not been run yet: the
-  vendor-master KPIs are shown as the data stands; the KPIs computed from gate decisions need a run.</span>
+<div class="flash flash-info partial-run" role="status"><span>{{ scenario_label }} has not been run yet: accounts per
+  supplier is shown as the vendor master stands; the other metrics need a run.</span>
   {{ m.run_button(scenario=scenario) }}</div>
 {% endif %}
 
 {% if partial_warning %}
-<div class="flash flash-warn partial-run" role="status"><span>{{ partial_warning }}: the KPIs below cover the processed
-  documents only.</span> {{ m.run_button(scenario=scenario) }}</div>
+<div class="flash flash-warn partial-run" role="status"><span>{{ partial_warning }}: the metrics below cover the
+  processed documents only.</span> {{ m.run_button(scenario=scenario) }}</div>
 {% endif %}
 
 {% macro tile(t, extra="") -%}
 <div class="kpi-tile{{ extra }}{{ ' kpi-na' if t.shown == 'Run the scenario' else '' }}" id="kpi-{{ t.key }}" tabindex="0" aria-describedby="f-{{ t.key }}">
+  <span class="kpi-tag kpi-tag-{{ t.group }}">{{ t.tag }}</span>
   <span class="kpi-value">{{ m.value(t.shown) }}</span>
-  <span class="kpi-label">{{ t.label }}<sup><a href="#note-{{ t.note }}">{{ t.note }}</a></sup></span>
+  <span class="kpi-label">{{ t.label }}{% if t.unit == 'days' %} <small class="sim-label">simulated</small>{% endif %}<sup><a href="#note-{{ t.note }}">{{ t.note }}</a></sup></span>
   {{ m.formula("f-" ~ t.key, t.formula) }}
 </div>
 {%- endmacro %}
 
 {% if headline %}
 <section class="kpi-group kpi-headline" aria-labelledby="kpi-headline-title">
-  <h2 id="kpi-headline-title">Headline results <span class="muted">downstream, from the gate decisions</span></h2>
+  <h2 id="kpi-headline-title" class="visually-hidden">The four metrics</h2>
   <div class="kpi-tiles" style="--cols: {{ headline|length }}">
     {% for t in headline %}{{ tile(t, " kpi-hero") }}{% endfor %}
   </div>
 </section>
 {% endif %}
 
-{% for g in groups %}
-<section class="kpi-group kpi-{{ g.key }}">
-  <h2>{{ g.title }}</h2>
-  {% for row in g.rows %}
-  {% if row.title %}<h3 class="kpi-row-title">{{ row.title }}</h3>{% endif %}
-  <div class="kpi-tiles" style="--cols: {{ row["items"]|length }}">
-    {% for t in row["items"] %}{{ tile(t) }}{% endfor %}
+{% if small %}
+<section class="kpi-group kpi-small" aria-label="Indicator">
+  <div class="kpi-tiles kpi-tiles-small">
+    {% for t in small %}{{ tile(t, " kpi-mini") }}{% endfor %}
   </div>
-  {% endfor %}
 </section>
-{% endfor %}
+{% endif %}
 
 {% if charts %}
 <h2 class="section-title">{{ ic.icon('chart') }}Charts <span class="muted">each with its data table</span></h2>
@@ -76,7 +74,7 @@
     </details>
   </figure>
   <figure class="chart-card chart-wide">
-    <figcaption>Simulated cycle time per document <small class="muted">(business days from receipt to posting or resolution; 0 = handled the day it arrived)</small></figcaption>
+    <figcaption>Simulated cycle time per document <small class="muted">(simulated business days from arrival to approved and ready to pay; 0 = the day it arrived)</small></figcaption>
     <div class="chart-box"><canvas id="chart-cycle" aria-label="Simulated cycle days per document" role="img"></canvas></div>
     <details><summary>Data</summary>
       <table class="subtable"><tbody>{% for label in charts.cycle.labels %}<tr><td>{{ label }}</td><td>{{ charts.cycle.paths[loop.index0] }}</td><td class="num">{{ charts.cycle["values"][loop.index0] }}</td></tr>{% endfor %}</tbody></table>
@@ -136,7 +134,7 @@
 {% endif %}
 
 <section class="kpi-notes" id="kpi-notes">
-  <h2>{{ ic.icon('book') }}How each KPI is computed</h2>
+  <h2>{{ ic.icon('book') }}How each metric is computed</h2>
   <ol>
     {% for t in tiles %}
     <li id="note-{{ t.note }}"><strong>{{ t.label }}.</strong> {{ t.formula }}</li>

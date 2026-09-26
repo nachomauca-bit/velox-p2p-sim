@@ -25,4 +25,4 @@ def test_the_cached_gemini_extractions_still_give_the_expected_results():
                             env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output[-3000:]
-    assert "Case documents (v1)**: 28 of 28" in output
+    assert "Case documents (v1)**: 24 of 24" in output

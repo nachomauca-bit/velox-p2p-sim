@@ -1,9 +1,9 @@
-"""Test set v2 (phase 3): 26 documents, a wider and harder set than the 14 case documents.
+"""Test set v2 (phase 3): 26 documents, a wider and harder set than the 12 case documents.
 
 Source of truth for docs/TEST_SET_V2.md (the contract) and tests/golden_v2.yaml. It reuses the seed of
 app/world.py: same suppliers, accounts, POs, receipts and contracts. Only document 26 comes from a supplier
 that is NOT in world.PARTIES (UNKNOWN_SUPPLIERS), so the seed does not know it.
-v2 is a separate run on that seed, as if the 14 case documents (world.DOCUMENTS) had not been received: some v2
+v2 is a separate run on that seed, as if the 12 case documents (world.DOCUMENTS) had not been received: some v2
 invoices bill POs and services that a case document also bills, and no v2 document lists a case invoice.
 - invoices_gen.generate_all_v2 renders data/invoices_v2/: native and scanned PDFs, one Peppol UBL XML
   (document 11) and one email body (document 14);
@@ -117,7 +117,7 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         no=3, filename="03_nordwind_kontoauszug.pdf", channel="ap_mailbox",
         sender_email="ar@nordwind-logistics.de",
         subject="Kontoauszug KA-2026-11 — offene Posten",
-        received_on=_nov(5, 10, 0), doc_type="other", party_id="P-0001",
+        received_on=_nov(5, 10, 0), doc_type="other", read_as="statement", party_id="P-0001",
         printed_supplier_name="Nordwind Logistics GmbH", bill_to_entity="VDE",
         invoice_number="KA-2026-11", invoice_date=date(2026, 11, 5), payment_terms_days=None,
         currency="EUR",
@@ -402,7 +402,7 @@ DOCUMENTS_V2: list[DocumentSpec] = [
         **_KAFFEE_VAT, heading=HEADINGS["de"]["invoice"],
         printed_notes=("Vielen Dank für Ihre Bestellung!",),
         layout="compact", language="de", dataset="v2", **_STORE_B01,
-        designed_to_show="Low-value non-PO invoice: DoA auto-approval by the store manager's threshold.",
+        designed_to_show="Low-value non-PO invoice from the store's catalogue supplier: card / catalogue commitment.",
     ),
     DocumentSpec(
         no=23, filename="23_nordwind_sondertransporte.pdf", channel="ap_mailbox",

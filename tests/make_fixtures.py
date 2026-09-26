@@ -82,7 +82,7 @@ def ground_truth(spec: world.DocumentSpec) -> dict:
     party, entity = spec.party, spec.bill_to
     statement = spec.doc_type == "other"  # no VAT block
     values = {
-        "doc_type": spec.doc_type,
+        "doc_type": spec.true_doc_type,
         "supplier_name": spec.printed_supplier_name,
         "supplier_vat_id": _supplier_vat_as_read(spec),
         "supplier_iban": party.bank,

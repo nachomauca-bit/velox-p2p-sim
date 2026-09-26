@@ -1,48 +1,47 @@
-# Three-minute demo script
+# Four-minute demo script (shown at slide 10)
 
-**The message:** the problem starts upstream of the invoice (master data, purchasing discipline, intake, exception design). The AI quick-fix failed because it automated intake on top of all that. Fix the foundations, then automate on clean inputs behind a control gate.
+**The message:** the machine resolves what arrives clean, people resolve what needs judgement. Gemini reads and classifies; deterministic rules decide; every exception has a type, a named owner and an SLA.
 
-## Before the audience arrives (2 minutes)
+## Before the session (2 minutes)
 
-1. **Extraction first.** Copy `.env.example` to `.env`. Either set `GEMINI_API_KEY` and run `make extract` once (the results are cached, so the demo then runs offline), or set `EXTRACTOR=fixture` and say so during the demo: the fields are then ground truth, not Gemini output, and the UI labels them. The app reads `.env` only when it starts, so do this **before** step 2 (or restart `make run` after editing `.env`).
-2. `make seed` (fresh database, 14 documents in both inboxes), then `make run` and open http://127.0.0.1:8010.
-3. Reset both scenarios so nothing is processed yet: open http://127.0.0.1:8010/inbox?scenario=asis and press **Reset**, then http://127.0.0.1:8010/inbox?scenario=tobe and press **Reset**. The Reset message must say "14 extracted"; if it says "Extraction pending", go back to step 1.
-4. Keep these tabs ready: Inbox (A), Vendor master (A), Compare.
+1. **Cache-only mode.** In `.env`, leave `GEMINI_API_KEY` blank. The app then reads the committed Gemini readings in `data/cache/` and never calls the network. (With `EXTRACTOR=fixture` it reads ground-truth test data instead, and every page says so.) The app reads `.env` only when it starts.
+2. `make run` and open http://127.0.0.1:8010. A fresh database starts demo-ready.
+3. Press **Reset demo** in the header and confirm. Both scenarios are loaded and run offline; the to-be inbox opens with the panel "An email is on its way to ap@velox.com". The flash must say "Demo reset: both scenarios loaded and run (offline)."
+4. Keep three tabs ready: **Inbox** (B — To-be), **Exception cockpit** (B), **Compare**. Vendor master (A) is useful for questions.
 
-## 0:00 – 0:30 · The as-is world (scenario A)
+## 0:00 – 0:45 · 1. Inbox: registered on arrival
 
-- **Inbox** (`?scenario=asis`): two mailboxes. Three documents sit in the Berlin store mailbox and will only reach AP after about 7 business days; nothing is registered yet.
-- **Vendor master**: "**28 accounts / 12 suppliers = 2.3**", the same ratio as the case (2,800 / 1,200). Point at Nordwind: five accounts, spelled differently, with different IBANs and terms, created by `store.berlin01`, `ap.temp` and a Paris store. *"Anyone could create a supplier."*
+- Press **Receive next email**. A new card appears on the one intake address: "**Registered B-05 · Fri 2026-10-02 14:02 · ap@velox.com · clock started**".
+- Say: *"From this minute the invoice exists and the clock runs."* In scenario A the same invoice would wait in a mailbox until AP opens it; in the store mailbox, about seven business days.
 
-## 0:30 – 1:15 · Run the as-is process
+## 0:45 – 2:00 · 2. One invoice through the gate
 
-- Press **Run scenario**. The step log scrolls: the quick-fix tool matches suppliers **by name**.
-- Open **A-02** (the Nordwind reminder, printed "NORDWIND LOGISTICS"): it lands on duplicate account V-000117 and is **posted a second time**, 27,846.00 EUR.
-- Open **A-04** (Bright Agency credit note): it lands on V-000119, not on the invoice's account, so the credit stays **unapplied**.
-- **Exception cockpit**: a single bucket, "**Email loop — untracked**": nine documents, no owner, no SLA.
+- Open **B-05** (a milestone invoice for a store fit-out).
+- **Gemini output**: the fields with a confidence per field and the document type (Invoice), and one provenance line, "Read by gemini-3.8-flash (cached)". Say: *"Gemini reads and classifies. It never decides."*
+- Press **Run the control gate**. Read the **rule log** line by line: Registered on arrival → Screened → Read with Gemini → Confidence → Document type → Supplier (tax ID) → Legal entity → Duplicate → **Commitment → Exception**: the PO exists but no service confirmation is recorded.
+- The **outcome**: *Exception: PO exists, no receipt or confirmation* · owner **Jonas Weber · Receiver / requester** (store development manager) · **SLA 2 business days**, with the due date. Optional: **Draft message to owner** shows two sentences labelled "Draft by Gemini — reviewed by AP"; nothing is sent.
 
-## 1:15 – 2:15 · The to-be world (scenario B)
+## 2:00 – 2:45 · 3. Exception cockpit
 
-- Switch to **B — To-be**. **Vendor master**: 16 accounts / 12 suppliers, every account linked to its party, VAT ID and IBAN filled, terms from the contract.
-- **Inbox**: both mailboxes feed one intake step; every document is registered on arrival, including the three sent to the store.
-- Press **Run scenario**. Walk through three invoice pages:
-  - **B-02**: resolved by **VAT ID** to the same supplier as B-01, same normalised invoice number and amount → **blocked duplicate**, the supplier gets a status reply.
-  - **B-06**: 150 × 44.00 against PO 4500109 at 42.00, +300.00 outside the tolerance → exception to the **buyer, Sofia Brandt**, SLA 2 days, with the reason in one sentence. (With a key: **Draft message to owner** writes the two-sentence note, labelled "Draft by Gemini — reviewed by AP".)
-  - **B-10**: coffee for the Berlin store, 180.00 EUR, no PO → auto-approved under the 500 EUR delegation-of-authority limit; the store manager is informed.
-- **Exception cockpit**: four exceptions, each **with an owner and an SLA** (Jonas Weber, Sofia Brandt, Tim Koch → Sofia Brandt, Marco Ruiz), plus info tasks.
+- Open the **Exception cockpit** (B): "**3 open · 1 past SLA**", grouped by type, each with owner, SLA and days open.
+- The one past SLA: **B-06**, price or quantity mismatch, owner the buyer Sofia Brandt, 4 days open against an SLA of 2.
+- B-01 is a **Human review**: above the approval limit, with the next approver. B-02 is a **Block**: a payment reminder that reproduces B-01; AP replies to the supplier with the status.
 
-## 2:15 – 3:00 · The comparison
+## 2:45 – 4:00 · 4. Comparison A vs B
 
-- **Compare**, same 14 documents:
-  - Touchless **35.7% → 71.4%**; exceptions 9 untracked → 4 owned with an SLA.
-  - Duplicate postings **2 → 0** (duplicate blocked); credit notes unapplied **1 → 0**; wrong-entity postings **2 → 0**.
-  - Simulated cash leakage **29,646.00 EUR → 0.00**.
-  - PO / contract coverage **30.8% → 92.3%**: the upstream fix is what makes automation possible.
-  - Cycle time, shown both ways: the sample average (**13.1 → 0.5 days**) and the case's typical failure, a non-PO invoice sent to a store (**25 → 3 days**, 0 under the DoA limit).
-- Close on the architecture message in the left navigation: the ERP stays the **system of record**; the **control gate sits in front of it**. Gemini only reads documents, with a confidence per field; every decision is a deterministic, explainable rule (open any invoice's gate trace).
+- Open **Compare**: the same twelve invoices, the four metrics side by side (simulated durations):
+  - **First-pass match rate** 27.3% → 72.7%
+  - **Accounts per supplier** 2.33 → 1.17
+  - **Touchless rate** 0% → 72.7%
+  - **Invoice cycle time** (business days, median) 15 → 0, the same day
+  - and the small indicator **Registered same day** 0% → 100%.
+- Close with the line: *"The machine resolves what arrives clean, people resolve what needs judgement."*
 
-## If asked
+## Notes
 
-- *"Is the 26-day cycle reproduced?"* The reference path is 25 days; the sample average is lower because the 14 documents include clean PO invoices (Assumptions, section 6).
-- *"What does the AI do?"* Document understanding only: structured output with per-field confidence; below 0.80 on a critical field the document goes to human review.
-- *"Is this an ERP?"* No: mock tables modelled on Dynamics 365 Finance concepts, read-only; see the footer and the Assumptions page.
+- **Receive the next email before Compare.** Until B-05 arrives, B shows 11 documents (first-pass match and touchless 80.0%); after *Run the control gate* on B-05 it shows the twelve and the values above. That is expected.
+- Nothing depends on the network: Reset demo, Run scenario and Run the control gate read the cache or the fixtures only. **Reset demo** restarts the demo at any time.
+- If asked:
+  - *"Where do these numbers come from?"* The Assumptions page lists every simulated number with its reason, including the durations and the approval limit.
+  - *"Why does the reminder not get paid twice?"* The duplicate rule runs at supplier level on invoice number or on amount and date; in A the reminder lands on a second vendor record and is posted again.
+  - *"Is this an ERP?"* No: read-only mock tables, the ERP stays the system of record; see the footer.

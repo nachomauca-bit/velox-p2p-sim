@@ -1,8 +1,8 @@
-"""The clean world: single source of truth for seed data and for the 14 sample documents.
+"""The clean world: single source of truth for seed data and for the 12 case documents.
 
 Everything else is derived from this module:
 - seed.py loads it as scenario `tobe` and derives scenario `asis` by explicit corruption rules;
-- invoices_gen.py renders DOCUMENTS (the 12 of the brief plus 2 clean ones) as PDFs;
+- invoices_gen.py renders DOCUMENTS (the twelve case documents of brief v2) as PDFs;
 - tests/fixtures/ ground-truth extraction JSON is built from DOCUMENTS.
 Test set v2 (26 documents, phase 3) lives in app/world_v2.py and reuses this seed; documents_for(dataset)
 returns either set.
@@ -50,14 +50,14 @@ class Person:
 
 
 PEOPLE: dict[str, Person] = {
-    "lena": Person("Lena Fischer", "lena.fischer@velox.com", "Master Data owner"),
+    "lena": Person("Lena Fischer", "lena.fischer@velox.com", "Master data owner"),
     "marco": Person("Marco Ruiz", "marco.ruiz@velox.com", "AP specialist"),
     "sofia": Person("Sofia Brandt", "sofia.brandt@velox.com", "Buyer, Procurement DE"),
     "julien": Person("Julien Moreau", "julien.moreau@velox.com", "Buyer, Procurement FR"),
     "daniel": Person("Daniel Price", "daniel.price@velox.com", "Buyer, Procurement US"),
     "camille": Person("Camille Martin", "camille.martin@velox.com", "Marketing manager FR", "FR-MKT-210"),
     "anna": Person("Anna Schulz", "anna.schulz@velox.com", "Marketing manager DE", "DE-MKT-210"),
-    "jonas": Person("Jonas Weber", "jonas.weber@velox.com", "Store development lead DE", "DE-STD-310"),
+    "jonas": Person("Jonas Weber", "jonas.weber@velox.com", "Store development manager DE", "DE-STD-310"),
     "tim": Person("Tim Koch", "tim.koch@velox.com", "Warehouse lead, Berlin DC", "DE-LOG-120"),
     "luc": Person("Luc Bernard", "luc.bernard@velox.com", "Store operations FR", "FR-STR-100"),
     "emily": Person("Emily Carter", "emily.carter@velox.com", "IT manager US", "US-IT-410"),
@@ -67,14 +67,66 @@ PEOPLE: dict[str, Person] = {
     "katrin": Person("Katrin Lange", "katrin.lange@velox.com", "Facilities manager DE", "DE-FAC-150"),
     "claire": Person("Claire Dubois", "claire.dubois@velox.com", "Facilities manager FR", "FR-FAC-150"),
     "ryan": Person("Ryan Brooks", "ryan.brooks@velox.com", "Logistics manager US", "US-LOG-120"),
+    # Next approvers in the approval matrix, one per legal entity (APPROVAL_MATRIX).
+    "stefan": Person("Stefan Keller", "stefan.keller@velox.com", "Finance director DE"),
+    "helene": Person("Helene Girard", "helene.girard@velox.com", "Finance director FR"),
+    "michael": Person("Michael Grant", "michael.grant@velox.com", "Finance director US"),
 }
 
+PERSON_BY_NAME: dict[str, Person] = {p.name: p for p in PEOPLE.values()}
 MASTER_DATA_OWNER = PEOPLE["lena"]
 AP_SPECIALIST = PEOPLE["marco"]
 
 # Requester (and cost-centre owner) for non-PO spend without a contract, per supplier and legal entity.
 # Kaffee & Co supplies the Berlin 01 store; its manager owns the store cost centre.
 NON_PO_REQUESTERS: dict[tuple[str, str], str] = {("P-0009", "VDE"): "paul"}
+
+
+# --------------------------------------------------------------------------------------------
+# Group policy in the group currency (Velox is a Swiss group: CHF). Simulated values, declared in
+# docs/ASSUMPTIONS.md. Invoices keep their own currency; only the limit checks convert, at fixed rates.
+# --------------------------------------------------------------------------------------------
+
+GROUP_CURRENCY = "CHF"
+CHF_RATES: dict[str, float] = {"CHF": 1.0, "EUR": 0.94, "USD": 0.80, "GBP": 1.10}  # simulated, fixed
+
+
+def to_chf(amount: Optional[float], currency: Optional[str]) -> Optional[float]:
+    """An amount in CHF at the fixed simulated rate; None when the amount or the currency's rate is unknown."""
+    rate = CHF_RATES.get((currency or "").upper())
+    return None if amount is None or rate is None else round(amount * rate, 2)
+
+
+@dataclass(frozen=True)
+class ApprovalLimit:
+    limit_chf: float
+    next_approver: str  # key into PEOPLE
+
+
+# Approval matrix: above the limit an invoice goes to Human review by the next approver (brief v2 section 2).
+APPROVAL_MATRIX: dict[str, ApprovalLimit] = {
+    "VDE": ApprovalLimit(25000.0, "stefan"),
+    "VFR": ApprovalLimit(25000.0, "helene"),
+    "VUS": ApprovalLimit(25000.0, "michael"),
+}
+
+
+@dataclass(frozen=True)
+class CatalogueSpec:
+    """Card / catalogue commitment for small store purchases (deck slide 9): an approved store supplier with a
+    per-invoice limit in the group currency. To-be only: in the as-is the store agrees small purchases by email."""
+    catalogue_id: str
+    party_id: str
+    legal_entity_code: str
+    description: str
+    limit_chf: float
+    owner: str  # key into PEOPLE
+
+
+CATALOGUES: list[CatalogueSpec] = [
+    CatalogueSpec("CAT-2026-001", "P-0009", "VDE", "Coffee and consumables catalogue, Store Berlin 01", 500.0,
+                  "paul"),
+]
 
 
 # --------------------------------------------------------------------------------------------
@@ -230,10 +282,10 @@ CLEAN_ACCOUNTS: list[AccountSpec] = [
     _clean_account("V-000111", "P-0011", "VUS", date(2022, 7, 18)),
     _clean_account("V-000112", "P-0012", "VDE", date(2025, 3, 10)),
     _clean_account("V-000113", "P-0004", "VFR", date(2025, 9, 1)),
-    _clean_account("V-000114", "P-0005", "VDE", date(2024, 1, 8)),
     _clean_account("V-000115", "P-0006", "VFR", date(2025, 6, 2)),
-    _clean_account("V-000116", "P-0008", "VDE", date(2025, 4, 22)),
 ]
+# 14 records for 12 suppliers (1.17, deck slide 11 target <= 1.2): the two remaining second records are legitimate,
+# one per legal entity the supplier serves (deck A1, S9). Shopsys and QuickPrint have one record each (brief v2).
 CLEAN_ACCOUNT_BY_ID = {a.account_id: a for a in CLEAN_ACCOUNTS}
 
 
@@ -271,7 +323,7 @@ CONTRACTS: list[ContractSpec] = [
 
 
 # --------------------------------------------------------------------------------------------
-# Purchase orders and receipts. `in_asis` models weak PO discipline: only ~40% of the POs were
+# Purchase orders and receipts. `in_asis` models weak PO discipline: only half of the POs (6 of 12) were
 # raised in the ERP before the invoice arrived in the as-is world (rule D6 in ASSUMPTIONS.md).
 # --------------------------------------------------------------------------------------------
 
@@ -323,9 +375,6 @@ PURCHASE_ORDERS: list[POSpec] = [
     POSpec("4500105", "VFR", "V-000115", "goods", "Wall display units for Paris stores",
            "luc", "julien", date(2026, 8, 20), "EUR",
            (POLineSpec(1, "Wall display unit WD-120, oak finish", 80, 42.00),), True),
-    POSpec("4500107", "VDE", "V-000114", "service", "POS integration add-on, annual licence (Germany)",
-           "felix", "sofia", date(2026, 9, 1), "EUR",
-           (POLineSpec(1, "POS integration add-on — annual licence (Germany)", 1, 2400.00),), False),
     POSpec("4500109", "VDE", "V-000106", "goods", "Wall display units for German stores",
            "jonas", "sofia", date(2026, 9, 1), "EUR",
            (POLineSpec(1, "Wall display unit WD-120, oak finish", 150, 42.00),), False),
@@ -340,9 +389,6 @@ PURCHASE_ORDERS: list[POSpec] = [
     POSpec("4500117", "VFR", "V-000102", "service", "Autumn campaign 2026 (France)",
            "camille", "julien", date(2026, 8, 25), "EUR",
            (POLineSpec(1, "Autumn campaign 2026 — creative concept, production and media planning", 1, 12000.00),), True),
-    POSpec("4500119", "VDE", "V-000116", "goods", "Window stickers for German stores",
-           "anna", "sofia", date(2026, 9, 15), "EUR",
-           (POLineSpec(1, "Window stickers, die-cut", 500, 2.20),), False),
     POSpec("4500121", "VFR", "V-000102", "service", "Q4 social media campaign (France)",
            "camille", "julien", date(2026, 9, 18), "EUR",
            (POLineSpec(1, "Q4 social media campaign — content and community management", 1, 6000.00),), False),
@@ -393,7 +439,7 @@ RECEIPTS: list[ReceiptSpec] = [
 
 
 # --------------------------------------------------------------------------------------------
-# The inbound documents: the 12 of brief section 5.6 plus two clean ones (13, 14)
+# The inbound documents: the twelve case documents of brief v2
 # --------------------------------------------------------------------------------------------
 
 AP_MAILBOX = "ap@velox.com"
@@ -420,7 +466,7 @@ class DocumentSpec:
     sender_email: str
     subject: str
     received_on: datetime
-    doc_type: str  # invoice | credit_note | other (a supplier statement, test set v2)
+    doc_type: str  # invoice | credit_note | other: how the document is laid out (invoices_gen.py)
     party_id: str
     printed_supplier_name: str  # the name as printed on this document (may differ from canonical)
     bill_to_entity: str  # legal entity code printed in the bill-to block
@@ -450,7 +496,20 @@ class DocumentSpec:
     email_body: Optional[str] = None  # the invoice text (content email_body), else a forwarding comment
     vat_display: Optional[str] = None  # supplier VAT ID exactly as printed (default: the national format)
     supplier: Optional[PartySpec] = None  # a supplier that is not in PARTIES (unknown to the vendor master)
-    dataset: str = "v1"  # v1: the 14 case documents; v2: test set v2
+    dataset: str = "v1"  # v1: the 12 case documents; v2: test set v2
+    # Seed key of the as-is email loop (sim.email_loop_days); None = the sample number. Kept at the number a case
+    # document had before the renumbering of 25 Sep 2026, so its simulated as-is days did not change.
+    loop_key: Optional[str] = None
+    # To-be exception resolved this many business days after its SLA (the one "past SLA" of the demo cockpit).
+    sla_overrun_days: int = 0
+    # The document type a reader should report when it differs from the layout type: "reminder" (a payment reminder
+    # that reproduces an invoice) or "statement" (a statement of account). None = doc_type.
+    read_as: Optional[str] = None
+
+    @property
+    def true_doc_type(self) -> str:
+        """The document type as it should be read: invoice | credit_note | reminder | statement | other."""
+        return self.read_as or self.doc_type
 
     @property
     def mailbox(self) -> str:
@@ -498,14 +557,15 @@ DOCUMENTS: list[DocumentSpec] = [
         invoice_number="NWL-2026-00913", invoice_date=date(2026, 9, 30), payment_terms_days=14,
         currency="EUR", lines=_NW_LINES, tax_rate=0.19, tax_label="VAT 19%", tax_note=None,
         contract_reference="CT-2025-001", layout="banner",
-        designed_to_show="Recurring contract match (to-be) vs 'no PO' email loop (as-is). "
-                         "Invoice terms 14 days differ from the contract (30).",
+        designed_to_show="Recurring contract match, then above the CHF 25,000 approval limit: Human review by the "
+                         "next approver (to-be) vs 'no PO' email loop (as-is). Invoice terms 14 days differ from the "
+                         "contract (30): the master terms apply.",
     ),
     DocumentSpec(
         no=2, filename="02_nordwind_reminder_copy.pdf", channel="store_mailbox",
         sender_email="ar@nordwind-logistics.de",
         subject="Reminder — copy of invoice NWL-2026-00913",
-        received_on=datetime(2026, 10, 15, 16, 5), doc_type="invoice", party_id="P-0001",
+        received_on=datetime(2026, 10, 2, 8, 15), doc_type="invoice", read_as="reminder", party_id="P-0001",
         printed_supplier_name="NORDWIND LOGISTICS", bill_to_entity="VDE",
         invoice_number="NWL-2026-00913", invoice_date=date(2026, 9, 30), payment_terms_days=14,
         currency="EUR", lines=_NW_LINES, tax_rate=0.19, tax_label="VAT 19%", tax_note=None,
@@ -513,8 +573,9 @@ DOCUMENTS: list[DocumentSpec] = [
         printed_notes=("This is a copy of invoice NWL-2026-00913 issued on 30 September 2026.",
                        "Our records show it as unpaid. Please arrange payment or contact our accounts receivable team."),
         layout="banner",
-        designed_to_show="Duplicate blocked (to-be) vs posted twice on another vendor account (as-is). "
-                         "Sent from the receivables system with the short name 'NORDWIND LOGISTICS'.",
+        designed_to_show="A reminder that reproduces invoice NWL-2026-00913: Block before posting (to-be) vs posted "
+                         "twice on another vendor account (as-is). Sent from the receivables system with the short "
+                         "name 'NORDWIND LOGISTICS'.",
     ),
     DocumentSpec(
         no=3, filename="03_bright_agency_invoice.pdf", channel="ap_mailbox",
@@ -549,7 +610,7 @@ DOCUMENTS: list[DocumentSpec] = [
         no=5, filename="05_fitout_partners_invoice.pdf", channel="ap_mailbox",
         sender_email="accounts@fitoutpartners.co.uk",
         subject="Invoice 2026-091 — Hamburg milestone 2 — PO 4500123",
-        received_on=datetime(2026, 10, 1, 14, 2), doc_type="invoice", party_id="P-0003",
+        received_on=datetime(2026, 10, 2, 14, 2), doc_type="invoice", party_id="P-0003",
         printed_supplier_name="FitOut Partners Ltd", bill_to_entity="VDE",
         invoice_number="2026-091", invoice_date=date(2026, 9, 30), payment_terms_days=30,
         currency="EUR",
@@ -557,23 +618,24 @@ DOCUMENTS: list[DocumentSpec] = [
         tax_rate=0.0, tax_label="VAT 0%",
         tax_note="Reverse charge: customer to account for VAT (Article 196, Directive 2006/112/EC).",
         po_numbers=("4500123",), layout="classic",
-        designed_to_show="PO exists but no service confirmation -> exception to the receiver with SLA (to-be) "
-                         "vs email loop (as-is).",
+        designed_to_show="PO exists but no service confirmation -> exception to the requester (store development "
+                         "manager) with SLA 2 days (to-be; deck A5) vs email loop (as-is).",
     ),
     DocumentSpec(
         no=6, filename="06_atlas_displays_invoice.pdf", channel="ap_mailbox",
         sender_email="invoices@atlasdisplays.es",
         subject="Invoice AD-2026/0788 — PO 4500109",
-        received_on=datetime(2026, 10, 2, 10, 21), doc_type="invoice", party_id="P-0006",
+        received_on=datetime(2026, 9, 28, 10, 21), doc_type="invoice", party_id="P-0006",
         printed_supplier_name="Atlas Displays SL", bill_to_entity="VDE",
         invoice_number="AD-2026/0788", invoice_date=date(2026, 9, 28), payment_terms_days=30,
         currency="EUR",
         lines=(InvoiceLineSpec("Wall display unit WD-120, oak finish", 150, 44.00),),
         tax_rate=0.0, tax_label="VAT 0%",
         tax_note="Intra-Community supply, exempt under Article 138, Directive 2006/112/EC.",
-        po_numbers=("4500109",), layout="classic",
-        designed_to_show="Unit price 44.00 vs PO 42.00: price mismatch outside tolerance -> exception to the buyer. "
-                         "Invoice terms 30 days differ from the master (60).",
+        po_numbers=("4500109",), layout="classic", sla_overrun_days=3,
+        designed_to_show="Unit price 44.00 vs PO 42.00: price mismatch outside tolerance -> exception to the buyer, "
+                         "still open past its SLA at the cockpit snapshot. Invoice terms 30 days differ from the "
+                         "master (60).",
     ),
     DocumentSpec(
         no=7, filename="07_shopsys_invoice.pdf", channel="ap_mailbox",
@@ -589,22 +651,7 @@ DOCUMENTS: list[DocumentSpec] = [
         designed_to_show="Touchless (PO + service confirmed).",
     ),
     DocumentSpec(
-        no=8, filename="08_metro_media_invoice.pdf", channel="store_mailbox",
-        sender_email="invoices@metromedia.de",
-        subject="Invoice MM-2026-212 (PO 4500126)",
-        received_on=datetime(2026, 10, 2, 13, 47), doc_type="invoice", party_id="P-0007",
-        printed_supplier_name="Metro Media GmbH", bill_to_entity="VFR",
-        invoice_number="MM-2026-212", invoice_date=date(2026, 9, 30), payment_terms_days=30,
-        currency="EUR",
-        lines=(InvoiceLineSpec("Berlin out-of-home campaign September 2026 — 40 billboard sites", 1, 7500.00),),
-        tax_rate=0.0, tax_label="VAT 0%",
-        tax_note="Reverse charge: VAT to be accounted for by the recipient (Article 196, Directive 2006/112/EC).",
-        po_numbers=("4500126",), layout="banner",
-        designed_to_show="Billed to Velox Retail SAS (VFR) but PO 4500126 belongs to VDE: wrong legal entity "
-                         "-> exception (to-be) vs silent wrong posting (as-is).",
-    ),
-    DocumentSpec(
-        no=9, filename="09_quickprint_invoice.pdf", channel="ap_mailbox",
+        no=8, filename="08_quickprint_invoice.pdf", loop_key="09", channel="ap_mailbox",
         sender_email="accounts@quickprint.fr",
         subject="QuickPrint invoice QP-26-1043",
         received_on=datetime(2026, 10, 1, 10, 33), doc_type="invoice", party_id="P-0008",
@@ -617,7 +664,7 @@ DOCUMENTS: list[DocumentSpec] = [
         designed_to_show="Touchless goods 3-way match (PO, receipt, invoice).",
     ),
     DocumentSpec(
-        no=10, filename="10_kaffee_und_co_invoice.pdf", channel="store_mailbox",
+        no=9, filename="09_kaffee_und_co_invoice.pdf", loop_key="10", channel="store_mailbox",
         sender_email="info@kaffee-und-co.de",
         subject="Invoice 2026/117 — coffee supply September",
         received_on=datetime(2026, 10, 1, 12, 10), doc_type="invoice", party_id="P-0009",
@@ -631,11 +678,11 @@ DOCUMENTS: list[DocumentSpec] = [
         bill_to_attention="Store Berlin 01",
         bill_to_address=("Rosenthaler Strasse 40", "10178 Berlin", "Germany"),
         print_bill_to_vat=False, layout="compact",
-        designed_to_show="Low-value non-PO invoice sent to the store: to-be auto-approves under the DoA threshold; "
-                         "as-is waits 7+ days in the store mailbox.",
+        designed_to_show="Small store purchase: matched to the store's catalogue commitment (CHF 500 per invoice) "
+                         "-> touchless (to-be); as-is waits 7+ days in the store mailbox, then the email loop.",
     ),
     DocumentSpec(
-        no=11, filename="11_cleanspace_invoice.pdf", channel="ap_mailbox",
+        no=10, filename="10_cleanspace_invoice.pdf", loop_key="11", channel="ap_mailbox",
         sender_email="invoicing@cleanspace.nl",
         subject="Invoice CSF-26-10355 — cleaning services France, September 2026",
         received_on=datetime(2026, 10, 2, 9, 5), doc_type="invoice", party_id="P-0004",
@@ -648,25 +695,11 @@ DOCUMENTS: list[DocumentSpec] = [
         contract_reference="CT-2025-003", layout="classic",
         designed_to_show="No PO, recurring contract match (amount inside the expected monthly range).",
     ),
+    # Documents 11 and 12 are not in the original brief's table: two clean, everyday invoices added so that the
+    # sample is not made of difficult cases only (24 Sep 2026). Brief v2 (25 Sep) keeps twelve documents: the brief's
+    # 8 (Metro Media) and 12 (Lumen) were dropped; see docs/ASSUMPTIONS.md.
     DocumentSpec(
-        no=12, filename="12_lumen_lighting_invoice.pdf", channel="ap_mailbox",
-        sender_email="accounts@lumenlighting.co.uk",
-        subject="Invoice LSL-INV-5521 — PO 4500112",
-        received_on=datetime(2026, 10, 5, 8, 30), doc_type="invoice", party_id="P-0012",
-        printed_supplier_name="Lumen Store Lighting Ltd", bill_to_entity="VDE",
-        invoice_number="LSL-INV-5521", invoice_date=date(2026, 9, 30), payment_terms_days=30,
-        currency="EUR",
-        lines=(InvoiceLineSpec("LED track spotlight 30W", 80, 40.00),
-               InvoiceLineSpec("LED panel 600x600 40W", 40, 50.00)),
-        tax_rate=0.0, tax_label="VAT 0%", tax_note="Export of goods outside the UK: zero-rated.",
-        po_numbers=("4500112",), layout="modern",
-        designed_to_show="120 units invoiced, only 100 received (line 2: 40 invoiced, 20 received): "
-                         "quantity mismatch -> exception to the receiver, then the buyer; partial.",
-    ),
-    # Documents 13 and 14 are not in the brief's table: two clean, everyday invoices added so that the
-    # sample is not made of difficult cases only (decision of 24 Sep 2026; see docs/ASSUMPTIONS.md).
-    DocumentSpec(
-        no=13, filename="13_securenet_invoice.pdf", channel="ap_mailbox",
+        no=11, filename="11_securenet_invoice.pdf", loop_key="13", channel="ap_mailbox",
         sender_email="billing@securenet.ch",
         subject="Invoice SN-2026-3307 — PO 4500128",
         received_on=datetime(2026, 10, 2, 14, 20), doc_type="invoice", party_id="P-0010",
@@ -681,7 +714,7 @@ DOCUMENTS: list[DocumentSpec] = [
                          "as-is ERP -> email loop.",
     ),
     DocumentSpec(
-        no=14, filename="14_harbor_freight_invoice.pdf", channel="ap_mailbox",
+        no=12, filename="12_harbor_freight_invoice.pdf", loop_key="14", channel="ap_mailbox",
         sender_email="billing@harborff.com",
         subject="Invoice HFF-2026-0930 — September 2026 freight services",
         received_on=datetime(2026, 10, 1, 16, 40), doc_type="invoice", party_id="P-0011",
@@ -700,7 +733,7 @@ DOCUMENT_BY_NO = {d.no: d for d in DOCUMENTS}
 
 
 # --------------------------------------------------------------------------------------------
-# Datasets: v1 = the 14 documents above; v2 = test set v2 (app/world_v2.py, docs/TEST_SET_V2.md)
+# Datasets: v1 = the 12 documents above; v2 = test set v2 (app/world_v2.py, docs/TEST_SET_V2.md)
 # --------------------------------------------------------------------------------------------
 
 DATASETS = ("v1", "v2")

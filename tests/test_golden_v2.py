@@ -86,6 +86,9 @@ def kpi_value(result: dict[str, Any], key: str) -> Any:
     return result["kpis"][key]["value"]
 
 
+METRIC_KEYS = ("documents", "exceptions_by_type", *metrics.KPI_DEFS)  # touchless / exceptions: the run summary
+
+
 def same(value: Any, expected: Any) -> bool:
     if isinstance(expected, float) or isinstance(value, float):
         return value is not None and round(float(value), 1) == round(float(expected), 1)
@@ -96,7 +99,9 @@ def same(value: Any, expected: Any) -> bool:
 def test_kpis_match_golden_v2(results, scenario: str) -> None:
     result = results["kpis"][scenario]
     assert result["available"] is True and result["run"] is not None
-    mismatches = {key: (kpi_value(result, key), expected) for key, expected in GOLDEN["kpis"][scenario].items()
+    expected_kpis = {k: v for k, v in GOLDEN["kpis"][scenario].items() if k in METRIC_KEYS}
+    assert set(expected_kpis) == set(METRIC_KEYS)
+    mismatches = {key: (kpi_value(result, key), expected) for key, expected in expected_kpis.items()
                   if not same(kpi_value(result, key), expected)}
     assert not mismatches, f"(actual, expected) per KPI: {mismatches}"
 
@@ -115,10 +120,12 @@ def test_run_summary_matches_golden_v2_kpis(results, scenario: str) -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def test_statement_is_filed_in_tobe_and_posted_in_asis(results) -> None:
+def test_statement_is_a_payment_status_query_in_tobe_and_posted_in_asis(results) -> None:
     tobe, asis = results["decisions"][("tobe", 3)], results["decisions"][("asis", 3)]
-    assert tobe["details"]["doc_type"] == asis["details"]["doc_type"] == "other"
-    assert "neither an invoice nor a credit note" in tobe["reason"] and tobe["details"]["contract_period"] is None
+    assert tobe["details"]["doc_type"] == asis["details"]["doc_type"] == "statement"
+    assert tobe["exception_type"] == "payment_status_query" and tobe["sla_days"] is None
+    assert "A statement of account, not an invoice: nothing is posted" in tobe["reason"]
+    assert "the agent drafts the reply" in tobe["reason"] and tobe["details"]["contract_period"] is None
     assert asis["details"]["posted"] is True and asis["details"]["gross_total"] == 56525.0
 
 

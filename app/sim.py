@@ -13,7 +13,7 @@ from typing import Iterable, Optional, TypeVar
 DURATIONS: dict[str, dict[str, int]] = {
     "asis": {
         "store_forwarding": 7,  # store mailbox -> forwarded to AP
-        "ap_open_and_key": 1,  # AP opens ap@; the quick-fix tool keys the invoice
+        "ap_open_and_key": 1,  # AP opens ap@ and keys the invoice
         "email_loop_min": 8,  # untracked back-and-forth, uniform 8..16 (mean 12)
         "email_loop_max": 16,
         "email_approval": 4,
@@ -31,8 +31,8 @@ DURATIONS: dict[str, dict[str, int]] = {
 EMAIL_LOOP_SEED = 2026
 
 # The exception cockpit is a snapshot taken at the close of the business day on which the last item of the
-# queue was registered (to-be: Mon 5 Oct 2026). Ages are counted to it, so the queue reads as it would that
-# evening; the simulation itself assumes every SLA is met.
+# queue was registered (to-be: Fri 2 Oct 2026, the demo day). Days open are counted to it, so the queue reads as it
+# would that evening: one item (Atlas, arrived Mon 28 Sep, SLA 2) is past its SLA and is resolved late.
 COCKPIT_CLOSE_HOUR = 17
 
 D = TypeVar("D", date, datetime)
@@ -93,20 +93,21 @@ def email_loop_days(doc_key: str) -> int:
 # --------------------------------------------------------------------------------------------
 
 # Paths a document can take through the process.
-#   as-is: "matched" (posted by the quick-fix tool), "email_loop" (untracked follow-up, then posted)
-#   to-be: "touchless" (posted, blocked duplicate or applied credit with no human step),
-#          "exception" (resolved by the owner within the SLA, assumed met)
+#   as-is: "matched" (keyed and posted by AP), "email_loop" (untracked follow-up, then posted)
+#   to-be: "touchless" (Post or Block with no human step), "exception" (Exception or Human review, resolved by the
+#          owner within the SLA, or late for the one past-SLA item)
 PATHS = ("matched", "email_loop", "touchless", "exception")
 
 
 def cycle_breakdown(scenario: str, path: str, *, channel: str, doc_key: str, sla_days: int = 0,
-                    approval: bool = False) -> dict[str, int]:
+                    approval: bool = False, overrun_days: int = 0) -> dict[str, int]:
     """Business days per activity for one document. Sum of the values = the simulated cycle time.
 
     as-is: store forwarding 7 (store mailbox only) + AP opening and keying 1, then either posting 1
            (matched) or the seeded email loop (8..16) + email approval 4 + posting 1.
-    to-be: registration, extraction, gate and posting take 0; an exception adds its SLA (assumed met)
-           plus a workflow approval of 1 day when the resolution needs one.
+    to-be: registration, extraction, gate and posting take 0; an exception or human review adds its SLA plus a
+           workflow approval of 1 day when the resolution needs one, and the days past the SLA when the owner
+           resolves it late (overrun_days: the one past-SLA item of the demo cockpit).
     """
     if path not in PATHS:
         raise ValueError(f"unknown path {path!r}")
@@ -125,6 +126,8 @@ def cycle_breakdown(scenario: str, path: str, *, channel: str, doc_key: str, sla
     steps = {"registration": d["registration"], "extraction_and_gate": d["extraction_and_gate"]}
     if path == "exception":
         steps["exception_sla"] = sla_days
+        if overrun_days:
+            steps["past_sla"] = overrun_days
         if approval:
             steps["workflow_approval"] = d["workflow_approval"]
     steps["posting"] = d["posting"]
@@ -132,6 +135,6 @@ def cycle_breakdown(scenario: str, path: str, *, channel: str, doc_key: str, sla
 
 
 def cycle_days(scenario: str, path: str, *, channel: str, doc_key: str, sla_days: int = 0,
-               approval: bool = False) -> int:
+               approval: bool = False, overrun_days: int = 0) -> int:
     return sum(cycle_breakdown(scenario, path, channel=channel, doc_key=doc_key, sla_days=sla_days,
-                               approval=approval).values())
+                               approval=approval, overrun_days=overrun_days).values())

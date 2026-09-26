@@ -5,11 +5,6 @@
   "/erp/contracts": "contract", "/inbox": "inbox", "/gate/exceptions": "alert", "/gate/kpis": "chart",
   "/gate/compare": "compare", "/assumptions": "book",
 } -%}
-{#- What each "Load sample documents" choice holds (the same facts as the empty inbox). -#}
-{%- set dataset_notes = {
-  "v1": "The 14 supplier documents of the case.",
-  "v2": "26 documents in German, French, Spanish and English, with scans, a UBL e-invoice and an invoice in an email body.",
-} -%}
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -68,32 +63,15 @@
           {% endfor %}
         </div>
 
-        {# Each action carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
+        {# Run carries the scenario this page shows: a second tab that switched the cookie cannot redirect it. #}
         <div class="actions">
-          <form method="post" action="/documents/load" class="load-form">
-            <input type="hidden" name="scenario" value="{{ scenario }}">
-            <details class="dropdown load-menu">
-              <summary role="button" class="secondary">{{ ic.icon('load') }}<span>Load sample documents</span>{{ ic.icon('chevron-down', 'chev') }}</summary>
-              <ul class="menu">
-                {% for key, label in dataset_choices.items() %}
-                <li><button type="submit" name="dataset" value="{{ key }}" class="load-choice">
-                  <span class="load-title">{{ label }}</span>
-                  {% if dataset_notes.get(key) %}<span class="load-desc">{{ dataset_notes[key] }}</span>{% endif %}
-                </button></li>
-                {% endfor %}
-                <li class="load-note">{{ ic.icon('info') }}<small>Replaces every document of {{ scenario_label }}, documents received by
-                  email (live intake) included, and clears its gate results.</small></li>
-              </ul>
-            </details>
-          </form>
           <form method="post" action="/run" class="run-form" onsubmit="this.querySelector('button').setAttribute('aria-busy', 'true')">
             <input type="hidden" name="scenario" value="{{ scenario }}">
-            <button type="submit" class="run-button" data-run-tag="{{ scenario_label[0] }}" title="Process every document of {{ scenario_label }} through the gate">{{ ic.icon('play') }}Run scenario</button>
+            <button type="submit" class="run-button" data-run-tag="{{ scenario_label[0] }}" title="Process every document of {{ scenario_label }} again (offline) and show the rule log">{{ ic.icon('play') }}Run scenario</button>
           </form>
           <form method="post" action="/reset"
-                onsubmit="return confirm('Reset {{ scenario_label }}? The mock ERP tables are re-seeded, the gate results are cleared and the sample documents are reloaded, unprocessed. Documents received by email (live intake) are removed.');">
-            <input type="hidden" name="scenario" value="{{ scenario }}">
-            <button type="submit" class="ghost danger reset-button" title="Re-seed the mock ERP of {{ scenario_label }} and reload its sample documents">{{ ic.icon('reset') }}Reset</button>
+                onsubmit="return confirm('Reset the demo? Both scenarios are re-seeded, the 12 case documents are loaded and run offline, and one email waits to be received.');">
+            <button type="submit" class="ghost danger reset-button" title="Both scenarios back to the start of the demo">{{ ic.icon('reset') }}Reset demo</button>
           </form>
         </div>
       </header>
@@ -102,6 +80,19 @@
         <span class="scenario-pill">Scenario {{ scenario_label }}</span>
         <span class="scenario-summary">{{ scenario_summary }}</span>
       </div>
+
+      {# The six stages of the deck (slides 4 and 9), in order; the current page's stage is highlighted. #}
+      <nav class="stage-strip" aria-label="Procure-to-pay stages">
+        <ol>
+          {% for key, label, href in stages %}
+          <li class="stage stage-{{ key }}{% if key in active_stages %} is-active{% endif %}">
+            <a href="{{ href }}"{% if key in active_stages %} aria-current="step"{% endif %}>
+              <span class="stage-no">{{ '%02d' % loop.index }}</span><span class="stage-label">{{ label }}</span>
+            </a>
+          </li>
+          {% endfor %}
+        </ol>
+      </nav>
 
       <main class="content">
         <span id="page-start" tabindex="-1"></span>
@@ -119,18 +110,6 @@
   </div>
   <script>
     (function () {
-      /* "Load sample documents" menu: close on Escape or on a click outside it. */
-      document.addEventListener("click", function (e) {
-        document.querySelectorAll("details.dropdown[open]").forEach(function (d) {
-          if (!d.contains(e.target)) { d.removeAttribute("open"); }
-        });
-      });
-      document.addEventListener("keydown", function (e) {
-        if (e.key !== "Escape") { return; }
-        document.querySelectorAll("details.dropdown[open]").forEach(function (d) {
-          d.removeAttribute("open"); d.querySelector("summary").focus();
-        });
-      });
       /* Sticky table headers need a wrapper that does not scroll sideways: a table that fits its
          wrapper gets class "fits" (no horizontal scroll, sticky header); a wider one keeps scrolling. */
       function fitTables() {
