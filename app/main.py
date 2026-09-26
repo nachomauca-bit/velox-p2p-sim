@@ -55,8 +55,8 @@ SCENARIO_COOKIE = "scenario"
 FLASH_COOKIE = "flash"
 SCENARIO_SUMMARY = {
     "asis": "Duplicate vendor records, no PO discipline, two mailboxes, no control gate.",
-    "tobe": "Clean master (one record per supplier, terms from contract), commitments by spend category, one intake "
-            "registered on arrival, the control gate.",
+    "tobe": "Clean master (one record per supplier and legal entity, terms from contract), commitments by spend "
+            "category, one intake registered on arrival, the control gate.",
 }
 
 # Left navigation: two visibly separate groups (brief section 11). The split is the architecture
@@ -895,6 +895,8 @@ def no_extraction_reason(doc: Optional[InboundDocument] = None) -> str:
                 "text shown on this page.")
     if doc is not None and doc.scenario == "asis":
         return "Processing this document keys its fields (scenario A has no model: AP types them)."
+    if doc is not None and reading_saved(doc):  # the demo's next email: its reading is in the cache already
+        return "Run the control gate: it reads the document first, from the saved reading (no model call now)."
     if config.EXTRACTOR == "fixture":
         return "Fixture mode is on (EXTRACTOR=fixture) and there is no ground-truth fixture for this PDF."
     if not config.gemini_configured():
@@ -903,6 +905,15 @@ def no_extraction_reason(doc: Optional[InboundDocument] = None) -> str:
                 f"{config.gemini_missing_setting()} must be set in .env (then restart the app, or run make extract).")
     return ("Running the control gate reads it first: from the extraction cache when this file was read before, "
             "else with one Gemini API call.")
+
+
+def reading_saved(doc: InboundDocument) -> bool:
+    """A reading of this file exists without calling the API: its cached Gemini reading, or (EXTRACTOR=fixture) its
+    ground-truth fixture."""
+    if config.EXTRACTOR == "fixture":
+        path = resolve_document_file(doc.file_path)
+        return path is not None and extract.fixture_path(path).exists()
+    return bool(doc.file_hash) and extract.cache_path(doc.file_hash).exists()
 
 
 def is_ubl_extraction(ex: Any) -> bool:
@@ -1128,7 +1139,9 @@ def draft_message(doc_id: str, request: Request, force: int = 0,
         error = f"The draft could not be produced: {exc}"
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "_draft.html", {
-            "doc": doc, "draft": draft, "draft_error": error, "draft_label": drafts.DRAFT_LABEL})
+            "doc": doc, "draft": draft, "draft_error": error, "draft_label": drafts.DRAFT_LABEL,
+            # a new draft needs the API: without a key, "Draft again" would only replace the cached text with an error
+            "can_redraft": config.gemini_configured()})
     if draft:
         return redirect(f"/invoice/{doc_id}", ("info", f"{drafts.DRAFT_LABEL}: {draft.text}"))
     return redirect(f"/invoice/{doc_id}", ("warn", f"No draft: {error}"))

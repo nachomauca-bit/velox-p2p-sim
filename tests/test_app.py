@@ -728,6 +728,9 @@ def test_receive_next_email_registers_without_running_the_gate(client, session):
     # its page offers the gate; running it reads the cache (or fixture) only and shows the outcome
     page = client.get(f"/invoice/{doc_id}").text
     assert "Run the control gate</button>" in page and "Not read yet." in page
+    # its reading is saved: the page never talks about API keys in front of the audience
+    assert "it reads the document first, from the saved reading (no model call now)" in page
+    assert "GEMINI_API_KEY" not in page
     r = client.post(f"/invoice/{doc_id}/rerun")
     assert r.status_code == 200 and r.url.path == f"/invoice/{doc_id}"
     text = squash(page_text(r.text))
@@ -1665,9 +1668,12 @@ def test_draft_text_is_shown_under_the_exact_label(client, monkeypatch):
     monkeypatch.setattr(drafts, "get_draft", fake_draft)
     r = client.post("/invoice/B-06/draft?force=1", headers={"HX-Request": "true"})
     assert f'<p class="draft-label">{drafts.DRAFT_LABEL}</p>' in r.text
+    assert "Draft again" not in r.text  # no API key: a new draft would only replace the cached text with an error
+    use_gemini(monkeypatch)
+    assert "Draft again</button>" in client.post("/invoice/B-06/draft", headers={"HX-Request": "true"}).text
     assert drafts.DRAFT_LABEL == "Draft by Gemini — reviewed by AP"
     assert "Sofia, invoice AD-2026/0788 is 300.00 EUR above PO 4500109." in r.text and "from cache" in r.text
-    assert calls == [("B-06", True)]
+    assert calls == [("B-06", True), ("B-06", False)]
 
 
 def test_scenario_query_parameter_sets_the_cookie(client):

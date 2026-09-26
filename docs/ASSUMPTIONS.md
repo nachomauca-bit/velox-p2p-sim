@@ -327,7 +327,8 @@ The four metrics of the deck (slide 11), with the deck's definitions, plus one s
 | Invoice cycle time (business days) | Downstream · automation efficiency | Median simulated business days from arrival (to-be: registration, the same minute) to approved and ready to pay, over the invoices posted; P90 in the tooltip | 15 (P90 21) | 0, same day (P90 2) |
 | Registered same day | Indicator | Documents registered on the day they arrive ÷ documents | 0.0% (0 of 12) | 100.0% (12 of 12) |
 
-- Document 1 counts as a first-pass match in B: its contract matches within the range; the human review it needs is for the approval limit, not for the match.
+- Document 1 counts as a first-pass match in B: its contract matches within the range; the human review it needs is for the approval limit, not for the match. The three that miss the first pass in B are the reminder (document 2, blocked but counted as an invoice received), document 5 (no service confirmation) and document 6 (price variance).
+- Two deliberate differences from the wording of A6: accounts per supplier counts inactive records too, as the case's 2,800 ÷ 1,200 and slide 11's baseline of 2.33 do (A6 writes "active records"; active only, A would be 2.00); and cycle time runs from arrival, so the as-is includes the wait before registration (from registration, A would be 14).
 - **Before the next email is received**, B has 11 documents: first-pass match 80.0% (8 of 10), touchless 80.0% (8 of 10), registered same day 11 of 11. After *Receive next email* and *Run the control gate*, B has 12 and the values above.
 - No other metric is shown. Invoice amounts appear as document data (invoice, PO and contract amounts), never as totals or value figures.
 
@@ -390,5 +391,5 @@ Illustrative, chosen to vary the tax blocks the model has to read; not tax advic
   - **To-be master trimmed to 1.17 records per supplier**: the second records of Shopsys (VDE) and QuickPrint (VDE) and their two background POs were removed; two spelling duplicates were added to the as-is so it keeps 28 records.
   - **One intake address** in to-be; **Reset demo** and **Receive next email** for the four-minute demo.
   - **Group currency CHF** for the limits, with simulated rates.
-  - **Scenario A is AP keying**: the AI quick-fix tool of the case read PDFs from one mailbox and posted them, and was halted after three weeks (deck slide 7). The simulation shows today's process after that: AP types every invoice.
+  - **Scenario A is AP keying**: the AI quick-fix tool of the case read PDFs from one mailbox and posted them, and was halted after three weeks (deck slide 6). The simulation shows today's process after that: AP types every invoice.
 - Phase 3 (Google Cloud, real mailbox) follows after the upload; see [PHASE3.md](PHASE3.md).

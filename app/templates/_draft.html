@@ -5,11 +5,13 @@
   <p class="draft-label">{{ draft_label }}</p>
   <blockquote class="draft-text">{{ draft.text }}</blockquote>
   <p class="draft-meta muted small"><code>{{ draft.model }}</code> · {{ 'from cache' if draft.from_cache else 'new draft' }}</p>
+  {% if can_redraft %}
   <form method="post" action="/invoice/{{ doc.doc_id }}/draft?force=1"
         hx-post="/invoice/{{ doc.doc_id }}/draft?force=1" hx-target="#draft-box" hx-swap="outerHTML"
         hx-disabled-elt="find button">
     <button type="submit" class="secondary small-button">{{ ic.icon('sparkle') }}Draft again</button>
   </form>
+  {% endif %}
   {% else %}
   <p class="flash flash-warn draft-unavailable" role="status"><span><strong>No draft.</strong> {{ draft_error }}</span></p>
   <form method="post" action="/invoice/{{ doc.doc_id }}/draft"
